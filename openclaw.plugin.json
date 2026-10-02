@@ -1,0 +1,42 @@
+{
+  "id": "teams-transcribe",
+  "name": "ClawMinutes",
+  "description": "Local consent-based Teams recording and transcription. No participant joins the call.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "notesModel": {
+        "type": "string",
+        "minLength": 3,
+        "maxLength": 200,
+        "pattern": "^[-\\w]+/\\S{1,180}$",
+        "description": "AI model for meeting notes, as provider/model. Leave unset to use the notes owner's primary model. Uses Gateway credentials; does not change speech recognition."
+      },
+      "notesAgentId": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 80,
+        "description": "Notes model credential owner. Defaults to the configured system agent; no tools or agent session are used."
+      }
+    }
+  },
+  "uiHints": {
+    "notesModel": {
+      "label": "Notes model",
+      "placeholder": "openai/gpt-6-sol",
+      "help": "Choose an available Gateway model using provider/model. Leave unset to inherit the notes owner's primary model."
+    },
+    "notesAgentId": {
+      "label": "Model credential owner",
+      "help": "The Gateway agent whose provider credentials are used. No agent session or tools are run."
+    }
+  },
+  "version": "0.2.5",
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": []
+  }
+}

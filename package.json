@@ -1,0 +1,62 @@
+{
+  "name": "openclaw-teams-transcribe",
+  "version": "0.2.5",
+  "type": "module",
+  "description": "ClawMinutes: local Teams transcription on macOS with AI meeting notes from OpenClaw",
+  "license": "MIT",
+  "main": "src/index.js",
+  "files": [
+    "src",
+    "native/Sources",
+    "native/Tests",
+    "native/Package.swift",
+    "native/Package.resolved",
+    "native/tools",
+    "helper",
+    "scripts",
+    "notices",
+    "docs",
+    "README.md",
+    "openclaw.plugin.json",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "build:native": "swift build --package-path native -c release -j 4",
+    "pack:helper": "python3 scripts/package-helper.py"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "openclaw": "2026.9.7"
+  },
+  "openclaw": {
+    "extensions": [
+      "./src/index.js"
+    ],
+    "compat": {
+      "minGatewayVersion": "2026.9.7",
+      "pluginApi": "2026.9.7"
+    }
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.9.7"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Olli0103/clawminutes.git"
+  },
+  "homepage": "https://github.com/Olli0103/clawminutes#readme",
+  "bugs": {
+    "url": "https://github.com/Olli0103/clawminutes/issues"
+  },
+  "keywords": [
+    "openclaw",
+    "meetings",
+    "transcription",
+    "macos",
+    "microsoft-teams",
+    "parakeet"
+  ]
+}

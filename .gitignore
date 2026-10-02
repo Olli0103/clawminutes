@@ -1,0 +1,37 @@
+# Local dependencies and build outputs
+node_modules/
+native/.build/
+helper/
+*.tgz
+/package-lock.json
+
+# Private recordings, diagnostics and generated artifacts
+evidence/
+recordings/
+transcripts/
+signing/
+*.log
+*.caf
+*.wav
+*.aiff
+*.m4a
+*.mp3
+*.mp4
+
+# Credentials and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.pfx
+*.key
+*.keychain*
+*keychain-password*
+config.json
+
+# Editor and Python cache files
+.DS_Store
+__pycache__/
+*.py[cod]
+.swiftpm/

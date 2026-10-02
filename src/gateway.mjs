@@ -1,0 +1,71 @@
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import {createHash} from 'node:crypto';
+import {fileURLToPath} from 'node:url';
+import {archiveAdapter,meetingRecord,assertArchiveReadback,assertUtteranceCompatibility} from './archive.mjs';
+import {validateTemplate,validateContext,validateParticipants,generateNotes,documents} from './notes.mjs';
+export function validateEnvelope(value){
+  if(!value || typeof value!=='object' || Array.isArray(value) || Object.keys(value).some(k=>!['meta','transcript','recordingId'].includes(k)))throw Error('Only transcript metadata is accepted. Raw audio is forbidden.');
+  if(typeof value.recordingId!=='string'||!/^[-\w.]{1,128}$/.test(value.recordingId))throw Error('Invalid recording identity');
+  const t=value.transcript,m=value.meta;
+  if(!m || !t || typeof m!=='object'||typeof t!=='object'||Array.isArray(m)||Array.isArray(t))throw Error('Invalid transcript metadata');
+  if(Object.keys(m).some(k=>!['started','ended','audio_started_at','status','fixture','notes_mode','note_template','meeting_context','participants'].includes(k))||Object.keys(t).some(k=>!['engine','model','created_at','execution_machine','execution_location','segments'].includes(k)))throw Error('Unexpected metadata field. Raw audio is forbidden.');
+  if(!m || !t || !['parakeet','elevenlabs'].includes(t.engine) || !['parakeet-tdt-0.6b-v3-coreml','scribe_v2'].includes(t.model))throw Error('Invalid STT provenance');
+  if(!Number.isFinite(m.audio_started_at)||typeof m.started!=='string'||!Number.isFinite(Date.parse(m.started)))throw Error('Invalid recording clock');
+  for(const key of ['ended'])if(m[key]!==undefined && (typeof m[key]!=='string'||!Number.isFinite(Date.parse(m[key]))))throw Error('Invalid recording end clock');
+  if(m.status!==undefined&&!['stopped','interrupted','fixture'].includes(m.status))throw Error('Recording is not complete');
+  if(m.fixture!==undefined&&typeof m.fixture!=='boolean')throw Error('Invalid fixture provenance');
+  for(const key of ['execution_machine','execution_location','created_at'])if(typeof t[key]!=='string'||!t[key].length||t[key].length>256)throw Error('Missing or invalid STT execution provenance');
+  if(!Number.isFinite(Date.parse(t.created_at)))throw Error('Invalid transcript clock');
+  if(!Array.isArray(t.segments)||t.segments.length>100000)throw Error('Invalid transcript');
+  for(const segment of t.segments){
+    if(!segment||Object.keys(segment).some(k=>!['speaker','start_ms','end_ms','text','source','speaker_name','attribution'].includes(k)))throw Error('Unexpected utterance field');
+    if(typeof segment.text!=='string'||segment.text.length>20000)throw Error('Invalid utterance text');
+    for(const key of ['speaker','source','speaker_name','attribution'])if(segment[key]!==undefined&&(typeof segment[key]!=='string'||segment[key].length>256))throw Error('Invalid utterance metadata');
+    if(!Number.isInteger(segment.start_ms)||!Number.isInteger(segment.end_ms)||segment.start_ms<0||segment.end_ms<segment.start_ms)throw Error('Invalid utterance clock');
+  }
+  if(t.engine==='parakeet' && t.execution_location!=='recording_mac')throw Error('Local only must execute on the recording Mac');
+  if(t.engine==='parakeet' && t.model!=='parakeet-tdt-0.6b-v3-coreml')throw Error('Local backend/model mismatch');
+  if(t.engine==='elevenlabs' && t.model!=='scribe_v2')throw Error('Cloud backend/model mismatch');
+  // Drop all unneeded nested objects. No arbitrary paths, blobs or audio reach storage.
+  if(m.notes_mode!==undefined && !['simple','transcript','ai'].includes(m.notes_mode))throw Error('Invalid notes selection');
+  if(m.note_template!==undefined)validateTemplate(m.note_template);
+  if(m.notes_mode==='ai'&&!m.note_template)throw Error('AI notes require a template');
+  if(m.meeting_context!==undefined)validateContext(m.meeting_context);
+  if(m.participants!==undefined)validateParticipants(m.participants);
+  return {recordingId:value.recordingId,meta:{started:m.started,ended:m.ended,audio_started_at:m.audio_started_at,status:m.status,fixture:m.fixture===true,notes_mode:m.notes_mode||'simple',note_template:m.note_template,meeting_context:m.meeting_context,participants:m.participants},transcript:{engine:t.engine,model:t.model,created_at:t.created_at,execution_machine:t.execution_machine,execution_location:t.execution_location,segments:t.segments}};
+}
+export async function saveEnvelope(envelope,{openclawDir,stateDir,complete}={}){
+  const e=validateEnvelope(envelope);const id='teams-'+createHash('sha256').update(e.meta.started+'\n'+e.recordingId).digest('hex').slice(0,24);
+  const record=meetingRecord(e.meta,e.transcript,id);record.session.metadata.fixture=e.meta.fixture===true;
+  const Store=await archiveAdapter(openclawDir);const store=new Store(path.join(stateDir,'transcripts'),{env:{...process.env,OPENCLAW_STATE_DIR:stateDir}});
+  const existing=await store.readSession(id);
+  if(existing)assertUtteranceCompatibility(record,await store.readUtterancesForSession(existing));
+  await generateNotes(record,e.meta,complete);
+  await store.writeSession(record.session);
+  for(const utterance of record.utterances)await store.appendUtteranceForSession(record.session,utterance);
+  await store.writeSummary(record.summary,record.session);
+  const rows=await store.readUtterancesForSession(record.session);const summary=await store.readSummary(record.session);
+  assertArchiveReadback(record,rows,summary);
+  return {saved:true,sessionId:id,utteranceCount:rows.length,stt:record.session.metadata.stt,notes:record.session.metadata.notes,documents:documents(record),archiveExecutionMachine:os.hostname(),savedAt:new Date().toISOString()};
+}
+export function gatewayHandler(options){
+  return async(req,res)=>{
+    res.setHeader('Content-Type','application/json');
+    if(req.method==='GET'){res.writeHead(200);res.end(JSON.stringify({plugin:'teams-transcribe',gatewayMachine:os.hostname(),rawAudioAccepted:false,notesModelConfigured:options?.notesModel||null}));return true;}
+    if(req.method!=='POST'){res.writeHead(405);res.end(JSON.stringify({error:'POST required'}));return true;}
+    if(!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type']||'')){res.writeHead(415);res.end(JSON.stringify({error:'JSON transcript metadata only'}));return true;}
+    let size=0;const chunks=[];
+    try{
+      for await(const chunk of req){size+=chunk.length;if(size>16*1024*1024)throw Error('Transcript package too large');chunks.push(chunk);}
+      const envelope=JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      const receipt=await saveEnvelope(envelope,options);
+      res.writeHead(200);res.end(JSON.stringify(receipt));
+    }catch(error){res.writeHead(400);res.end(JSON.stringify({saved:false,error:error.message,recordingPreserved:true}));}
+    return true;
+  };
+}
+export function installedRuntimeDirectory(){
+  return path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.resolve('openclaw/plugin-sdk/feature-plugin')))));
+}

@@ -1,0 +1,22 @@
+# Sources, reuse and licenses
+
+Inspected 1 October 2026.
+
+- Fork: https://github.com/bedeabza/quill at a4f2b4df9a45f2ba25888301f05cf0e2d2f87fe3.
+- Upstream: https://github.com/humanitas-labs/quill at aad60f98e680720dd24a30115580f226ae36c12c.
+
+`native/Sources`, `native/Tests` and `native/tools` originate from the fork. The plugin retains Quill's AVAudioEngine microphone capture and keeps its Core Audio tap source for provenance, CAF streaming, adapted from AAC to linear PCM for recovery, timestamp offset calculation, Accessibility scanner and Teams frame adapter, acoustic speaker analysis, conservative word-to-speaker alignment, Parakeet Core ML recognition, ElevenLabs Scribe v2 engine, credential caching, and the menu control callbacks. The flat NSMenu was replaced with an original SwiftUI recording card, grouped settings, and the user-supplied claw-and-microphone mark, rendered black for light mode and in its original pink for dark mode. The active system track uses an original audio-only ScreenCaptureKit adapter filtered to Teams after the reused Core Audio tap hung on the tested macOS 27.2 host. Required fork and upstream MIT notices are in `notices/` and the helper's Resources directory.
+
+Adaptations replace automatic recording with local Start/Dismiss consent; restrict app discovery and system capture to Teams; isolate bundle identity, Keychain, settings and run lock; add recording checkpoints and interrupted recovery; make model setup explicit and local inference offline; disable cloud transcript cleanup and voice-memory enrollment; remove roster-only naming; freeze each recording's transcription backend; add execution-machine provenance; and send completed text directly to authenticated Gateway archive routes. The helper is packaged inside the plugin and managed by its bundled lifecycle installer. Users do not install Quill separately.
+
+The newer upstream has segmented capture-health recovery. It was inspected but not copied over the fork's incompatible recording metadata. This integration uses linear PCM CAF, atomic metadata checkpoints and exclusive-lock recovery. It does not yet restart a stalled audio route into a new segment. A crash can lose the last checkpoint interval. No recovered recording is described as uninterrupted.
+
+Pinned Swift dependencies are FluidAudio 0.15.5 at 19600a485baa4998812e4654b70d2bab8f2c9949, Apache 2.0, and Swift Argument Parser 1.8.2 at 6a52f3251125d74daf04fcbd5e6f08a75d074382, Apache 2.0. Copies of their licenses accompany the package. The helper requires macOS 15+ and the shipped build targets Apple Silicon. Intel requires building the same sources on an Intel Mac and remains unverified.
+
+Models download separately during setup and are not included in the plugin archive. The Parakeet model repository declares CC BY 4.0 in its metadata but says Apache 2.0 in the prose license section. This is a source contradiction, not a resolved license finding. Preserve NVIDIA/FluidInference attribution and confirm the model's applicable terms before redistributing weights. Sources: https://huggingface.co/FluidInference/parakeet-tdt-0.6b-v3-coreml and https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3.
+
+The supported Community-1 diarization artifacts declare scoped CC BY 4.0. `notices/Diarization-model-NOTICE.md` and `Diarization-model-PROVENANCE.md` preserve the publisher's attribution and provenance limits. The publisher states that its historical conversion is not a fully attested reproducible build. Source: https://huggingface.co/FluidInference/speaker-diarization-coreml.
+
+The generated three-voice test uses local macOS speech synthesis. Its participant labels and activity observations are synthetic fixtures. They do not prove live Teams participant attribution. No public meeting audio is redistributed.
+
+The helper bundles the cloudflared executable selected during packaging. The development build used Cloudflare cloudflared 2026.9.1 from the official Homebrew package. Its Apache 2.0 license accompanies the distribution. It supplies application-scoped browser sign-in for Cloudflare Access; recognition does not use it. The application, executable and notifications are named `ocmh`; original Quill identifiers remain only in source module names and reuse credits.

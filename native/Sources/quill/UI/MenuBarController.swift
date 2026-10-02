@@ -1,0 +1,503 @@
+import AppKit
+import SwiftUI
+import AVFoundation
+import ApplicationServices
+import FluidAudio
+
+@MainActor
+final class MenuBarController: NSObject, ObservableObject {
+    private let keychain: ElevenLabsKeychain
+    private let statusItem: NSStatusItem
+    private var appearanceObserver: NSKeyValueObservation?
+    private let popover = NSPopover()
+    private var templateWindow: NSWindow?
+    private var settingsWindow: NSWindow?
+    private var controlsWindow: NSWindow?
+    private var pipelineStatus: TranscriptionCoordinator.Status = .idle
+    private var preparing = false
+    private var transcriptionBackend: String?
+    private var credentialOperationInProgress = false
+    private var keyStatusTask: Task<Void, Never>?
+    @Published private(set) var recording = false
+    @Published private(set) var startingRecording = false
+    @Published private(set) var elapsed = "0:00"
+    @Published private(set) var detail: String?
+    @Published private(set) var detection = "Checking Teams…"
+    @Published private(set) var promptsEnabled = Config.meetingDetection()
+    @Published private(set) var accessibilityGranted = AXIsProcessTrusted()
+    @Published private(set) var gatewayStatus = "Checking connection…"
+    @Published private(set) var gatewayOperation = false
+    @Published private(set) var gatewaySigningIn = false
+    private var gatewayCancelled = false
+    @Published private(set) var hasAPIKey = false
+    @Published private(set) var localModelReady = AsrModels.modelsExist(at: AsrModels.defaultCacheDirectory(for: .v3), version: .v3)
+    @Published private(set) var selectedEngine = Config.transcriptionEngine()
+    @Published private(set) var style = Config.menuBarStyle()
+    @Published private(set) var notesMode = Config.notesMode()
+    @Published private(set) var templates = MeetingNotesSettings.templates
+    @Published private(set) var selectedTemplateID = MeetingNotesSettings.selected.id
+    @Published private(set) var notesFolder = MeetingNotesSettings.folder.path
+    @Published private(set) var deletesVerifiedAudio = Config.deleteAudioAfterVerification()
+    func setAudioRetention(_ enabled: Bool) {
+        do {
+            try MeetingNotesSettings.update(["audio_retention": enabled ? "delete_after_verification" : "keep"])
+            deletesVerifiedAudio = enabled
+        } catch { showError("Could not save audio retention: \(error)") }
+    }
+    @Published private(set) var localSpeakerName = Config.localSpeakerName() ?? ""
+    @Published private(set) var sharedMicrophone = Config.sharedMicrophone()
+    func setSharedMicrophone(_ value: Bool) {
+        do { try MeetingNotesSettings.update(["shared_microphone": value]); sharedMicrophone = value }
+        catch { showError("Could not save microphone setting: \(error)") }
+    }
+    func editLocalSpeakerName() {
+        let alert = NSAlert(); alert.messageText = "Your microphone name"
+        alert.informativeText = "Use your Teams display name for speech on your personal microphone. Remote speakers still need Teams evidence. For a shared microphone, enable Shared microphone instead."
+        let field = NSTextField(string: localSpeakerName); field.frame = NSRect(x: 0, y: 0, width: 300, height: 24)
+        alert.accessoryView = field; alert.addButton(withTitle: "Save"); alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let value = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard value.isEmpty || SpeakerAttribution.cleanName(value) != nil else { showError("Enter your display name, up to 100 characters."); return }
+        do { try MeetingNotesSettings.update(["local_speaker_name": value]); localSpeakerName = value }
+        catch { showError("Could not save microphone name: \(error)") }
+    }
+    @Published private(set) var meetingSubject: String?
+    func setMeetingSubject(_ subject: String?) { meetingSubject = subject; refreshTitle() }
+    var onToggle: (() -> Void)?
+    var onOpenFolder: (() -> Void)?
+    var onQuit: (() -> Void)?
+    var onDetectionToggle: (() -> Void)?
+    var onPermission: (() -> Void)?
+    var onKeepRecording: (() -> Void)?
+
+    var activity: HelperActivity { MenuPresentation.activity(recording: recording, elapsed: elapsed, status: pipelineStatus, preparing: preparing || startingRecording) }
+    var displayedBackend: String { recording ? selectedEngine : (transcriptionBackend ?? selectedEngine) }
+    var backendTitle: String { displayedBackend == "parakeet" ? "Local only" : "ElevenLabs" }
+    var modelTitle: String { displayedBackend == "parakeet" ? "Parakeet v3" : "Scribe v2" }
+    var machine: String { ProcessInfo.processInfo.hostName }
+    var meetingTitle: String {
+        meetingSubject ?? MenuPresentation.meetingTitle(promptsEnabled: promptsEnabled, accessibilityGranted: accessibilityGranted, detection: detection)
+    }
+    func setStartingRecording(_ value: Bool) { startingRecording = value; refreshTitle() }
+    var isFailure: Bool { if case .failed = activity { return true }; return false }
+
+    init(keychain: ElevenLabsKeychain = .shared) {
+        self.keychain = keychain
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        super.init()
+        popover.behavior = .transient
+        popover.animates = true
+        popover.contentViewController = NSHostingController(rootView: HelperPopover(controller: self))
+        if let button = statusItem.button {
+            button.target = self
+            button.action = #selector(showPopover)
+            button.imagePosition = .imageLeft
+            appearanceObserver = button.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
+                Task { @MainActor [weak self] in self?.refreshTitle() }
+            }
+        }
+        refreshTitle()
+        refreshCredentials()
+        Task { await checkGateway() }
+    }
+
+    func recordingFailed(_ error: Error) {
+        let failure = error as NSError
+        let microphone = error is RecordingPermissionError
+        let systemAudio = failure.domain == "com.apple.ScreenCaptureKit.SCStreamErrorDomain" && failure.code == -3801
+        guard microphone || systemAudio else {
+            showError("Could not start recording. " + String(describing: error)); return
+        }
+        let alert = NSAlert()
+        alert.messageText = microphone ? "Allow microphone recording" : "Allow Teams audio recording"
+        alert.informativeText = microphone
+            ? "Enable ocmh in Microphone in System Settings, then try Start again. Recording remains off."
+            : "Enable ocmh in the upper Screen & System Audio Recording list in System Settings. macOS requires this permission; ocmh saves only audio. Reopen ocmh after allowing access. Recording remains off."
+        alert.addButton(withTitle: "Open System Settings")
+        alert.addButton(withTitle: "Cancel")
+        if alert.runModal() == .alertFirstButtonReturn { openPrivacy(microphone ? "Microphone" : "ScreenCapture") }
+    }
+    func openMenu() {
+        popover.performClose(nil)
+        if controlsWindow == nil {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 390, height: 500), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            window.title = "ocmh recording"
+            window.isReleasedWhenClosed = false
+            window.contentViewController = NSHostingController(rootView: HelperPopover(controller: self))
+            window.center()
+            controlsWindow = window
+        }
+        accessibilityGranted = AXIsProcessTrusted()
+        refreshCredentials()
+        NSApp.activate(ignoringOtherApps: true)
+        controlsWindow?.makeKeyAndOrderFront(nil)
+        Task { await checkGateway() }
+    }
+    @objc private func showPopover() {
+        guard let button = statusItem.button else { return }
+        if popover.isShown { popover.performClose(nil); return }
+        accessibilityGranted = AXIsProcessTrusted()
+        refreshCredentials()
+        Task { await checkGateway() }
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+    }
+    func toggleRecording() { popover.performClose(nil); onToggle?() }
+    func openRecordings() { popover.performClose(nil); onOpenFolder?() }
+    func quit() { popover.performClose(nil); onQuit?() }
+    func togglePrompts() { onDetectionToggle?() }
+    func allowDetection() {
+        popover.performClose(nil)
+        onPermission?()
+    }
+    func chooseStyle(_ value: MenuBarStyle) {
+        guard Config.setMenuBarStyle(value) else { showError("Could not save menu bar style."); return }
+        style = value
+        refreshTitle()
+    }
+    func chooseNotes(_ mode: String) {
+        guard Config.setNotesMode(mode) else { showError("Could not save notes setting."); return }
+        notesMode = mode
+    }
+    func selectTemplate(_ id: String) {
+        do { try MeetingNotesSettings.save(templates, selected: id); selectedTemplateID = id }
+        catch { showError("Could not save note template: \(error)") }
+    }
+    func saveTemplates(_ value: [NoteTemplate], selected: String) -> Bool {
+        do { try MeetingNotesSettings.save(value, selected: selected); templates = value; selectedTemplateID = selected; return true }
+        catch { showError("Could not save templates: \(error)"); return false }
+    }
+    func chooseNotesFolder() {
+        let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false; panel.canCreateDirectories = true
+        panel.message = "Choose a folder for generated meeting notes and transcripts."; panel.directoryURL = MeetingNotesSettings.folder
+        guard panel.runModal() == .OK, let folder = panel.url else { return }
+        do { try MeetingNotesSettings.update(["notes_folder": folder.path]); notesFolder = folder.path }
+        catch { showError("Could not save notes folder: \(error)") }
+    }
+    func openNotesFolder() {
+        let folder = MeetingNotesSettings.folder
+        do { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true); NSWorkspace.shared.open(folder) }
+        catch { showError("Could not open notes folder: \(error)") }
+    }
+    func manageTemplates() {
+        if templateWindow == nil {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 760, height: 650), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+            window.title = "ocmh note templates"; window.isReleasedWhenClosed = false
+            window.contentViewController = NSHostingController(rootView: NoteTemplateEditor(controller: self))
+            window.center(); templateWindow = window
+        }
+        NSApp.activate(ignoringOtherApps: true); templateWindow?.makeKeyAndOrderFront(nil)
+    }
+    func selectEngine(_ value: String) {
+        guard let index = TranscriptionEngineKind.allCases.firstIndex(where: { $0.rawValue == value }) else { return }
+        let item = NSMenuItem(); item.tag = index
+        engineClicked(item)
+    }
+    func showSettings() {
+        popover.performClose(nil)
+        if settingsWindow == nil {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 490, height: 620), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            window.title = "ocmh settings"
+            window.isReleasedWhenClosed = false
+            window.contentViewController = NSHostingController(rootView: HelperSettings(controller: self))
+            window.center()
+            settingsWindow = window
+        }
+        refreshCredentials()
+        accessibilityGranted = AXIsProcessTrusted()
+        NSApp.activate(ignoringOtherApps: true)
+        settingsWindow?.makeKeyAndOrderFront(nil)
+        Task { await checkGateway() }
+    }
+    func connectGateway() { popover.performClose(nil); gatewayClicked() }
+    func cancelSignIn() { cancelGatewayClicked() }
+    func retrySaving() { retryArchiveClicked() }
+    func setupLocal() { popover.performClose(nil); setupLocalClicked() }
+    func editAPIKey() { apiKeyClicked() }
+    func removeAPIKey() { removeKeyClicked() }
+    func keepRecording() { onKeepRecording?() }
+    func checkPermissions() {
+        accessibilityGranted = AXIsProcessTrusted()
+        objectWillChange.send()
+    }
+    var microphoneGranted: Bool { AVCaptureDevice.authorizationStatus(for: .audio) == .authorized }
+    var systemAudioGranted: Bool { CGPreflightScreenCaptureAccess() }
+    func allowMicrophone() {
+        Task {
+            if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
+                _ = await AVCaptureDevice.requestAccess(for: .audio)
+            }
+            if !microphoneGranted { openPrivacy("Microphone") }
+            checkPermissions()
+        }
+    }
+    func allowSystemAudio() {
+        if !CGPreflightScreenCaptureAccess() { _ = CGRequestScreenCaptureAccess() }
+        if !CGPreflightScreenCaptureAccess() { openPrivacy("ScreenCapture") }
+        checkPermissions()
+    }
+    func openPrivacy(_ pane: String) {
+        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_" + pane) { NSWorkspace.shared.open(url) }
+    }
+    func recheckGateway() { Task { await checkGateway() } }
+    private func checkGateway() async {
+        guard !gatewayOperation else { return }
+        gatewayOperation = true
+        defer { gatewayOperation = false }
+        do { gatewayStatus = try await GatewayArchive.status() }
+        catch { gatewayStatus = "Not connected. Your recordings stay on this Mac." }
+    }
+    private func showError(_ text: String) {
+        let alert = NSAlert(); alert.messageText = "ocmh"; alert.informativeText = text; alert.runModal()
+    }
+
+    @objc private func gatewayClicked() {
+        guard !gatewayOperation else { return }
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Connect the recording helper to your Gateway"
+        alert.informativeText = "GitHub sign-in opens Cloudflare Access in your browser. Local only sends finished transcript text and metadata to the Gateway. Raw audio stays here. For direct Gateway auth, select Gateway token and enter it below."
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 420, height: 100))
+        let urlField = NSTextField(frame: NSRect(x: 0, y: 70, width: 420, height: 26))
+        urlField.stringValue = Config.gateway()["url"] ?? ""
+        urlField.placeholderString = "https://your-gateway.example"
+        urlField.setAccessibilityLabel("Gateway URL")
+        let method = NSPopUpButton(frame: NSRect(x: 0, y: 36, width: 420, height: 26))
+        method.addItems(withTitles: ["GitHub through Cloudflare Access", "Gateway token"])
+        method.selectItem(at: Config.gateway()["authentication"] == "token" ? 1 : 0)
+        let secret = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 420, height: 26))
+        secret.placeholderString = "Gateway token, only for direct token authentication"
+        secret.setAccessibilityLabel("Gateway token")
+        [urlField, method, secret].forEach { container.addSubview($0) }
+        alert.accessoryView = container
+        alert.addButton(withTitle: "Connect")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let value = urlField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let authentication = method.indexOfSelectedItem == 0 ? "cloudflare" : "token"
+        let token = secret.stringValue
+        secret.stringValue = ""
+        gatewayOperation = true
+        gatewayCancelled = false
+        gatewayStatus = "Connecting Gateway…"
+        Task {
+            defer { gatewayOperation = false; gatewaySigningIn = false }
+            do {
+                let url = try GatewayArchive.origin(value)
+                if authentication == "cloudflare" {
+                    let cached = await Task.detached { (try? GatewayArchive.cloudflareToken(url)) != nil }.value
+                    if !cached {
+                        gatewaySigningIn = true
+                        gatewayStatus = "Opening GitHub sign-in…"
+                        try await Task.detached { try GatewayArchive.login(url) }.value
+                        gatewaySigningIn = false
+                    }
+                } else {
+                    try await Task.detached { try GatewayArchive.tokenStore(url).save(token) }.value
+                }
+                guard !gatewayCancelled else { return }
+                try Config.setGateway(url: value, authentication: authentication)
+                gatewayStatus = try await GatewayArchive.status()
+            } catch {
+                guard !gatewayCancelled else { return }
+                let missingPlugin = error is GatewayArchive.ConnectionIssue
+                gatewayStatus = missingPlugin ? "Gateway reachable; Teams plugin installation required" : "Gateway connection failed; recordings retained"
+                let failure = NSAlert()
+                failure.messageText = missingPlugin ? "Gateway reached; install the Teams plugin" : "Could not connect to the Gateway"
+                failure.informativeText = String(describing: error)
+                failure.runModal()
+            }
+        }
+    }
+
+    @objc private func cancelGatewayClicked() {
+        gatewayCancelled = true
+        GatewayArchive.cancelLogin()
+        gatewayStatus = "Gateway sign-in cancelled; recordings retained"
+    }
+
+    @objc private func retryArchiveClicked() {
+        guard !gatewayOperation else { return }
+        gatewayOperation = true
+        gatewayStatus = "Saving pending meetings"
+        Task {
+            defer { gatewayOperation = false }
+            do {
+                let root = Config.resolveRoot(cliOverride: nil)
+                let entries = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+                var count = 0
+                for dir in entries where FileManager.default.fileExists(atPath: dir.appendingPathComponent("transcript.json").path)
+                    && !FileManager.default.fileExists(atPath: dir.appendingPathComponent("archive-receipt.json").path) {
+                    try await GatewayArchive.save(dir)
+                    count += 1
+                }
+                gatewayStatus = "Gateway archive saved: \(count) pending meetings"
+            } catch { gatewayStatus = "Archive pending; reconnect Gateway. Recordings retained" }
+        }
+    }
+
+    @objc private func setupLocalClicked() {
+        let alert = NSAlert()
+        alert.messageText = "Download the Local only model to this Mac?"
+        alert.informativeText = "Downloads Parakeet speech recognition models. No recording audio is sent. This download needs Internet access; subsequent recognition runs offline."
+        alert.addButton(withTitle: "Download models")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        updateTranscription("Installing local speech model")
+        Task {
+            do { var setup = SetupLocal(); try await setup.run(); updateTranscription(nil); localModelReady = true }
+            catch { updateTranscription("Local model setup failed: \(error)") }
+        }
+    }
+
+    func update(recording: Bool, elapsed: String?) {
+        self.recording = recording
+        self.elapsed = elapsed ?? "0:00"
+        refreshTitle()
+    }
+
+    func updateTranscription(_ text: String?) {
+        preparing = text != nil && !(text?.contains("failed") ?? false)
+        if let text, text.contains("failed") { pipelineStatus = .failed(session: "Local model setup") }
+        detail = text
+        refreshTitle()
+    }
+
+    func updateTranscriptionStatus(_ status: TranscriptionCoordinator.Status) {
+        pipelineStatus = status
+        switch status {
+        case .transcribing(let name, _), .postprocessing(let name, _), .failed(let name):
+            let metaURL = Config.resolveRoot(cliOverride: nil).appendingPathComponent(name).appendingPathComponent("meta.json")
+            if let data = try? Data(contentsOf: metaURL), let meta = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                transcriptionBackend = meta["backend"] as? String
+            }
+        case .idle: transcriptionBackend = nil
+        }
+        switch status {
+        case .idle: detail = nil
+        case .transcribing(let name, let queued): detail = "Processing \(name)" + (queued > 0 ? " · \(queued) waiting" : "")
+        case .postprocessing(let name, _): detail = "Finishing \(name)"
+        case .failed(let name): detail = "Could not finish processing \(name). Your audio is safe. See transcribe.log for the failed step."
+        }
+        refreshTitle()
+    }
+
+    func updateDetection(_ text: String, enabled: Bool) {
+        detection = text
+        promptsEnabled = enabled
+        accessibilityGranted = AXIsProcessTrusted()
+        refreshTitle()
+    }
+
+    private func refreshTitle() {
+        let activity = activity
+        statusItem.button?.title = MenuPresentation.title(style: style, activity: activity, backend: backendTitle, meeting: meetingSubject == nil ? MenuPresentation.callSummary(meetingTitle) : "Teams call")
+        statusItem.button?.contentTintColor = nil
+        statusItem.button?.image = Self.clawMicImage(active: activity.isWorking,
+            appearance: statusItem.button?.effectiveAppearance ?? NSApp.effectiveAppearance,
+            activeColor: recording ? .systemRed : .controlAccentColor)
+        statusItem.button?.toolTip = "ocmh · \(activity.title)\n\(meetingTitle)\n\(backendTitle) · \(modelTitle)\n\(displayedBackend == "parakeet" ? "Speech recognition on " + ProcessInfo.processInfo.hostName : "Speech recognition at ElevenLabs; audio uploaded from this Mac")"
+        statusItem.button?.setAccessibilityLabel("ocmh. \(activity.title). \(meetingTitle). \(backendTitle).")
+        objectWillChange.send()
+    }
+
+    @objc private func voiceMemoryClicked() {
+        do { try Config.setVoiceMemoryEnabled(!Config.voiceMemoryEnabled()) }
+        catch { notifyUser(title: "ocmh speaker memory", body: "Could not save the speaker memory setting: \(error)") }
+    }
+
+    func refreshCredentials() {
+        guard keyStatusTask == nil, !credentialOperationInProgress else { return }
+        keyStatusTask = Task { [weak self, keychain] in
+            let hasKey = await Task.detached { [keychain] in keychain.containsKey() }.value
+            guard let self else { return }
+            self.keyStatusTask = nil
+            guard !self.credentialOperationInProgress else { return }
+            self.hasAPIKey = hasKey
+        }
+    }
+
+    @objc private func engineClicked(_ sender: NSMenuItem) {
+        guard !credentialOperationInProgress else { return }
+        credentialOperationInProgress = true
+        Task {
+            defer { credentialOperationInProgress = false }
+            let kind = TranscriptionEngineKind.allCases[sender.tag]
+            if kind == .elevenLabs {
+                let hasKey = await Task.detached { [keychain] in keychain.containsKey() }.value
+                if !hasKey, !(await enterAPIKey()) { return }
+            }
+            guard Config.setTranscriptionEngine(kind) else {
+                notifyUser(title: "ocmh settings", body: "Could not save the transcription engine setting.")
+                return
+            }
+            selectedEngine = kind.rawValue
+            refreshTitle()
+            notifyUser(title: "ocmh transcription", body: "\(kind.title) will be used for the next transcription.")
+        }
+    }
+
+    @objc private func apiKeyClicked() {
+        guard !credentialOperationInProgress else { return }
+        credentialOperationInProgress = true
+        Task {
+            defer { credentialOperationInProgress = false }
+            _ = await enterAPIKey()
+        }
+    }
+
+    @discardableResult private func enterAPIKey() async -> Bool {
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "ElevenLabs API key"
+        alert.informativeText = "Your key is stored encrypted in macOS Keychain. Selecting ElevenLabs sends recording audio to Scribe v2 for transcription."
+        alert.addButton(withTitle: "Save key")
+        alert.addButton(withTitle: "Cancel")
+        let field = NSSecureTextField(frame: NSRect(x: 0, y: 0, width: 360, height: 26))
+        field.usesSingleLineMode = true
+        field.placeholderString = "Paste your ElevenLabs API key"
+        field.setAccessibilityLabel("ElevenLabs API key")
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        defer { field.stringValue = "" }
+        guard alert.runModal() == .alertFirstButtonReturn else { return false }
+        let value = field.stringValue
+        field.stringValue = ""
+        do {
+            try await Task.detached { [keychain] in try keychain.save(value) }.value
+            hasAPIKey = true
+            notifyUser(title: "ocmh settings", body: "ElevenLabs API key saved in macOS Keychain.")
+            return true
+        } catch {
+            NSApp.activate(ignoringOtherApps: true)
+            let failure = NSAlert()
+            failure.messageText = "Could not save the API key"
+            failure.informativeText = String(describing: error)
+            failure.runModal()
+            return false
+        }
+    }
+
+    @objc private func removeKeyClicked() {
+        guard !credentialOperationInProgress else { return }
+        credentialOperationInProgress = true
+        Task {
+            defer { credentialOperationInProgress = false }
+            do {
+                try await Task.detached { [keychain] in try keychain.remove() }.value
+                hasAPIKey = false
+                notifyUser(title: "ocmh settings", body: "ElevenLabs API key removed. Select Parakeet or save another key to resume transcription.")
+            } catch {
+                notifyUser(title: "ocmh settings", body: String(describing: error))
+            }
+        }
+    }
+
+    @objc private func detectionClicked() { onDetectionToggle?() }
+    @objc private func permissionClicked() { onPermission?() }
+    @objc private func keepClicked() { onKeepRecording?() }
+
+    static func clawMicImage(active: Bool, appearance: NSAppearance = NSApp.effectiveAppearance,
+                             activeColor: NSColor = .controlAccentColor) -> NSImage {
+        ClawMicrophoneIcon.image(appearance: appearance, active: active, activeColor: activeColor)
+    }
+}

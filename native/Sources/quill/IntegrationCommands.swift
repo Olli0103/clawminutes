@@ -1,0 +1,102 @@
+import ArgumentParser
+import AppKit
+import FluidAudio
+import Foundation
+
+struct SetupLocal: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "setup-local", abstract: "Download Parakeet v3 models to this Mac. No audio is read or uploaded.")
+    mutating func run() async throws {
+        ModelHub.offlineMode = false
+        _ = try await AsrModels.downloadAndLoad(version: .v3)
+        print("Parakeet v3 installed on \(ProcessInfo.processInfo.hostName). Local only is ready.")
+    }
+}
+
+struct GatewayStatus: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "gateway-status", abstract: "Check the configured Gateway without capture or uploads.")
+    mutating func run() async throws { print(try await GatewayArchive.status()) }
+}
+
+struct ArchiveSession: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "archive-session", abstract: "Send a finished text transcript to the configured Gateway. Never sends audio.")
+    @Option var directory: String
+    mutating func run() async throws {
+        try await GatewayArchive.save(URL(fileURLWithPath: directory))
+        print("Meeting saved in Gateway archive and read back. Recording preserved.")
+    }
+}
+
+struct VerifyAudioRetention: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "verify-audio-retention", abstract: "Verify saved transcript, notes and audio coverage, then delete the finished raw tracks. Never starts capture or contacts the Gateway.")
+    @Option var directory: String
+    mutating func run() throws {
+        let count = try AudioRetention.deleteAfterVerification(URL(fileURLWithPath: directory))
+        print("Verified transcript and notes; removed \(count) audio track(s).")
+    }
+}
+
+struct NameRecordingFolder: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "name-recording-folder", abstract: "Add an evidenced meeting title to a finished recording folder, preserving its archive identity.")
+    @Option var directory: String
+    mutating func run() throws { print(try RecordingFolders.renameFinished(URL(fileURLWithPath: directory)).path) }
+}
+
+struct NameNotesFolder: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "name-notes-folder", abstract: "Clean an existing generated notes folder name using its saved receipt. Never contacts the Gateway.")
+    @Option var directory: String
+    mutating func run() throws { print(try MeetingDocuments.renameExisting(recording: URL(fileURLWithPath: directory), root: MeetingNotesSettings.folder).path) }
+}
+
+struct CaptureFixture: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "capture-fixture", abstract: "Explicitly start a bounded synthetic capture test. Captures microphone and global system audio.")
+    @Option var seconds: Int = 10
+    @Option var out: String
+    @MainActor mutating func run() async throws {
+        guard seconds > 0 && seconds <= 120 else { throw ValidationError("Seconds must be 1 to 120") }
+        guard let lock = try AppRunLock.acquire() else { throw ValidationError("Stop the helper before the capture diagnostic. Capture remains off.") }
+        setenv("OPENCLAW_TEAMS_CAPTURE_FIXTURE", "1", 1)
+        let session = try RecordingSession(root: URL(fileURLWithPath: out))
+        try await session.start()
+        let metaURL = session.dir.appendingPathComponent("meta.json")
+        var initialMeta = try JSONSerialization.jsonObject(with: Data(contentsOf: metaURL)) as? [String: Any] ?? [:]
+        initialMeta["fixture"] = true
+        initialMeta["capture_scope"] = "global_system_fixture"
+        try JSONSerialization.data(withJSONObject: initialMeta).write(to: metaURL, options: .atomic)
+        FileHandle.standardOutput.write(Data("START \(session.dir.path)\n".utf8))
+        for _ in 0..<seconds { try await Task.sleep(for: .seconds(1)); session.checkpoint() }
+        await session.stopAsync()
+        var meta = try JSONSerialization.jsonObject(with: Data(contentsOf: metaURL)) as? [String: Any] ?? [:]
+        meta["fixture"] = true
+        meta["capture_scope"] = "global_system_fixture"
+        try JSONSerialization.data(withJSONObject: meta).write(to: metaURL, options: .atomic)
+        print("STOP \(session.dir.path)")
+        withExtendedLifetime(lock) {}
+    }
+}
+
+struct RecoverSessions: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "recover-sessions", abstract: "Recover pending recordings under an exclusive helper lock. Fails if a helper is running.")
+    @Option var out: String
+    mutating func run() async throws {
+        guard let lock = try AppRunLock.acquire() else { throw ValidationError("Stop the helper before recovery. A capture or helper is active.") }
+        let root = URL(fileURLWithPath: out)
+        let coordinator = TranscriptionCoordinator()
+        let entries = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+        for dir in entries {
+            let metaURL = dir.appendingPathComponent("meta.json")
+            guard let data = try? Data(contentsOf: metaURL), var meta = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+            if meta["status"] as? String == "recording" {
+                meta["status"] = "interrupted"
+                meta["recovery"] = ["last_second_may_be_missing": true, "checkpoint_at": meta["checkpoint_at"] ?? NSNull()]
+                try JSONSerialization.data(withJSONObject: meta).write(to: metaURL, options: .atomic)
+            }
+            if !FileManager.default.fileExists(atPath: dir.appendingPathComponent("transcript.json").path) {
+                guard let kind = TranscriptionEngineKind(rawValue: meta["backend"] as? String ?? "parakeet") else { throw ValidationError("Unknown backend. Recording preserved.") }
+                do { try await coordinator.transcribe(dir, engineOverride: kind, offline: kind == .parakeet) }
+                catch { print("Recovery failed for \(dir.lastPathComponent): \(error). Recording preserved.") }
+            }
+        }
+        withExtendedLifetime(lock) {}
+        print("Recovery scan complete on \(ProcessInfo.processInfo.hostName).")
+    }
+}

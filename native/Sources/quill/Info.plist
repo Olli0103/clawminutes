@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>ocmh</string>
+	<key>CFBundleExecutable</key>
+	<string>ocmh</string>
+	<key>CFBundleIdentifier</key>
+	<string>ai.openclaw.teams-transcribe</string>
+	<key>CFBundleName</key>
+	<string>ocmh</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.2.5</string>
+	<key>CFBundleVersion</key>
+	<string>7</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>15.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>ocmh records Teams audio after you choose Start. Transcription runs on this Mac with Parakeet or at ElevenLabs when selected.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>ocmh records your microphone after you choose Start. Transcription runs on this Mac with Parakeet or at ElevenLabs when selected.</string>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+</dict>
+</plist>
