@@ -15,9 +15,9 @@ jobs:
       - run: npm install --ignore-scripts --package-lock=false --no-audit --no-fund
       - run: npm test
   native-core:
-    runs-on: macos-15
+    runs-on: xcode-27
     env:
-      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      DEVELOPER_DIR: /Applications/Xcode_27.2_beta.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
       - run: swift --version

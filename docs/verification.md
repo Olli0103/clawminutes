@@ -15,6 +15,7 @@ ClawMinutes is an experimental source release. These observations come from deve
 
 ## Limits
 
+- Native source builds currently require Xcode 27.2 beta with Swift 6.4. Stable Xcode 16.4 and 26.3 failed clean builds.
 - The archive adapter supports only OpenClaw 2026.9.7 and uses an internal store interface. Other versions fail closed.
 - Meeting titles, call clocks, and participant lists depend on available Teams UI evidence. Observations are partial. A stale title must not be treated as evidence of the current call.
 - Unknown speaker labels remain when identity evidence is absent or ambiguous. Acoustic clusters and roster membership do not establish identity.
