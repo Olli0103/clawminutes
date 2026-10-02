@@ -120,9 +120,10 @@ Removal preserves recordings and configuration. Remove the Gateway plugin separa
 
 ## Development
 
-The JavaScript contract tests need Node.js 24 or later and do not require a running Gateway:
+The JavaScript contract tests need Node.js 24 or later and the development SDK. They do not require a running Gateway. This development dependency is separate from the installed recording helper:
 
 ```sh
+npm install --ignore-scripts --package-lock=false
 npm test
 ```
 
