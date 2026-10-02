@@ -31,7 +31,7 @@ flowchart LR
 
 This is an experimental source release. Local recording, transcription, Gateway note generation, and archive readback have been exercised on real calls. Participant coverage and microphone reliability still have limitations. See [verification and limits](docs/verification.md).
 
-The recording helper requires Apple Silicon, macOS 15 or later, Microsoft Teams, and microphone, Screen & System Audio Recording, and Accessibility permissions. Building requires Xcode with Swift 6 support, Python 3, and `cloudflared`.
+The recording helper requires Apple Silicon, macOS 15 or later, Microsoft Teams, and microphone, Screen & System Audio Recording, and Accessibility permissions. Building requires Xcode 26.3 or later, Python 3, and `cloudflared`.
 
 The Gateway plugin requires Node.js 24 or later and **OpenClaw 2026.9.7**. The Meetings archive adapter currently uses that version's internal store API and rejects other versions. This is a compatibility constraint, not a promise of support for every OpenClaw release.
 
@@ -49,7 +49,7 @@ npm run pack:helper
 npm pack
 ```
 
-Use an Xcode installation as your active developer directory. A command-line-tools-only installation may be insufficient for this macOS app.
+Use Xcode 26.3 or later as your active developer directory. CI selects Xcode 26.3 explicitly. Xcode 16.4's Swift 6.1 compiler rejects actor-isolated Accessibility code and encountered a compiler crash in the clean build. A command-line-tools-only installation is insufficient for this macOS app.
 
 `local-signing.py` creates a private certificate for your local builds. Packaging reuses it so helper updates retain the same signing identity. Keep its signing directory private. You can instead provide `OPENCLAW_TEAMS_SIGNING_IDENTITY` and `OPENCLAW_TEAMS_SIGNING_KEYCHAIN`. A build without an available identity is signed ad hoc and may need new permission grants after updates. Local signing is not Apple Developer ID signing or notarization.
 

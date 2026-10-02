@@ -16,6 +16,9 @@ jobs:
       - run: npm test
   native-core:
     runs-on: macos-15
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
+      - run: swift --version
       - run: swift test --package-path native -j 4 --filter 'MeetingNotesTests|RecordingIdentityTests|AudioRetentionTests|GatewayArchiveTests|MenuPresentationTests'
