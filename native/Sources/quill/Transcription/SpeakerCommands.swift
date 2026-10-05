@@ -24,7 +24,7 @@ struct Transcribe: AsyncParsableCommand {
         }
         if offline { ModelHub.offlineMode = true }
         let original = URL(fileURLWithPath: (recording as NSString).expandingTildeInPath).standardizedFileURL
-        _ = try SessionMeta.read(from: original)
+        let sessionMeta = try SessionMeta.read(from: original)
         let dir: URL
         let fm = FileManager.default
         if let output {
@@ -34,7 +34,7 @@ struct Transcribe: AsyncParsableCommand {
             for file in ["meta.json", "speaker-observations.jsonl", "participants.json"] where fm.fileExists(atPath: original.appendingPathComponent(file).path) {
                 try fm.copyItem(at: original.appendingPathComponent(file), to: dir.appendingPathComponent(file))
             }
-            for file in ["mic.caf", "system.caf"] where fm.fileExists(atPath: original.appendingPathComponent(file).path) {
+            for file in sessionMeta.tracks.map(\.file) where fm.fileExists(atPath: original.appendingPathComponent(file).path) {
                 try fm.createSymbolicLink(at: dir.appendingPathComponent(file), withDestinationURL: original.appendingPathComponent(file))
             }
         } else {

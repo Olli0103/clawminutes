@@ -25,6 +25,9 @@ struct RefreshSpeakers: ParsableCommand {
         let fm = FileManager.default
         let directory = URL(fileURLWithPath: (recording as NSString).expandingTildeInPath).standardizedFileURL
         let meta = try SessionMeta.read(from: directory)
+        guard meta.tracks.filter({ $0.source == "system" }).count <= 1 else {
+            throw ValidationError("This capture has recovered audio segments. Run a full transcription preview to refresh their speakers without dropping segments.")
+        }
         guard let track = meta.tracks.first(where: { $0.source == "system" }), let started = meta.audioStartedAt else {
             throw ValidationError("This recording needs a system track and its start timestamp.")
         }

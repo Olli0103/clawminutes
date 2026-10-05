@@ -12,7 +12,8 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
     private var file: AVAudioFile?
     private var destination: URL?
     private let queue = DispatchQueue(label: "ai.openclaw.teams-transcribe.teams-audio")
-    private(set) var firstBufferAt: Date?
+    let progress = CaptureProgress()
+    var firstBufferAt: Date? { progress.snapshot.firstWrite }
     private(set) var isRecording = false
 
     func start(writingTo url: URL) async throws {
@@ -39,7 +40,7 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
         config.minimumFrameInterval = CMTime(seconds: 1, preferredTimescale: 1)
         config.queueDepth = 3
         destination = url
-        firstBufferAt = nil
+        progress.reset()
         let capture = SCStream(filter: filter, configuration: config, delegate: self)
         try capture.addStreamOutput(self, type: .audio, sampleHandlerQueue: queue)
         stream = capture
@@ -62,10 +63,12 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
         isRecording = false
     }
     func stream(_ stream: SCStream, didStopWithError error: Error) {
+        guard self.stream === stream else { return }
+        progress.failed("stream_stopped")
         FileHandle.standardError.write(Data("Teams audio capture stopped: \(error.localizedDescription)\n".utf8))
     }
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of outputType: SCStreamOutputType) {
-        guard outputType == .audio, CMSampleBufferDataIsReady(sampleBuffer), let destination,
+        guard self.stream === stream, outputType == .audio, CMSampleBufferDataIsReady(sampleBuffer), let destination,
               let description = CMSampleBufferGetFormatDescription(sampleBuffer) else { return }
         let format = AVAudioFormat(cmAudioFormatDescription: description)
         let buffers = AudioBufferList.allocate(maximumBuffers: 2)
@@ -76,7 +79,6 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
             blockBufferAllocator: kCFAllocatorDefault, blockBufferMemoryAllocator: kCFAllocatorDefault,
             flags: UInt32(kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment), blockBufferOut: &retained)
         guard status == noErr, let pcm = AVAudioPCMBuffer(pcmFormat: format, bufferListNoCopy: buffers.unsafePointer, deallocator: nil), pcm.frameLength > 0 else { return }
-        if firstBufferAt == nil { firstBufferAt = Date() }
         do {
             if file == nil {
                 file = try AVAudioFile(forWriting: destination, settings: [AVFormatIDKey: kAudioFormatLinearPCM,
@@ -84,7 +86,11 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
                     AVNumberOfChannelsKey: format.channelCount], commonFormat: format.commonFormat, interleaved: format.isInterleaved)
             }
             try file?.write(from: pcm)
+            progress.wrote(frames: Int64(pcm.frameLength), sampleRate: format.sampleRate)
             withExtendedLifetime(retained) {}
-        } catch { FileHandle.standardError.write(Data("Teams audio write failed: \(error.localizedDescription)\n".utf8)) }
+        } catch {
+            progress.failed("write_failed")
+            FileHandle.standardError.write(Data("Teams audio write failed: \(error.localizedDescription)\n".utf8))
+        }
     }
 }

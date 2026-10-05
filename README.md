@@ -60,7 +60,7 @@ Packaging finds `cloudflared` on `PATH`, or uses `OPENCLAW_TEAMS_CLOUDFLARED`. T
 Copy the npm archive to your existing Gateway host and run there:
 
 ```sh
-openclaw plugins install ./openclaw-teams-transcribe-0.2.5.tgz --accept-capabilities
+openclaw plugins install ./openclaw-teams-transcribe-0.2.6.tgz --accept-capabilities
 openclaw plugins enable teams-transcribe --accept-capabilities
 openclaw teams-transcribe helper-export --output ./ocmh-recording-mac.zip
 ```
@@ -105,6 +105,8 @@ Parakeet keeps audio and speech recognition on the recording Mac. The Gateway re
 If you explicitly select ElevenLabs, audio goes directly from the Mac to ElevenLabs for speech recognition.
 
 Recordings and retry receipts live under `~/.openclaw/teams-transcribe`. Audio is kept by default. Enable **Delete audio after verified notes** to remove finished microphone and system tracks only after verification. Transcripts, notes, metadata, and deletion receipts remain. Deleting audio prevents later retranscription from those tracks.
+
+Capture recovery monitors successful disk writes, including silent PCM. After ten seconds without progress, a failed stream, or a cumulative frame shortfall, it tries a new segment for the affected audio source. It keeps the other source running and limits retries to three with at least fifteen seconds between attempts. The transcript and Gateway notes retain gap evidence. Automatic audio deletion stays off for that recording when a gap is recorded. These protections have deterministic tests; live device-change recovery still needs verification.
 
 ## Update and remove
 

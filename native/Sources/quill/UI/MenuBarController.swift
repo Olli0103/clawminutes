@@ -13,15 +13,21 @@ final class MenuBarController: NSObject, ObservableObject {
     private var templateWindow: NSWindow?
     private var settingsWindow: NSWindow?
     private var controlsWindow: NSWindow?
-    private var pipelineStatus: TranscriptionCoordinator.Status = .idle
-    private var preparing = false
-    private var transcriptionBackend: String?
+    @Published private var pipelineStatus: TranscriptionCoordinator.Status = .idle
+    @Published private var preparing = false
+    @Published private var transcriptionBackend: String?
+    private var renderedIconState: String?
     private var credentialOperationInProgress = false
     private var keyStatusTask: Task<Void, Never>?
     @Published private(set) var recording = false
     @Published private(set) var startingRecording = false
     @Published private(set) var elapsed = "0:00"
     @Published private(set) var detail: String?
+    @Published private(set) var captureWarning: String?
+    func updateCaptureWarning(_ value: String?) {
+        guard captureWarning != value else { return }
+        captureWarning = value; refreshTitle()
+    }
     @Published private(set) var detection = "Checking Teams…"
     @Published private(set) var promptsEnabled = Config.meetingDetection()
     @Published private(set) var accessibilityGranted = AXIsProcessTrusted()
@@ -62,7 +68,10 @@ final class MenuBarController: NSObject, ObservableObject {
         catch { showError("Could not save microphone name: \(error)") }
     }
     @Published private(set) var meetingSubject: String?
-    func setMeetingSubject(_ subject: String?) { meetingSubject = subject; refreshTitle() }
+    func setMeetingSubject(_ subject: String?) {
+        guard meetingSubject != subject else { return }
+        meetingSubject = subject; refreshTitle()
+    }
     var onToggle: (() -> Void)?
     var onOpenFolder: (() -> Void)?
     var onQuit: (() -> Void)?
@@ -299,10 +308,10 @@ final class MenuBarController: NSObject, ObservableObject {
                 gatewayStatus = try await GatewayArchive.status()
             } catch {
                 guard !gatewayCancelled else { return }
-                let missingPlugin = error is GatewayArchive.ConnectionIssue
-                gatewayStatus = missingPlugin ? "Gateway reachable; Teams plugin installation required" : "Gateway connection failed; recordings retained"
+                let unavailableRoute = error is GatewayArchive.ConnectionIssue
+                gatewayStatus = unavailableRoute ? "Teams endpoint unavailable · HTTP 404" : "Gateway connection failed; recordings retained"
                 let failure = NSAlert()
-                failure.messageText = missingPlugin ? "Gateway reached; install the Teams plugin" : "Could not connect to the Gateway"
+                failure.messageText = unavailableRoute ? "Check the Gateway plugin connection" : "Could not connect to the Gateway"
                 failure.informativeText = String(describing: error)
                 failure.runModal()
             }
@@ -350,6 +359,7 @@ final class MenuBarController: NSObject, ObservableObject {
     }
 
     func update(recording: Bool, elapsed: String?) {
+        if recording && !self.recording { captureWarning = nil }
         self.recording = recording
         self.elapsed = elapsed ?? "0:00"
         refreshTitle()
@@ -382,22 +392,31 @@ final class MenuBarController: NSObject, ObservableObject {
     }
 
     func updateDetection(_ text: String, enabled: Bool) {
-        detection = text
-        promptsEnabled = enabled
-        accessibilityGranted = AXIsProcessTrusted()
+        if detection != text { detection = text }
+        if promptsEnabled != enabled { promptsEnabled = enabled }
+        let granted = AXIsProcessTrusted()
+        if accessibilityGranted != granted { accessibilityGranted = granted }
         refreshTitle()
     }
 
     private func refreshTitle() {
+        guard let button = statusItem.button else { return }
         let activity = activity
-        statusItem.button?.title = MenuPresentation.title(style: style, activity: activity, backend: backendTitle, meeting: meetingSubject == nil ? MenuPresentation.callSummary(meetingTitle) : "Teams call")
-        statusItem.button?.contentTintColor = nil
-        statusItem.button?.image = Self.clawMicImage(active: activity.isWorking,
-            appearance: statusItem.button?.effectiveAppearance ?? NSApp.effectiveAppearance,
-            activeColor: recording ? .systemRed : .controlAccentColor)
-        statusItem.button?.toolTip = "ocmh · \(activity.title)\n\(meetingTitle)\n\(backendTitle) · \(modelTitle)\n\(displayedBackend == "parakeet" ? "Speech recognition on " + ProcessInfo.processInfo.hostName : "Speech recognition at ElevenLabs; audio uploaded from this Mac")"
-        statusItem.button?.setAccessibilityLabel("ocmh. \(activity.title). \(meetingTitle). \(backendTitle).")
-        objectWillChange.send()
+        let title = MenuPresentation.title(style: style, activity: activity, backend: backendTitle, meeting: meetingSubject == nil ? MenuPresentation.callSummary(meetingTitle) : "Teams call")
+            + (captureWarning != nil && style == .descriptive ? " · Audio gap" : "")
+        if button.title != title { button.title = title }
+        let appearance = button.effectiveAppearance
+        let state = "\(activity.isWorking)-\(recording)-\(captureWarning != nil)-\(appearance.bestMatch(from: [.aqua, .darkAqua])?.rawValue ?? appearance.name.rawValue)"
+        if renderedIconState != state {
+            renderedIconState = state
+            button.contentTintColor = nil
+            button.image = Self.clawMicImage(active: activity.isWorking, appearance: appearance,
+                                            activeColor: captureWarning != nil ? .systemOrange : (recording ? .systemRed : .controlAccentColor))
+        }
+        let tip = "ocmh · \(activity.title)\n\(meetingTitle)\n\(backendTitle) · \(modelTitle)\n\(displayedBackend == "parakeet" ? "Speech recognition on " + ProcessInfo.processInfo.hostName : "Speech recognition at ElevenLabs; audio uploaded from this Mac")" + (captureWarning.map { "\n" + $0 } ?? "")
+        if button.toolTip != tip { button.toolTip = tip }
+        let label = "ocmh. \(activity.title). \(meetingTitle). \(backendTitle)."
+        if button.accessibilityLabel() != label { button.setAccessibilityLabel(label) }
     }
 
     @objc private func voiceMemoryClicked() {

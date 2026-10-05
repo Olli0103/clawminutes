@@ -24,7 +24,7 @@ signing=['codesign','--force','--sign',identity]
 if keychain: signing += ['--keychain',keychain]
 subprocess.run(signing+[str(app/'Contents/Resources/cloudflared')],check=True)
 info=plistlib.loads((root/'native/Sources/quill/Info.plist').read_bytes())
-info.update(CFBundleIdentifier='ai.openclaw.teams-transcribe',CFBundleShortVersionString=json.loads((root/'package.json').read_text())['version'],CFBundleVersion=info['CFBundleVersion'],CFBundleIconFile='ocmh')
+info.update(CFBundleIdentifier='ai.openclaw.teams-transcribe',CFBundleShortVersionString=json.loads((root/'package.json').read_text())['version'],CFBundleVersion=json.loads((root/'package.json').read_text())['version'],CFBundleIconFile='ocmh')
 with tempfile.TemporaryDirectory() as temporary:
     icons=pathlib.Path(temporary)/'ocmh.iconset'
     icons.mkdir()

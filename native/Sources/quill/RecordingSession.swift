@@ -7,12 +7,16 @@ final class RecordingSession {
     private(set) var dir: URL
     private let recordingID: String
     let startedAt = Date()
-    var audioStartedAt: Date {
-        [mic.firstBufferAt, system.firstBufferAt].compactMap { $0 }.min() ?? startedAt
-    }
+    var audioStartedAt: Date { startedAt }
 
     private let mic = MicRecorder()
     private let system = SystemAudioRecorder()
+    private lazy var capture = CaptureRecovery(origin: startedAt.timeIntervalSince1970)
+    private var healthTask: Task<Void, Never>?
+    private var closing = false
+    private var hasStarted = false
+    private var requestedEnd: Date?
+    private(set) var captureWarning: String?
     private let localSpeakerName = Config.localSpeakerName()
     private let sharedMicrophone = Config.sharedMicrophone()
     private let selectedBackend = Config.transcriptionEngine()
@@ -29,6 +33,13 @@ final class RecordingSession {
         meta["note_template"] = noteTemplate.json
         meta["recording_id"] = recordingID
         if let meetingContext { meta["meeting_context"] = meetingContext.json }
+        // Keep all segment clocks in the same fixed session timebase.
+        meta["audio_started_at"] = startedAt.timeIntervalSince1970
+        meta["start_offset_ms"] = Dictionary(uniqueKeysWithValues: ["mic", "system"].map { source in
+            (source, capture.segments.first(where: { $0.source == source })?.offset_ms ?? 0)
+        })
+        meta["capture_segments"] = (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(capture.segments))) ?? []
+        meta["capture_gaps"] = (try? JSONSerialization.jsonObject(with: JSONEncoder().encode(capture.gaps))) ?? []
     }
     private let fixture = ProcessInfo.processInfo.environment["OPENCLAW_TEAMS_CAPTURE_FIXTURE"] == "1"
     private var seenCaptions: Set<String> = []
@@ -93,6 +104,8 @@ final class RecordingSession {
         try FileManager.default.createDirectory(at: candidate, withIntermediateDirectories: true)
         dir = candidate
         recordingID = candidate.lastPathComponent
+        capture.begin(source: "mic", file: "mic.caf", at: startedAt)
+        capture.begin(source: "system", file: "system.caf", at: startedAt)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
         var initial: [String: Any] = ["started": ISO8601DateFormatter().string(from: startedAt), "audio_started_at": startedAt.timeIntervalSince1970, "backend": selectedBackend, "notes_mode": notesMode, "status": "recording", "files": ["mic": "mic.caf", "system": "system.caf"], "start_offset_ms": ["mic": 0, "system": 0]]
         addMeetingMetadata(&initial)
@@ -123,6 +136,8 @@ final class RecordingSession {
                 guard mic.hasAudioFrames else {
                     throw TranscriptionFailure("The microphone produced no audio. Check the input device in macOS Sound settings, then try Start again. The attempted capture is preserved.")
                 }
+                hasStarted = true
+                checkpoint()
             }
             catch { mic.stop(); await system.stopAsync(); throw error }
         } catch {
@@ -144,17 +159,62 @@ final class RecordingSession {
         return !["mic.caf", "system.caf"].contains { FileManager.default.fileExists(atPath: dir.appendingPathComponent($0).path) }
     }
 
-    func checkpoint() {
+    @MainActor func checkpoint() {
+        capture.observe(source: "mic", progress: mic.progress.snapshot)
+        capture.observe(source: "system", progress: system.progress.snapshot)
+        writeCheckpoint()
+        guard hasStarted, !closing, healthTask == nil else { return }
+        healthTask = Task { [weak self] in
+            guard let self else { return }
+            defer { healthTask = nil }
+            await checkCaptureHealth()
+        }
+    }
+
+    private func writeCheckpoint() {
         let micStart = mic.firstBufferAt ?? startedAt
         let systemStart = system.firstBufferAt ?? startedAt
         let earliest = min(micStart, systemStart)
-        var meta: [String: Any] = ["started": ISO8601DateFormatter().string(from: startedAt), "audio_started_at": earliest.timeIntervalSince1970, "backend": selectedBackend, "notes_mode": notesMode, "status": "recording", "checkpoint_at": Date().timeIntervalSince1970, "files": ["mic": "mic.caf", "system": "system.caf"], "start_offset_ms": ["mic": Int(micStart.timeIntervalSince(earliest)*1000), "system": Int(systemStart.timeIntervalSince(earliest)*1000)], "shared_microphone": sharedMicrophone]
+        var meta: [String: Any] = ["started": ISO8601DateFormatter().string(from: startedAt), "audio_started_at": earliest.timeIntervalSince1970, "backend": selectedBackend, "notes_mode": notesMode, "status": "recording", "checkpoint_at": Date().timeIntervalSince1970, "files": ["mic": "mic.caf", "system": "system.caf"], "start_offset_ms": ["mic": Int(micStart.timeIntervalSince(startedAt)*1000), "system": Int(systemStart.timeIntervalSince(startedAt)*1000)], "shared_microphone": sharedMicrophone]
         addMeetingMetadata(&meta)
         if fixture { meta["fixture"] = true; meta["capture_scope"] = "global_system_fixture" }
         if let data = try? JSONSerialization.data(withJSONObject: meta) { try? data.write(to: dir.appendingPathComponent("meta.json"), options: .atomic) }
     }
 
+    @MainActor private func checkCaptureHealth() async {
+        for source in ["mic", "system"] {
+            guard !closing, !Task.isCancelled else { return }
+            let progress = source == "mic" ? mic.progress.snapshot : system.progress.snapshot
+            guard capture.problem(source: source, progress: progress, at: Date()) != nil else { continue }
+            captureWarning = "\(source == "mic" ? "Microphone" : "Teams audio") interrupted. Captured audio is preserved; checking recovery."
+            guard let filename = capture.rotate(source: source, progress: progress, at: Date()) else {
+                captureWarning = "\(source == "mic" ? "Microphone" : "Teams audio") is incomplete. Audio is kept for review."
+                continue
+            }
+            // Persist the old segment before awaiting any capture operation.
+            writeCheckpoint()
+            if source == "mic" { mic.stop() } else { await system.stopAsync() }
+            guard !closing, !Task.isCancelled else { return }
+            capture.begin(source: source, file: filename, at: Date())
+            writeCheckpoint()
+            do {
+                if source == "mic" { try mic.start(writingTo: dir.appendingPathComponent(filename)) }
+                else { try await system.start(writingTo: dir.appendingPathComponent(filename)) }
+                captureWarning = "Audio capture restarted. A gap is marked in the transcript; audio is kept for review."
+            } catch {
+                if source == "mic" { mic.progress.failed("restart_failed") }
+                else { system.progress.failed("restart_failed") }
+                captureWarning = "Audio recovery failed. Captured audio is kept; check the input device and permissions."
+            }
+        }
+        writeCheckpoint()
+    }
+
     @MainActor func stopAsync() async {
+        closing = true
+        requestedEnd = Date()
+        healthTask?.cancel()
+        await healthTask?.value
         mic.stop()
         await system.stopAsync()
         stop()
@@ -162,10 +222,14 @@ final class RecordingSession {
 
     /// Stop both tracks and write meta.json.
     func stop() {
+        closing = true
+        healthTask?.cancel()
         mic.stop()
         system.stop()
 
-        let ended = Date()
+        let ended = requestedEnd ?? Date()
+        capture.finish(source: "mic", progress: mic.progress.snapshot, at: ended)
+        capture.finish(source: "system", progress: system.progress.snapshot, at: ended)
         let iso = ISO8601DateFormatter()
 
         // The tracks don't start on the same buffer; record how far each
@@ -173,7 +237,7 @@ final class RecordingSession {
         let micStart = mic.firstBufferAt ?? startedAt
         let systemStart = system.firstBufferAt ?? startedAt
         let earliest = min(micStart, systemStart)
-        roster?.audio_started_at = earliest.timeIntervalSince1970
+        roster?.audio_started_at = startedAt.timeIntervalSince1970
         if let roster, let data = try? JSONEncoder().encode(roster) {
             try? data.write(to: dir.appendingPathComponent("participants.json"), options: .atomic)
         }
@@ -188,8 +252,8 @@ final class RecordingSession {
             "shared_microphone": sharedMicrophone,
             "files": ["mic": "mic.caf", "system": "system.caf"],
             "start_offset_ms": [
-                "mic": Int(micStart.timeIntervalSince(earliest) * 1000),
-                "system": Int(systemStart.timeIntervalSince(earliest) * 1000),
+                "mic": Int(micStart.timeIntervalSince(startedAt) * 1000),
+                "system": Int(systemStart.timeIntervalSince(startedAt) * 1000),
             ],
         ]
         addMeetingMetadata(&meta)

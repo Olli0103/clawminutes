@@ -167,6 +167,9 @@ actor TranscriptionCoordinator {
                     var trackAnalysis = try await SpeakerDiarizer.analyze(audio, source: track.source,
                                                                          speakerCount: track.source == "system" ? remoteSpeakerCount : nil,
                                                                          captureVoiceSamples: track.source == "system" && Config.voiceMemoryEnabled())
+                    if meta.tracks.filter({ $0.source == track.source }).count > 1 {
+                        trackAnalysis.scopeClusters(to: track.file.replacingOccurrences(of: ".caf", with: ""))
+                    }
                     if let started = meta.audioStartedAt, track.source == "system" {
                         trackAnalysis.named_spans = SpeakerAttribution.nameSpans(turns: trackAnalysis.turns, observations: observations,
                                                                audioStartedAt: started + offset, segments: segments)
@@ -232,10 +235,12 @@ actor TranscriptionCoordinator {
             speaker_detection: speakerStatus,
             participant_roster: roster
         )
+        var output = transcript
+        output.capture_gaps = meta.captureGaps.isEmpty ? nil : meta.captureGaps
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(analysis).write(to: dir.appendingPathComponent("speaker-analysis.json"), options: .atomic)
-        try transcript.write(to: dir)
+        try output.write(to: dir)
         log(dir, "done — \(merged.count) segments")
     }
 
@@ -314,6 +319,7 @@ struct SessionMeta {
     let localSpeakerName: String?
     let sharedMicrophone: Bool
     var participantRoster: ParticipantRoster? = nil
+    var captureGaps: [CaptureGap] = []
 
     enum MetaError: Error, CustomStringConvertible {
         case unreadable(URL)
@@ -337,17 +343,36 @@ struct SessionMeta {
         // tracks start within tens of milliseconds of each other anyway.
         let offsets = json["start_offset_ms"] as? [String: Int] ?? [:]
         var tracks: [Track] = []
-        if let mic = files["mic"] {
-            tracks.append(Track(file: mic, speaker: "me", offsetMs: offsets["mic"] ?? 0))
-        }
-        if let system = files["system"] {
-            tracks.append(Track(file: system, speaker: "them", offsetMs: offsets["system"] ?? 0))
+        if let segments = json["capture_segments"] as? [[String: Any]] {
+            guard !segments.isEmpty, segments.count <= 16 else { throw MetaError.unreadable(url) }
+            var names = Set<String>()
+            for segment in segments {
+                guard let source = segment["source"] as? String, ["mic", "system"].contains(source),
+                      let file = segment["file"] as? String, validTrackFile(file), names.insert(file).inserted,
+                      let offset = segment["offset_ms"] as? Int, offset >= 0 else { throw MetaError.unreadable(url) }
+                // A cleanly stopped segment with no written frames contains no speech.
+                // Interrupted sessions still inspect their PCM files rather than trust a stale checkpoint.
+                if json["status"] as? String == "stopped", segment["frames_written"] as? Int == 0 { continue }
+                tracks.append(Track(file: file, speaker: source == "mic" ? "me" : "them", offsetMs: offset))
+            }
+        } else {
+            for source in ["mic", "system"] {
+                if let file = files[source] {
+                    guard validTrackFile(file) else { throw MetaError.unreadable(url) }
+                    tracks.append(Track(file: file, speaker: source == "mic" ? "me" : "them", offsetMs: offsets[source] ?? 0))
+                }
+            }
         }
         let roster = (try? Data(contentsOf: dir.appendingPathComponent("participants.json")))
             .flatMap { try? JSONDecoder().decode(ParticipantRoster.self, from: $0) }
+        let gaps = try json["capture_gaps"].map { try JSONDecoder().decode([CaptureGap].self, from: JSONSerialization.data(withJSONObject: $0)) } ?? []
+        guard gaps.allSatisfy({ ["mic", "system"].contains($0.source) && $0.start_ms >= 0 && $0.end_ms >= $0.start_ms }) else { throw MetaError.unreadable(url) }
         return SessionMeta(tracks: tracks, audioStartedAt: json["audio_started_at"] as? Double,
                            localSpeakerName: SpeakerAttribution.cleanName(json["local_speaker_name"] as? String),
-                           sharedMicrophone: json["shared_microphone"] as? Bool ?? false, participantRoster: roster)
+                           sharedMicrophone: json["shared_microphone"] as? Bool ?? false, participantRoster: roster, captureGaps: gaps)
+    }
+    static func validTrackFile(_ file: String) -> Bool {
+        file.range(of: #"^(mic|system)(-[0-9]+)?\.caf$"#, options: .regularExpression) != nil
     }
 }
 
@@ -382,6 +407,7 @@ struct Transcript: Codable, Sendable {
     var execution_location: String? = nil
     var speaker_detection: [String: String]? = nil
     var participant_roster: ParticipantRoster? = nil
+    var capture_gaps: [CaptureGap]? = nil
 
     /// Write transcript.json and render transcript.md. Both writes are atomic
     /// (temp file + rename), so a partially written transcript never exists on
@@ -397,6 +423,13 @@ struct Transcript: Codable, Sendable {
 
     private func rendered(title: String) -> String {
         var lines = ["# \(title)", "", "engine: \(engine) (\(model))", ""]
+        if let gaps = capture_gaps, !gaps.isEmpty {
+            lines += ["## Capture gaps", "", "Audio is incomplete in these intervals. Missing speech cannot be recovered from the transcript.", ""]
+            for gap in gaps {
+                lines.append("- \(gap.source): \(Self.clock(gap.start_ms)) to \(Self.clock(gap.end_ms)) · \(gap.reason)")
+            }
+            lines.append("")
+        }
         if let roster = participant_roster, !roster.participants.isEmpty {
             lines += ["## Participants", ""]
             for participant in roster.participants.sorted(by: { $0.name < $1.name }) {

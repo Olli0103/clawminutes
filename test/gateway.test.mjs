@@ -15,3 +15,12 @@ test('Gateway readiness GET does not capture, transcribe or write an archive',as
  await gatewayHandler({})({method:'GET'},response);
  assert.equal(response.code,200);assert.equal(response.body.rawAudioAccepted,false);
 });
+
+test('capture gaps stay text-only and reject arbitrary evidence',()=>{
+ const gap={source:'mic',start_ms:10000,end_ms:20000,reason:'buffers_stalled'};
+ const payload={...envelope,transcript:{...envelope.transcript,capture_gaps:[gap]}};
+ assert.deepEqual(validateEnvelope(payload).transcript.capture_gaps,[gap]);
+ for(const invalid of [{...gap,file:'/private/mic.caf'},{...gap,source:'unknown'}, {...gap,end_ms:1}, {...gap,reason:'invented'}, {...gap,audio:'blob'}]){
+  assert.throws(()=>validateEnvelope({...payload,transcript:{...payload.transcript,capture_gaps:[invalid]}}),/capture gap/);
+ }
+});

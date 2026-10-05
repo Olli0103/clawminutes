@@ -92,6 +92,12 @@ final class AudioRetentionTests: XCTestCase {
         try change(dir, file: "meta.json", key: "meeting_context", value: ["ended_observed_at": 1790935000.0])
         XCTAssertThrowsError(try AudioRetention.deleteAfterVerification(dir, measure: { _ in 60 })); assertKept(dir)
     }
+    func testKnownCaptureGapKeepsAudioEvenWhenDurationsAndReceiptsLookComplete() throws {
+        let dir = try fixture(); defer { try? FileManager.default.removeItem(at: dir) }
+        try change(dir, file: "meta.json", key: "capture_gaps", value: [["source": "mic", "start_ms": 10000, "end_ms": 20000, "reason": "buffers_stalled"]])
+        XCTAssertThrowsError(try AudioRetention.deleteAfterVerification(dir, measure: { _ in 60 }))
+        assertKept(dir)
+    }
     func testProductionAudioProbeAcceptsMatchingPCMTracks() throws {
         let dir = try fixture(); defer { try? FileManager.default.removeItem(at: dir) }
         let format = AVAudioFormat(standardFormatWithSampleRate: 24000, channels: 1)!

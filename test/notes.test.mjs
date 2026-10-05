@@ -38,3 +38,15 @@ test('canonical SDK readback uses the returned summary wrapper and compares gene
  assert.throws(()=>assertArchiveReadback(record,[{...rows[0],speaker:{label:'Invented name'}}],{summary:record.summary,markdown:'saved'}),/differs/);
  assert.throws(()=>assertArchiveReadback(record,[...rows,rows[0]],{summary:record.summary,markdown:'saved'}),/differs/);
 });
+
+test('AI notes and both exports explicitly retain missing capture intervals',async()=>{
+ const gaps=[{source:'system',start_ms:10000,end_ms:20000,reason:'buffers_stalled'}];
+ const record=meetingRecord(meta,{...transcript,capture_gaps:gaps},'teams-gap');
+ let request;
+ await generateNotes(record,meta,async value=>{request=value;return {text:JSON.stringify({sections:[{title:'Decisions',body:'- needs_evidence'}]}),provider:'fixture',model:'test'};});
+ assert.deepEqual(JSON.parse(request.user).facts.captureGaps,gaps);
+ assert.match(request.system,/speech is missing/);
+ for(const text of [documents(record).notesMarkdown,documents(record).transcriptMarkdown]){
+  assert.match(text,/## Capture gaps/);assert.match(text,/system: 10000 to 20000 ms/);
+ }
+});

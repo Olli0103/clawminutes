@@ -10,7 +10,7 @@ export function validateEnvelope(value){
   if(typeof value.recordingId!=='string'||!/^[-\w.]{1,128}$/.test(value.recordingId))throw Error('Invalid recording identity');
   const t=value.transcript,m=value.meta;
   if(!m || !t || typeof m!=='object'||typeof t!=='object'||Array.isArray(m)||Array.isArray(t))throw Error('Invalid transcript metadata');
-  if(Object.keys(m).some(k=>!['started','ended','audio_started_at','status','fixture','notes_mode','note_template','meeting_context','participants'].includes(k))||Object.keys(t).some(k=>!['engine','model','created_at','execution_machine','execution_location','segments'].includes(k)))throw Error('Unexpected metadata field. Raw audio is forbidden.');
+  if(Object.keys(m).some(k=>!['started','ended','audio_started_at','status','fixture','notes_mode','note_template','meeting_context','participants'].includes(k))||Object.keys(t).some(k=>!['engine','model','created_at','execution_machine','execution_location','segments','capture_gaps'].includes(k)))throw Error('Unexpected metadata field. Raw audio is forbidden.');
   if(!m || !t || !['parakeet','elevenlabs'].includes(t.engine) || !['parakeet-tdt-0.6b-v3-coreml','scribe_v2'].includes(t.model))throw Error('Invalid STT provenance');
   if(!Number.isFinite(m.audio_started_at)||typeof m.started!=='string'||!Number.isFinite(Date.parse(m.started)))throw Error('Invalid recording clock');
   for(const key of ['ended'])if(m[key]!==undefined && (typeof m[key]!=='string'||!Number.isFinite(Date.parse(m[key]))))throw Error('Invalid recording end clock');
@@ -25,6 +25,14 @@ export function validateEnvelope(value){
     for(const key of ['speaker','source','speaker_name','attribution'])if(segment[key]!==undefined&&(typeof segment[key]!=='string'||segment[key].length>256))throw Error('Invalid utterance metadata');
     if(!Number.isInteger(segment.start_ms)||!Number.isInteger(segment.end_ms)||segment.start_ms<0||segment.end_ms<segment.start_ms)throw Error('Invalid utterance clock');
   }
+  if(t.capture_gaps!==undefined){
+    if(!Array.isArray(t.capture_gaps)||t.capture_gaps.length>32)throw Error('Invalid capture gaps');
+    for(const gap of t.capture_gaps){
+      if(!gap||typeof gap!=='object'||Array.isArray(gap)||Object.keys(gap).some(k=>!['source','start_ms','end_ms','reason'].includes(k))||
+         !['mic','system'].includes(gap.source)||!['capture_failed','buffers_stalled','frame_coverage_shortfall','incomplete_at_stop'].includes(gap.reason)||
+         !Number.isSafeInteger(gap.start_ms)||!Number.isSafeInteger(gap.end_ms)||gap.start_ms<0||gap.end_ms<gap.start_ms||gap.end_ms>7*24*3600*1000)throw Error('Invalid capture gap evidence');
+    }
+  }
   if(t.engine==='parakeet' && t.execution_location!=='recording_mac')throw Error('Local only must execute on the recording Mac');
   if(t.engine==='parakeet' && t.model!=='parakeet-tdt-0.6b-v3-coreml')throw Error('Local backend/model mismatch');
   if(t.engine==='elevenlabs' && t.model!=='scribe_v2')throw Error('Cloud backend/model mismatch');
@@ -34,7 +42,7 @@ export function validateEnvelope(value){
   if(m.notes_mode==='ai'&&!m.note_template)throw Error('AI notes require a template');
   if(m.meeting_context!==undefined)validateContext(m.meeting_context);
   if(m.participants!==undefined)validateParticipants(m.participants);
-  return {recordingId:value.recordingId,meta:{started:m.started,ended:m.ended,audio_started_at:m.audio_started_at,status:m.status,fixture:m.fixture===true,notes_mode:m.notes_mode||'simple',note_template:m.note_template,meeting_context:m.meeting_context,participants:m.participants},transcript:{engine:t.engine,model:t.model,created_at:t.created_at,execution_machine:t.execution_machine,execution_location:t.execution_location,segments:t.segments}};
+  return {recordingId:value.recordingId,meta:{started:m.started,ended:m.ended,audio_started_at:m.audio_started_at,status:m.status,fixture:m.fixture===true,notes_mode:m.notes_mode||'simple',note_template:m.note_template,meeting_context:m.meeting_context,participants:m.participants},transcript:{engine:t.engine,model:t.model,created_at:t.created_at,execution_machine:t.execution_machine,execution_location:t.execution_location,segments:t.segments,capture_gaps:t.capture_gaps}};
 }
 export async function saveEnvelope(envelope,{openclawDir,stateDir,complete}={}){
   const e=validateEnvelope(envelope);const id='teams-'+createHash('sha256').update(e.meta.started+'\n'+e.recordingId).digest('hex').slice(0,24);

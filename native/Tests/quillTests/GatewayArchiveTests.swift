@@ -2,6 +2,12 @@ import XCTest
 @testable import quill
 
 final class GatewayArchiveTests: XCTestCase {
+    func testMissingRouteDoesNotAssertPluginInstallationState() {
+        let message = GatewayArchive.ConnectionIssue.routeUnavailable.description
+        XCTAssertTrue(message.contains("HTTP 404"))
+        XCTAssertTrue(message.contains("proxy"))
+        XCTAssertFalse(message.contains("plugin is not installed"))
+    }
     func testRejectsCredentialAndNonTLSURLs() throws {
         for value in ["http://remote.example", "https://user:secret@example.com", "https://example.com/?token=secret", "https://example.com/path", "file:///tmp/audio", "wss://example.com"] {
             XCTAssertThrowsError(try GatewayArchive.origin(value))

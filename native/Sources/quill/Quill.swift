@@ -342,6 +342,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func tick() {
         guard let session else { return }
         session.checkpoint()
+        menuBar.updateCaptureWarning(session.captureWarning)
         menuBar.update(
             recording: true,
             elapsed: Self.format(Date().timeIntervalSince(session.audioStartedAt))

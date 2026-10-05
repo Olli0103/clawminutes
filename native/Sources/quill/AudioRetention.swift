@@ -2,7 +2,7 @@ import Foundation
 import AVFoundation
 import CryptoKit
 
-/// Deletes only the two original tracks after durable text readback and capture checks.
+/// Deletes declared capture files only after durable text readback and complete coverage.
 enum AudioRetention {
     static func explicitlyRemoved(_ dir: URL) -> Bool {
         guard let data = try? Data(contentsOf: dir.appendingPathComponent("audio-retention-receipt.json")),
@@ -41,25 +41,40 @@ enum AudioRetention {
         guard try dir.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true else {
             throw TranscriptionFailure("Retention check rejects linked recording folders")
         }
-        let names = ["mic.caf", "system.caf"]
+        let metaFile = dir.appendingPathComponent("meta.json")
+        let meta = try object(metaFile)
+        let segments = meta["capture_segments"] as? [[String: Any]]
+        let names: [String]
+        if let segments {
+            let files = segments.compactMap { $0["file"] as? String }
+            guard !files.isEmpty, files.count == segments.count, files.count <= 16,
+                  Set(files).count == files.count, files.allSatisfy(SessionMeta.validTrackFile) else {
+                throw TranscriptionFailure("Invalid capture file manifest; audio kept")
+            }
+            names = files
+        } else { names = ["mic.caf", "system.caf"] }
         let marker = dir.appendingPathComponent("audio-retention-receipt.json")
         if fm.fileExists(atPath: marker.path),
            let previous = try? object(marker), previous["policy"] as? String == "delete_after_verification",
            names.allSatisfy({ !fm.fileExists(atPath: dir.appendingPathComponent($0).path) }) { return 0 }
 
-        let metaFile = dir.appendingPathComponent("meta.json")
-        let meta = try object(metaFile)
         guard meta["status"] as? String == "stopped",
               let started = meta["audio_started_at"] as? Double,
               let end = meta["ended"] as? String, let ended = ISO8601DateFormatter().date(from: end),
               ended.timeIntervalSince1970 > started else { throw TranscriptionFailure("Recording is active or incomplete; audio kept") }
         let elapsed = ended.timeIntervalSince1970 - started
+        if let gaps = meta["capture_gaps"] as? [Any], !gaps.isEmpty {
+            throw TranscriptionFailure("Capture gaps require review; audio kept")
+        }
         if let context = meta["meeting_context"] as? [String: Any],
            let observedEnd = context["ended_observed_at"] as? Double, observedEnd < started {
             throw TranscriptionFailure("Stale meeting context; audio kept")
         }
         let transcriptData = try read(dir.appendingPathComponent("transcript.json"))
         let transcript = try JSONDecoder().decode(Transcript.self, from: transcriptData)
+        guard transcript.capture_gaps?.isEmpty ?? true else {
+            throw TranscriptionFailure("Transcript records capture gaps; audio kept")
+        }
         guard !transcript.segments.isEmpty, transcript.segments.contains(where: { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }),
               transcript.segments.allSatisfy({ $0.start_ms >= 0 && $0.end_ms >= $0.start_ms && Double($0.end_ms) <= (elapsed + 5) * 1000 }),
               !readable(try read(dir.appendingPathComponent("transcript.md"))).isEmpty else {
@@ -88,7 +103,9 @@ enum AudioRetention {
             let file = dir.appendingPathComponent(name)
             let values = try file.resourceValues(forKeys: [.isSymbolicLinkKey, .isRegularFileKey])
             guard values.isSymbolicLink != true, values.isRegularFile == true else { throw TranscriptionFailure("Audio track unavailable; audio kept") }
-            let expected = elapsed - Double(offsets[name == "mic.caf" ? "mic" : "system"] ?? 0) / 1000
+            let offset = segments?.first(where: { $0["file"] as? String == name })?["offset_ms"] as? Int
+                ?? offsets[name == "mic.caf" ? "mic" : "system"] ?? 0
+            let expected = elapsed - Double(offset) / 1000
             let actual = try measure(file)
             guard actual.isFinite, expected > 0, actual > 0,
                   abs(actual - expected) <= max(5, expected * 0.01) else {

@@ -24,6 +24,11 @@ struct HelperPopover: View {
                 Text(detail).font(.caption).foregroundStyle(controller.isFailure ? .orange : .secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            if let warning = controller.captureWarning {
+                Label(warning, systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             Button(action: controller.toggleRecording) {
                 HStack {
                     Image(systemName: controller.recording ? "stop.fill" : "mic.fill")
@@ -107,7 +112,7 @@ struct HelperSettings: View {
                     Text("Icon only").tag(MenuBarStyle.iconOnly)
                     Text("Icon and description").tag(MenuBarStyle.descriptive)
                 }.pickerStyle(.segmented)
-                Text("A red dot indicates recording. Hover for status, model, and execution machine.")
+                Text("Red means recording. Orange means an audio gap needs review. Hover for status, model, and execution machine.")
                     .font(.caption).foregroundStyle(.secondary)
             } header: { Text("Appearance") }
             Section {
@@ -160,7 +165,7 @@ struct HelperSettings: View {
                     Button("Choose notes folder…", action: controller.chooseNotesFolder)
                     Button("Open notes folder", action: controller.openNotesFolder)
                 }
-                Text("Year / month / date, title and archive ID. Each meeting contains notes.md, transcript.md and metadata.json.")
+                Text("Year / month / timestamp and meeting title. Each meeting contains notes.md, transcript.md and metadata.json.")
                     .font(.caption).foregroundStyle(.secondary)
                 Toggle("Delete audio after verified notes", isOn: Binding(get: { controller.deletesVerifiedAudio }, set: controller.setAudioRetention))
                 Text("Checks transcript timestamps, saved notes and audio coverage first. Failed or incomplete recordings keep their audio. Transcripts and notes remain.")

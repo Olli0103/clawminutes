@@ -4,8 +4,8 @@ import CryptoKit
 /// Sends a closed text-only envelope. Never reads or sends audio files.
 enum GatewayArchive {
     enum ConnectionIssue: Error, CustomStringConvertible {
-        case pluginMissing
-        var description: String { "The Gateway is reachable, but its Teams transcription plugin is not installed. Recordings stay on this Mac until installation finishes." }
+        case routeUnavailable
+        var description: String { "The Teams transcription endpoint returned HTTP 404. Check the plugin route, enabled state, version, and proxy destination on the Gateway. This response does not establish whether the plugin is installed. Captured audio and transcripts are preserved on this Mac." }
     }
     private static let loginLock = NSLock()
     nonisolated(unsafe) private static var loginProcess: Process?
@@ -80,11 +80,14 @@ enum GatewayArchive {
 
     static func envelope(meta: [String: Any], transcript: [String: Any], recordingID: String) throws -> Data {
         let metaKeys = ["started", "ended", "audio_started_at", "status", "fixture", "notes_mode", "note_template", "meeting_context", "participants"]
-        let transcriptKeys = ["engine", "model", "created_at", "execution_machine", "execution_location", "segments"]
+        let transcriptKeys = ["engine", "model", "created_at", "execution_machine", "execution_location", "segments", "capture_gaps"]
         let segmentKeys: Set<String> = ["speaker", "start_ms", "end_ms", "text", "source", "speaker_name", "attribution"]
         var text = transcript.filter { transcriptKeys.contains($0.key) }
         guard let segments = text["segments"] as? [[String: Any]] else { throw TranscriptionFailure("Transcript has no utterances") }
         text["segments"] = segments.map { $0.filter { segmentKeys.contains($0.key) } }
+        if let gaps = text["capture_gaps"] as? [[String: Any]] {
+            text["capture_gaps"] = gaps.map { $0.filter { ["source", "start_ms", "end_ms", "reason"].contains($0.key) } }
+        }
         return try JSONSerialization.data(withJSONObject: ["recordingId": recordingID, "meta": meta.filter { metaKeys.contains($0.key) }, "transcript": text])
     }
 
@@ -94,7 +97,7 @@ enum GatewayArchive {
         request.timeoutInterval = body == nil ? 30 : 150
         request.httpMethod = body == nil ? "GET" : "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("OpenClawTeamsTranscription/0.2.5 CFNetwork", forHTTPHeaderField: "User-Agent")
+        request.setValue("ClawMinutes/0.2.6 CFNetwork", forHTTPHeaderField: "User-Agent")
         if config["authentication"] == "cloudflare" {
             let token = try await Task.detached { try cloudflareToken(url) }.value
             request.setValue("CF_Authorization=" + token, forHTTPHeaderField: "Cookie")
@@ -117,7 +120,7 @@ enum GatewayArchive {
                let message = result["error"] as? String, !message.isEmpty, message.count <= 512 {
                 throw TranscriptionFailure(message)
             }
-            if http.statusCode == 404 { throw ConnectionIssue.pluginMissing }
+            if http.statusCode == 404 { throw ConnectionIssue.routeUnavailable }
             if [301, 302, 303, 307, 308, 401, 403].contains(http.statusCode) { throw TranscriptionFailure("Gateway sign-in required or access denied. Recording preserved.") }
             throw TranscriptionFailure("Gateway plugin unavailable or incompatible, HTTP \(http.statusCode). Recording preserved.")
         }

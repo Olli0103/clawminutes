@@ -105,7 +105,7 @@ def main():
         raise RuntimeError('Helper launch failed. Previous application restored. Recordings preserved.') from None
     if previous.exists(): shutil.rmtree(previous)
     binary = app/'Contents/MacOS/ocmh'
-    receipt = {'pluginOwner': 'teams-transcribe', 'version': '0.2.5', 'helperSHA256': hashlib.sha256(binary.read_bytes()).hexdigest(),
+    receipt = {'pluginOwner': 'teams-transcribe', 'version': plistlib.loads((app/'Contents/Info.plist').read_bytes())['CFBundleShortVersionString'], 'helperSHA256': hashlib.sha256(binary.read_bytes()).hexdigest(),
                'gateway': settings.get('gateway', {}), 'localOpenClawRequired': False, 'launched': not args.no_launch}
     (root/'installation-receipt.json').write_text(json.dumps(receipt, indent=2))
     print(json.dumps(receipt))

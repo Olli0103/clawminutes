@@ -33,13 +33,9 @@ final class MicRecorder: @unchecked Sendable {
     private(set) var isRecording = false
     /// Wall-clock time of the first captured buffer — the track's true start,
     /// used to offset-align the two tracks' transcript timestamps.
-    private(set) var firstBufferAt: Date?
-    private let frameLock = NSLock()
-    private var framesWritten: Int64 = 0
-    var hasAudioFrames: Bool { frameLock.withLock { framesWritten > 0 } }
-    private func recorded(_ frames: AVAudioFrameCount) {
-        frameLock.withLock { framesWritten += Int64(frames) }
-    }
+    let progress = CaptureProgress()
+    var firstBufferAt: Date? { progress.snapshot.firstWrite }
+    var hasAudioFrames: Bool { progress.snapshot.frames > 0 }
 
     // Liveness check state (voice-processing path only). Written from the tap
     // callback, read on main when deciding to fall back.
@@ -51,8 +47,7 @@ final class MicRecorder: @unchecked Sendable {
     /// — PCM CAF needs no packet-table finalization, so a crash loses nothing written).
     func start(writingTo url: URL) throws {
         guard !isRecording else { return }
-        frameLock.withLock { framesWritten = 0 }
-        firstBufferAt = nil
+        progress.reset()
         self.url = url
         try attach(voiceProcessing: Config.micVoiceProcessing())
         isRecording = true
@@ -163,7 +158,6 @@ final class MicRecorder: @unchecked Sendable {
         let checkFrames = Int(format.sampleRate)
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
             guard let self, let file = self.file else { return }
-            if self.firstBufferAt == nil { self.firstBufferAt = Date() }
 
             if !self.livenessSettled {
                 let frames = Int(buffer.frameLength)
@@ -184,8 +178,9 @@ final class MicRecorder: @unchecked Sendable {
 
             do {
                 try file.write(from: buffer)
-                self.recorded(buffer.frameLength)
+                self.progress.wrote(frames: Int64(buffer.frameLength), sampleRate: format.sampleRate)
             } catch {
+                self.progress.failed("write_failed")
                 FileHandle.standardError.write(Data("mic track write failed: \(error)\n".utf8))
             }
         }
@@ -203,7 +198,6 @@ final class MicRecorder: @unchecked Sendable {
         }
         input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
             guard let self, let file = self.file else { return }
-            if self.firstBufferAt == nil { self.firstBufferAt = Date() }
             guard let mono = AVAudioPCMBuffer(
                 pcmFormat: monoFormat,
                 frameCapacity: buffer.frameCapacity
@@ -211,8 +205,9 @@ final class MicRecorder: @unchecked Sendable {
             do {
                 try converter.convert(to: mono, from: buffer)
                 try file.write(from: mono)
-                self.recorded(mono.frameLength)
+                self.progress.wrote(frames: Int64(mono.frameLength), sampleRate: monoFormat.sampleRate)
             } catch {
+                self.progress.failed("write_failed")
                 FileHandle.standardError.write(Data("mic track write failed: \(error)\n".utf8))
             }
         }
@@ -229,13 +224,14 @@ final class MicRecorder: @unchecked Sendable {
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
         file = nil
-        firstBufferAt = nil
+        progress.reset()
         if let url {
             try? FileManager.default.removeItem(at: url)
         }
         do {
             try attach(voiceProcessing: false)
         } catch {
+            progress.failed("raw_fallback_failed")
             FileHandle.standardError.write(Data(
                 "mic raw fallback failed: \(error) — session continues without mic track\n".utf8
             ))

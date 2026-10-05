@@ -70,4 +70,24 @@ final class TranscriptionEngineSwitchTests: XCTestCase, @unchecked Sendable {
         } catch { XCTAssertTrue(String(describing: error).contains("test inference failure")) }
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("transcript.json").path))
     }
+
+    func testRecoveredTrackKeepsWallClockOffsetAndEverySegment() async throws {
+        let dir = try session(); defer { try? FileManager.default.removeItem(at: dir) }
+        let meta: [String: Any] = ["files": ["mic": "mic.caf", "system": "system.caf"],
+            "capture_gaps": [["source": "mic", "start_ms": 20000, "end_ms": 30000, "reason": "buffers_stalled"]],
+            "capture_segments": [
+                ["source": "mic", "file": "mic.caf", "offset_ms": 100],
+                ["source": "system", "file": "system.caf", "offset_ms": 200],
+                ["source": "mic", "file": "mic-2.caf", "offset_ms": 30000]]]
+        try JSONSerialization.data(withJSONObject: meta).write(to: dir.appendingPathComponent("meta.json"))
+        try Data().write(to: dir.appendingPathComponent("mic-2.caf"))
+        let engine = StubTranscriptionEngine(.parakeet)
+        let coordinator = TranscriptionCoordinator { _, _ in engine }
+        try await coordinator.transcribe(dir, detectSpeakers: false, engineOverride: .parakeet)
+        let transcript = try JSONDecoder().decode(Transcript.self, from: Data(contentsOf: dir.appendingPathComponent("transcript.json")))
+        XCTAssertEqual(transcript.segments.map(\.start_ms), [600, 700, 30500])
+        XCTAssertEqual(transcript.segments.map(\.source), ["mic", "system", "mic"])
+        XCTAssertEqual(transcript.capture_gaps?.first?.start_ms, 20000)
+        XCTAssertTrue(try String(contentsOf: dir.appendingPathComponent("transcript.md"), encoding: .utf8).contains("## Capture gaps"))
+    }
 }
