@@ -38,7 +38,7 @@
     ],
     "compat": {
       "minGatewayVersion": "2026.9.7",
-      "pluginApi": "2026.9.7"
+      "pluginApi": ">=2026.9.7 <=2026.9.8"
     }
   },
   "peerDependencies": {
