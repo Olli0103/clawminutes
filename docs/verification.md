@@ -71,3 +71,10 @@ Live interrupted/device-change recovery and current Gateway completion/performan
 
 
 A real completed call on 5 October exposed a separate status bug: local Parakeet recognition produced 143 segments, then the unavailable Gateway route returned HTTP 404. The UI called this a processing failure. An isolated real-coordinator regression reproduced that classification. Archive failure now reports `archivePending`, with a Transcript ready title and an explicit connection/retry instruction. Genuine transcription failure retains its own error state. The real call's microphone recovered into a second file; its cumulative frame shortfall marks a conservative timing-review interval, not proof that all speech in the marked span is absent. Audio is preserved.
+
+
+## Version 0.2.10
+
+Capture warnings were previously held only in the running helper's memory. Reopening a meeting with pending archiving could hide its saved timing-review warning. The controls now restore that warning from the meeting's `capture_gaps`. Cumulative frame shortfalls are described as timing uncertainty, without claiming that the whole marked span is missing or that recovery succeeded. A previous meeting cannot override a current recording's warning.
+
+A focused regression reproduced the missing warning before the fix. Native tests cover restoration, active-recording priority, interruption wording, clearing a previous warning for a clean meeting, and preserving a known warning when metadata cannot be read. The focused native suite passes 59 tests; the Gateway suite passes 20. These checks do not establish fresh Gateway deployment or AI notes.

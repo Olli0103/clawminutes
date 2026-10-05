@@ -2,6 +2,29 @@ import XCTest
 @testable import quill
 
 final class MenuPresentationTests: XCTestCase {
+    func testPendingMeetingRestoresItsSavedCaptureReviewWarning() throws {
+        let metadata = Data("{\"capture_gaps\":[{\"source\":\"mic\",\"start_ms\":3459,\"end_ms\":554883,\"reason\":\"frame_coverage_shortfall\"}]}".utf8)
+        let warning = try XCTUnwrap(MenuPresentation.restoredCaptureWarning(recording: false, current: nil, metadata: metadata))
+        XCTAssertTrue(warning.contains("timing uncertainty"))
+        XCTAssertTrue(warning.contains("Audio is retained"))
+        XCTAssertFalse(warning.contains("restarted"))
+    }
+    func testPreviousMeetingCannotOverrideActiveCaptureWarning() {
+        let metadata = Data("{\"capture_gaps\":[{\"source\":\"system\",\"start_ms\":100,\"end_ms\":200,\"reason\":\"buffers_stalled\"}]}".utf8)
+        XCTAssertNil(MenuPresentation.restoredCaptureWarning(recording: true, current: nil, metadata: metadata))
+        XCTAssertEqual(MenuPresentation.restoredCaptureWarning(recording: true, current: "Current microphone interrupted", metadata: metadata), "Current microphone interrupted")
+    }
+    func testSavedInterruptionUsesItsGapEvidenceWithoutClaimingARecovery() throws {
+        let metadata = Data("{\"capture_gaps\":[{\"source\":\"system\",\"start_ms\":100,\"end_ms\":200,\"reason\":\"buffers_stalled\"}]}".utf8)
+        let warning = try XCTUnwrap(MenuPresentation.restoredCaptureWarning(recording: false, current: nil, metadata: metadata))
+        XCTAssertTrue(warning.contains("interrupted"))
+        XCTAssertFalse(warning.contains("restarted"))
+    }
+    func testCleanMeetingClearsPreviousSavedWarningButMissingEvidenceDoesNot() {
+        XCTAssertNil(MenuPresentation.restoredCaptureWarning(recording: false, current: "Previous gap", metadata: Data("{\"capture_gaps\":[]}".utf8)))
+        XCTAssertEqual(MenuPresentation.restoredCaptureWarning(recording: false, current: "Known gap", metadata: nil), "Known gap")
+        XCTAssertEqual(MenuPresentation.restoredCaptureWarning(recording: false, current: "Known gap", metadata: Data("invalid".utf8)), "Known gap")
+    }
     func testActualMicrosoftTeamsWatchingStatusRemainsDetected() {
         let title = MenuPresentation.meetingTitle(promptsEnabled: true, accessibilityGranted: true, detection: "Watching Microsoft Teams in Microsoft Teams")
         XCTAssertEqual(title, "Teams call detected")

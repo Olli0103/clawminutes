@@ -24,6 +24,19 @@ enum HelperActivity: Equatable {
 }
 
 enum MenuPresentation {
+    static func restoredCaptureWarning(recording: Bool, current: String?, metadata: Data?) -> String? {
+        // A pending older meeting must not replace the live capture's warning.
+        guard !recording else { return current }
+        struct Evidence: Decodable { let capture_gaps: [CaptureGap]? }
+        guard let metadata, let evidence = try? JSONDecoder().decode(Evidence.self, from: metadata) else {
+            return current
+        }
+        guard let gaps = evidence.capture_gaps, !gaps.isEmpty else { return nil }
+        if gaps.contains(where: { $0.reason == "frame_coverage_shortfall" || $0.reason == "incomplete_at_stop" }) {
+            return "Audio timing needs review. The transcript marks timing uncertainty after a capture frame shortfall. Audio is retained."
+        }
+        return "Audio capture was interrupted. Review the marked gaps in the transcript. Audio is retained."
+    }
     static func activity(recording: Bool, elapsed: String, status: TranscriptionCoordinator.Status, preparing: Bool = false) -> HelperActivity {
         if recording { return .recording(elapsed) }
         if preparing { return .preparing }

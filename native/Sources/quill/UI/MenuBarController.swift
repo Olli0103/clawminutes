@@ -377,9 +377,11 @@ final class MenuBarController: NSObject, ObservableObject {
         switch status {
         case .transcribing(let name, _), .postprocessing(let name, _), .failed(let name), .archivePending(let name):
             let metaURL = Config.resolveRoot(cliOverride: nil).appendingPathComponent(name).appendingPathComponent("meta.json")
-            if let data = try? Data(contentsOf: metaURL), let meta = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            let data = try? Data(contentsOf: metaURL)
+            if let data, let meta = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                 transcriptionBackend = meta["backend"] as? String
             }
+            captureWarning = MenuPresentation.restoredCaptureWarning(recording: recording, current: captureWarning, metadata: data)
         case .idle: transcriptionBackend = nil
         }
         detail = MenuPresentation.pipelineDetail(status)
