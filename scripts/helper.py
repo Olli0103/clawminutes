@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Lifecycle installer shipped by the teams-transcribe plugin. No OpenClaw CLI."""
-import argparse, hashlib, json, os, pathlib, plistlib, shutil, subprocess, sys, signal
+import argparse, contextlib, fcntl, hashlib, json, os, pathlib, plistlib, shutil, subprocess, sys, signal, time
 
 LABEL = 'ai.openclaw.teams-transcribe'
 NAME = 'ocmh.app'
@@ -16,7 +16,71 @@ def main():
     parser.add_argument('--no-launch', action='store_true')
     args = parser.parse_args()
     if sys.platform != 'darwin': parser.error('The recording helper requires macOS 15 or later.')
-    root = pathlib.Path(os.environ.get('OPENCLAW_TEAMS_HOME', pathlib.Path.home()/'.openclaw/teams-transcribe'))
+    root = pathlib.Path(os.environ.get('OPENCLAW_TEAMS_HOME', pathlib.Path.home()/'.openclaw/teams-transcribe')).expanduser()
+    try:
+        settings = json.loads((root/'config.json').read_text()) if (root/'config.json').exists() else {}
+        if not isinstance(settings, dict): raise ValueError('Configuration must be an object')
+    except (OSError, ValueError):
+        parser.error('Could not verify helper configuration. Helper left running.')
+    if args.action == 'run':
+        perform(args, root, settings, parser)
+    else:
+        with installation_lease(root, settings, parser):
+            perform(args, root, settings, parser)
+
+
+def owned_pids(app):
+    expected = [str(app/'Contents/MacOS'/name) for name in ['ocmh', 'quill']]
+    rows = command('/bin/ps', '-axo', 'pid=,command=').stdout.decode().splitlines()
+    result = []
+    for row in rows:
+        pieces = row.strip().split(None, 1)
+        if len(pieces) == 2 and any(pieces[1] == executable or pieces[1].startswith(executable + ' ') for executable in expected):
+            result.append(int(pieces[0]))
+    return result
+
+
+def check_recording_metadata(root, settings, parser):
+    folders = {root/'recordings'}
+    if settings.get('recordings_dir'):
+        folders.add(pathlib.Path(settings['recordings_dir']).expanduser())
+    for folder in folders:
+        for metadata in folder.glob('*/meta.json'):
+            try:
+                status = json.loads(metadata.read_text())
+                if not isinstance(status, dict): raise ValueError('Metadata must be an object')
+            except (OSError, ValueError):
+                parser.error('Could not verify recording status. Helper left running.')
+            if status.get('status') == 'recording':
+                parser.error('A recording is active or unfinished. Finish or recover it before updating or removing the helper. Recording left running.')
+
+
+@contextlib.contextmanager
+def installation_lease(root, settings, parser):
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    descriptor = os.open(root/'lifecycle.lock', os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(descriptor, 'a+b') as lease:
+        try:
+            fcntl.flock(lease.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            parser.error('Recording, transcription, archiving or another installer is active. Try again after it finishes. Helper left running.')
+        check_recording_metadata(root, settings, parser)
+        # Older helpers cannot participate in this lock. Refuse to interrupt a
+        # running copy whose idle state cannot be established by this protocol.
+        for app in [root/NAME, root/'OpenClaw Teams Transcription.app']:
+            if not app.exists(): continue
+            try:
+                info = plistlib.loads((app/'Contents/Info.plist').read_bytes())
+                if info.get('CFBundleIdentifier') != LABEL: parser.error('An unrelated application occupies the helper path. It was left untouched.')
+                supports_lease = info.get('OCMHUsesLifecycleLock') is True
+            except (OSError, ValueError):
+                parser.error('Could not verify installed helper capabilities. Helper left running.')
+            if not supports_lease and owned_pids(app):
+                parser.error('This running helper predates lifecycle protection. Once recording and transcription finish, quit it before this first protected update or removal.')
+        yield
+
+
+def perform(args, root, settings, parser):
     app, agent = root/NAME, pathlib.Path.home()/'Library/LaunchAgents'/f'{LABEL}.plist'
     legacy = root/'OpenClaw Teams Transcription.app'
     if legacy.exists():
@@ -25,13 +89,21 @@ def main():
     domain = f'gui/{os.getuid()}'
     def stop_owned_app():
         # LaunchServices owns the app process; stop only this exact plugin binary.
-        rows=command('/bin/ps','-axo','pid=,command=').stdout.decode().splitlines()
-        expected=str(app/'Contents/MacOS/ocmh')
-        for row in rows:
-            pieces=row.strip().split(None,1)
-            if len(pieces)==2 and (pieces[1]==expected or pieces[1].startswith(expected+' run')):
-                try: os.kill(int(pieces[0]),signal.SIGTERM)
+        pids = owned_pids(app)
+        for pid in pids:
+            try: os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError: pass
+        deadline = time.monotonic() + 5
+        while pids:
+            remaining = []
+            for pid in pids:
+                try: os.kill(pid, 0); remaining.append(pid)
                 except ProcessLookupError: pass
+            if not remaining: return
+            if time.monotonic() >= deadline:
+                parser.error('The idle helper did not exit. Update stopped; application and recordings preserved.')
+            pids = remaining
+            time.sleep(.05)
 
     if args.action == 'remove':
         command('/bin/launchctl', 'bootout', domain, str(agent), check=False)
@@ -49,19 +121,11 @@ def main():
         print(json.dumps({'running': True, 'pluginOwner': 'teams-transcribe'}))
         return
     base = pathlib.Path(__file__).resolve().parents[1]
-    # Do not replace a running recorder. The unfinished files remain owned by
-    # the current helper until it writes the completed metadata.
-    for metadata in (root/'recordings').glob('*/meta.json'):
-        try: capture_status = json.loads(metadata.read_text()).get('status')
-        except (OSError, ValueError): continue
-        if capture_status == 'recording':
-            parser.error('A recording is active. Finish it before updating the helper. Recording left running.')
     source = base/'helper'/NAME
     if not source.exists(): source = base/NAME
     if not (source/'Contents/MacOS/ocmh').is_file(): parser.error('The plugin-bundled helper is missing.')
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     config = root/'config.json'
-    settings = json.loads(config.read_text()) if config.exists() else {}
     if args.gateway:
         from urllib.parse import urlsplit
         url = urlsplit(args.gateway)
@@ -70,21 +134,17 @@ def main():
         settings['gateway'] = {'url': args.gateway, 'authentication': args.authentication}
     settings.setdefault('recordings_dir', str(root/'recordings'))
     settings.setdefault('transcription', {'enabled': True, 'engine': 'parakeet'})
-    settings.update(speaker_voice_memory=False, auto_meeting_captions=False, post_processing={'mode': 'off'})
+    settings.setdefault('speaker_voice_memory', False)
+    settings.setdefault('auto_meeting_captions', False)
+    settings.setdefault('post_processing', {'mode': 'off'})
     staged = root/(NAME+'.next')
     if staged.exists(): shutil.rmtree(staged)
     shutil.copytree(source, staged)
     command('/usr/bin/codesign', '--verify', '--strict', str(staged))
-    # Recheck after staging and signing, immediately before replacing the running app.
-    for metadata in (root/'recordings').glob('*/meta.json'):
-        try: capture_status = json.loads(metadata.read_text()).get('status')
-        except (OSError, ValueError): parser.error('Could not verify recording status. Helper left running.')
-        if capture_status == 'recording':
-            parser.error('A recording is active. Finish it before updating the helper. Recording left running.')
+    # The exclusive lease also prevents a new native operation after this check.
+    check_recording_metadata(root, settings, parser)
     command('/bin/launchctl', 'bootout', domain, str(agent), check=False)
     stop_owned_app()
-    import time
-    time.sleep(.3)
     previous = root/(NAME+'.previous')
     if previous.exists(): shutil.rmtree(previous)
     if legacy.exists(): shutil.rmtree(legacy)

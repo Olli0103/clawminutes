@@ -115,7 +115,7 @@ final class ParticipantRosterTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("quill-roster-recording-test-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: root) }
-        let session = try RecordingSession(root: root)
+        let session = try RecordingSession(root: root, activityLockPath: root.appendingPathComponent("lifecycle.lock"))
         let time = session.startedAt.timeIntervalSince1970 + 1
         let sample = SpeakerObservation(observed_at: time, meeting_id: "meet", names: [], source: "meeting_roster",
             participants: [.init(name: "Mihai", is_local: false)], participant_count: 2, roster_complete: true)

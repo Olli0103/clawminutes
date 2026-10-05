@@ -47,7 +47,7 @@ final class MeetingNotesTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let time = Date().timeIntervalSince1970
         let context = MeetingContext(meeting_id: "teams:fixture", title: "Portfolio sync", title_source: "teams_window", first_observed_at: time, last_observed_at: time)
-        let session = try RecordingSession(root: root, context: context)
+        let session = try RecordingSession(root: root, context: context, activityLockPath: root.appendingPathComponent("lifecycle.lock"))
         session.checkpoint(); session.stop()
         let json = try JSONSerialization.jsonObject(with: Data(contentsOf: session.dir.appendingPathComponent("meta.json"))) as! [String: Any]
         XCTAssertEqual((json["meeting_context"] as? [String: Any])?["title"] as? String, "Portfolio sync")

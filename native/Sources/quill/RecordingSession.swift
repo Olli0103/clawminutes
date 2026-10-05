@@ -15,6 +15,7 @@ final class RecordingSession {
     private var healthTask: Task<Void, Never>?
     private var closing = false
     private var hasStarted = false
+    private let workLease: HelperWorkLease
     private var requestedEnd: Date?
     private(set) var captureWarning: String?
     private let localSpeakerName = Config.localSpeakerName()
@@ -90,7 +91,8 @@ final class RecordingSession {
 
     /// Create the session folder under `root` (yyyy.MM.dd-HHmm, suffixed on
     /// collision) without starting capture yet.
-    init(root: URL, context: MeetingContext? = nil) throws {
+    init(root: URL, context: MeetingContext? = nil, activityLockPath: URL = HelperWorkLease.path) throws {
+        workLease = try HelperWorkLease.acquire(at: activityLockPath)
         meetingContext = context?.isCurrent(at: startedAt.timeIntervalSince1970) == true ? context : nil
         let cleanSubject = meetingContext.flatMap { TeamsMeetingTitle.clean($0.title) }.map(MeetingDocuments.component) ?? "Meeting"
         let subject = cleanSubject.isEmpty ? "Meeting" : cleanSubject

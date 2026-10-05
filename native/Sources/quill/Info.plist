@@ -13,9 +13,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>0.2.8</string>
+	<string>0.2.9</string>
 	<key>CFBundleVersion</key>
-	<string>0.2.8</string>
+	<string>0.2.9</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>15.0</string>
 	<key>LSUIElement</key>
@@ -26,5 +26,7 @@
 	<string>ocmh records your microphone after you choose Start. Transcription runs on this Mac with Parakeet or at ElevenLabs when selected.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>OCMHUsesLifecycleLock</key>
+	<true/>
 </dict>
 </plist>

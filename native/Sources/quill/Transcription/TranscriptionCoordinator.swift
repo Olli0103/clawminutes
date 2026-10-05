@@ -22,13 +22,16 @@ actor TranscriptionCoordinator {
     private let makeEngine: @Sendable (TranscriptionEngineKind, Bool) -> any TranscriptionEngine
     private var lastFailure: String?
     private var statusHandler: (@Sendable (Status) -> Void)?
+    private let activityLockPath: URL
 
-    init(makeEngine: @escaping @Sendable (TranscriptionEngineKind, Bool) -> any TranscriptionEngine = { kind, offline in
+    init(activityLockPath: URL = HelperWorkLease.path,
+         makeEngine: @escaping @Sendable (TranscriptionEngineKind, Bool) -> any TranscriptionEngine = { kind, offline in
         switch kind {
         case .parakeet: return ParakeetEngine()
         case .elevenLabs: return ElevenLabsEngine(offline: offline)
         }
     }) {
+        self.activityLockPath = activityLockPath
         self.makeEngine = makeEngine
     }
 
@@ -52,6 +55,19 @@ actor TranscriptionCoordinator {
     /// oldest-first is a name sort.
     func resumePending(root: URL) async {
         guard Config.transcriptionEnabled() else { return }
+        var workLease: HelperWorkLease?
+        // The installer can still hold its lease when launchctl starts this
+        // process. Wait briefly so startup recovery is not silently skipped.
+        for _ in 0..<20 {
+            if let acquired = try? HelperWorkLease.acquire(at: activityLockPath) { workLease = acquired; break }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        guard let workLease else {
+            publish(.failed(session: "Pending meeting recovery"))
+            FileHandle.standardError.write(Data("Could not resume pending meetings while helper lifecycle work is active. Files remain pending for the next launch.\n".utf8))
+            return
+        }
+        defer { withExtendedLifetime(workLease) {} }
         guard let entries = try? FileManager.default.contentsOfDirectory(
             at: root, includingPropertiesForKeys: nil
         ) else { return }
@@ -92,6 +108,14 @@ actor TranscriptionCoordinator {
     }
 
     private func drain() async {
+        let workLease: HelperWorkLease
+        do { workLease = try HelperWorkLease.acquire(at: activityLockPath) }
+        catch {
+            draining = false
+            publish(.failed(session: queue.first?.lastPathComponent ?? "Pending meeting"))
+            return // Files remain pending for the next launch; never start inference during replacement.
+        }
+        defer { withExtendedLifetime(workLease) {} }
         while !queue.isEmpty {
             let dir = queue.removeFirst()
             publish(.transcribing(session: dir.lastPathComponent, queued: queue.count))
@@ -123,6 +147,8 @@ actor TranscriptionCoordinator {
 
     func transcribe(_ dir: URL, detectSpeakers: Bool = Config.speakerDetection(), remoteSpeakerCount: Int? = nil,
                     engineOverride: TranscriptionEngineKind? = nil, offline: Bool = false, learnVoiceMemory: Bool = true) async throws {
+        let workLease = try HelperWorkLease.acquire(at: activityLockPath)
+        defer { withExtendedLifetime(workLease) {} }
         let meta = try SessionMeta.read(from: dir)
         // Snapshot the selection for both tracks. Menu changes affect the next job.
         let rawMeta = try JSONSerialization.jsonObject(with: Data(contentsOf: dir.appendingPathComponent("meta.json"))) as? [String: Any]

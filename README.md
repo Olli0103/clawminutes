@@ -60,7 +60,7 @@ Packaging finds `cloudflared` on `PATH`, or uses `OPENCLAW_TEAMS_CLOUDFLARED`. T
 Copy the npm archive to your existing Gateway host and run there:
 
 ```sh
-openclaw plugins install ./openclaw-teams-transcribe-0.2.8.tgz --accept-capabilities
+openclaw plugins install ./openclaw-teams-transcribe-0.2.9.tgz --accept-capabilities
 openclaw plugins enable teams-transcribe --accept-capabilities
 openclaw teams-transcribe helper-export --output ./ocmh-recording-mac.zip
 ```
@@ -140,3 +140,9 @@ Hardware, model, and credential-dependent tests require their explicit fixtures 
 ## Credits and license
 
 MIT. The native helper builds on [Quill](https://github.com/humanitas-labs/quill) and [Andrew Jones's fork](https://github.com/bedeabza/quill). Original copyright notices and dependency licenses are retained in [notices](notices) and [reuse documentation](docs/reuse.md). Swift module names still use `quill` to preserve source provenance. Model weights download separately and have their own terms.
+
+### Updating or removing a busy helper
+
+Lifecycle commands refuse to replace or remove the helper during recording, transcription or Gateway archiving. They hold an exclusive OS file lock; native work holds shared locks on the same file. This also prevents a new recording from starting during replacement. Custom recording folders and unreadable metadata are checked before any stop or replacement. Recordings and configuration survive removal.
+
+For the first update from a helper older than 0.2.9, wait until recording and transcription finish, then quit the helper before running the update. Older builds cannot report activity through the new lock protocol, so the installer refuses to signal a running older helper. Lock files stay in place; process exit releases ownership automatically.

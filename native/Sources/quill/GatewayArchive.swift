@@ -135,6 +135,8 @@ enum GatewayArchive {
     }
 
     static func save(_ dir: URL) async throws {
+        let workLease = try HelperWorkLease.acquire()
+        defer { withExtendedLifetime(workLease) {} }
         if let data = try? Data(contentsOf: dir.appendingPathComponent("archive-receipt.json")),
            let receipt = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], receipt["saved"] as? Bool == true,
            receipt["documents"] != nil {

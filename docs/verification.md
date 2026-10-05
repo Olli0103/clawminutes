@@ -57,3 +57,14 @@ The 2026.9.8 SDK archive was downloaded from npm and checked against its publish
 This compatibility test does not establish current Gateway installation, model completion, or runtime health. No Gateway setting, installation, or restart was performed.
 
 The live read-only plugin inventory subsequently explained the missing entry: the installed package declared the exact plugin API 2026.9.7, so the 2026.9.8 host skipped discovery. Archive tests alone did not catch this separate metadata gate. The unreleased 0.2.8 package now declares the bounded API range `>=2026.9.7 <=2026.9.8`. A real SDK discovery test reproduces the old rejection, admits both verified host versions after the fix, and rejects 2026.9.9. It scans only an isolated copy of the plugin, without loading a Gateway or touching a live plugin registry.
+
+
+## Version 0.2.9
+
+The lifecycle installer previously guarded updates by scanning only the default recording folder and did not guard removal. It also could not determine whether transcription or archiving was active. An isolated installer regression reproduced unsafe removal during recording, a shared work lock, a concurrent installer, and unreadable metadata.
+
+Native recording preparation, transcription and archive work now hold shared OS leases. Install/update/remove require an exclusive lease before stopping or replacing the helper. Native work cannot start during replacement, and process exit releases ownership even though the lock file remains. Checks include the configured recording folder and fail closed on unreadable metadata. Running pre-0.2.9 helpers require an idle quit before their first protected update. Updates preserve existing preferences instead of resetting voice memory.
+
+Cross-process Swift/Python tests exercise contention, crash release, actual coordinator inference, failure cleanup, and blocking a recording before it creates metadata or starts audio. Installer tests cover busy recording/processing, concurrent installers, legacy helper refusal, preserved preferences, and idle removal with recordings/configuration intact. These tests use isolated homes and fixture engines, without recording audio, contacting a Gateway, or signalling a real helper.
+
+Live interrupted/device-change recovery and current Gateway completion/performance acceptance remain outstanding. This local lifecycle fix does not close those requirements.
