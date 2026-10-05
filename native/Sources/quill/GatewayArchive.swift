@@ -97,7 +97,7 @@ enum GatewayArchive {
         request.timeoutInterval = body == nil ? 30 : 150
         request.httpMethod = body == nil ? "GET" : "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("ClawMinutes/0.2.7 CFNetwork", forHTTPHeaderField: "User-Agent")
+        request.setValue("ClawMinutes/0.2.8 CFNetwork", forHTTPHeaderField: "User-Agent")
         if config["authentication"] == "cloudflare" {
             let token = try await Task.detached { try cloudflareToken(url) }.value
             request.setValue("CF_Authorization=" + token, forHTTPHeaderField: "Cookie")

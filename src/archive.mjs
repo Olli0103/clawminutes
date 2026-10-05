@@ -3,12 +3,13 @@ import path from 'node:path';
 import os from 'node:os';
 import {pathToFileURL} from 'node:url';
 import {createHash} from 'node:crypto';
-// 2026.9.7 exposes source-provider registration, but no public completed-record import.
+// Verified SDK releases expose no public completed-record import.
 // Use its real canonical store and lease machinery, never write guessed SQLite rows.
+const verifiedArchiveVersions = ['2026.9.7','2026.9.8'];
 export async function archiveAdapter(openclawDir) {
   if(!openclawDir) throw Error('needs_evidence: installed OpenClaw directory is required for the Meetings archive adapter.');
   const pkg=JSON.parse(await fs.readFile(path.join(openclawDir,'package.json'),'utf8'));
-  if(pkg.version!=='2026.9.7') throw Error(`Archive adapter verified only for OpenClaw 2026.9.7, found ${pkg.version}. Recording preserved.`);
+  if(!verifiedArchiveVersions.includes(pkg.version)) throw Error(`Archive adapter verified only for OpenClaw ${verifiedArchiveVersions.join(' or ')}, found ${pkg.version}. Recording preserved.`);
   const dist=path.join(openclawDir,'dist');
   for(const f of (await fs.readdir(dist)).filter(f=>/^store-.*\.mjs$/.test(f))) {
     const source=await fs.readFile(path.join(dist,f),'utf8');

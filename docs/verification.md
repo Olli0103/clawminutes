@@ -16,7 +16,7 @@ ClawMinutes is an experimental source release. These observations come from deve
 ## Limits
 
 - Native source builds currently require Xcode 27.2 beta with Swift 6.4. Stable Xcode 16.4 and 26.3 failed clean builds.
-- The archive adapter supports only OpenClaw 2026.9.7 and uses an internal store interface. Other versions fail closed.
+- The archive adapter supports OpenClaw 2026.9.7 and 2026.9.8 and uses an internal store interface. Other versions fail closed.
 - Meeting titles, call clocks, and participant lists depend on available Teams UI evidence. Observations are partial. A stale title must not be treated as evidence of the current call.
 - Unknown speaker labels remain when identity evidence is absent or ambiguous. Acoustic clusters and roster membership do not establish identity.
 - Some development captures had incomplete microphone coverage. Version 0.2.6 adds continuous written-frame monitoring and up to three recovery attempts per audio source. Recovery creates separate files with wall-clock offsets and keeps earlier PCM. Deterministic tests cover stalled callbacks, frame shortfalls, write failures, offset-preserving transcription, and gap-based retention. Recovery during a real device change or long live call remains unverified.
@@ -47,3 +47,11 @@ New helper capture-gap exports require the matching Gateway plugin contract. A G
 - The installed, signed helper transcribed a synthetic three-voice recording with networking denied. The recording had two remote audio segments separated by an explicit five-second gap. All 15 utterances and both capture-gap records survived isolated OpenClaw SDK storage, repeated saving, and Markdown export.
 - The retention check kept all three fixture audio files because gaps require review. Their SHA-256 hashes remained unchanged. This fixture contacted no Gateway and used injected speaker observations, so it does not establish live Teams attribution or Gateway model completion.
 - The packaged plugin and helper report the same version. The extracted helper passed signature verification. Recordings, diagnostic evidence, credentials, and signing material were excluded from the package.
+
+## Version 0.2.8 compatibility checks
+
+The connected Gateway reported OpenClaw 2026.9.8 on 5 October. Its installed-plugin search returned no match for teams-transcribe. That is current discovery evidence; it does not identify whether an old extension directory still exists on disk.
+
+The 2026.9.8 SDK archive was downloaded from npm and checked against its published SHA-512 integrity. An isolated real-store test first reproduced the adapter's version rejection, then passed after adding this verified version. The test covers repeated saving, timestamp and supported-name readback, preserved capture gaps, and rejecting changed speech under an existing archive identity. CI tests both supported SDK releases with their own dependencies.
+
+This compatibility test does not establish current Gateway installation, model completion, or runtime health. No Gateway setting, installation, or restart was performed.

@@ -13,3 +13,7 @@ Meetings uses the shared state database. The `transcripts/` directory contains e
 This internal archive adapter is a compatibility limit. Unsupported versions fail closed and retain the local recording. Local recognition executes on the recording Mac. ElevenLabs recognition uploads directly from that Mac to ElevenLabs; no Gateway-side recognition is assumed. Meeting notes carry their own provenance. AI mode uses a zero-tool simple completion with the Gateway credential owner and selected model; simple highlights and transcript-only mode use no model.
 
 A documentation contradiction was observed: the handshake example uses client mode `operator`, but the installed schema and live Gateway reject that value. The installed valid mode for the inspected development client is `cli`. The helper's production archive connection uses authenticated HTTP rather than that WebSocket client.
+
+## OpenClaw 2026.9.8
+
+The authenticated Control UI separately reported the connected Gateway and UI versions as 2026.9.8 on 5 October. The npm SDK archive passed its published SHA-512 integrity check. The internal transcript store retains writeSession, appendUtteranceForSession, writeSummary, and the corresponding read methods. Its isolated save/readback test preserves timestamps, names, gaps, and idempotency. Both verified SDK versions are accepted; other releases remain rejected. The simple-completion export remains present, but actual model preparation and completion on this Gateway still require runtime verification.

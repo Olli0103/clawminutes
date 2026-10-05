@@ -7,12 +7,15 @@ permissions:
 jobs:
   gateway-contracts:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        sdk: ['2026.9.7', '2026.9.8']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
-      - run: npm install --ignore-scripts --package-lock=false --no-audit --no-fund
+      - run: npm install --ignore-scripts --package-lock=false --no-audit --no-fund openclaw@${{ matrix.sdk }}
       - run: npm test
   native-core:
     runs-on: xcode-27

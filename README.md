@@ -33,7 +33,7 @@ This is an experimental source release. Local recording, transcription, Gateway 
 
 The recording helper requires Apple Silicon, macOS 15 or later, Microsoft Teams, and microphone, Screen & System Audio Recording, and Accessibility permissions. Building currently requires Xcode 27.2 beta with Swift 6.4, Python 3, and `cloudflared`.
 
-The Gateway plugin requires Node.js 24 or later and **OpenClaw 2026.9.7**. The Meetings archive adapter currently uses that version's internal store API and rejects other versions. This is a compatibility constraint, not a promise of support for every OpenClaw release.
+The Gateway plugin requires Node.js 24 or later and **OpenClaw 2026.9.7 or 2026.9.8**. The Meetings archive adapter currently uses those versions' internal store API and rejects other versions. This is a compatibility constraint, not a promise of support for every OpenClaw release.
 
 ## Build from source
 
@@ -60,7 +60,7 @@ Packaging finds `cloudflared` on `PATH`, or uses `OPENCLAW_TEAMS_CLOUDFLARED`. T
 Copy the npm archive to your existing Gateway host and run there:
 
 ```sh
-openclaw plugins install ./openclaw-teams-transcribe-0.2.7.tgz --accept-capabilities
+openclaw plugins install ./openclaw-teams-transcribe-0.2.8.tgz --accept-capabilities
 openclaw plugins enable teams-transcribe --accept-capabilities
 openclaw teams-transcribe helper-export --output ./ocmh-recording-mac.zip
 ```
