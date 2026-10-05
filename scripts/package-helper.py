@@ -6,6 +6,11 @@ if app.exists(): shutil.rmtree(app)
 (app/'Contents/MacOS').mkdir(parents=True,exist_ok=True)
 (app/'Contents/Resources').mkdir(parents=True,exist_ok=True)
 shutil.copy2(root/'native/.build/release/ocmh',app/'Contents/MacOS/ocmh')
+# Xcode release builds retain linker debug symbols containing build-host paths.
+# Strip only debug symbols before signing; executable symbols remain available.
+subprocess.run(['/usr/bin/strip','-S',str(app/'Contents/MacOS/ocmh')],check=True)
+if str(root).encode() in (app/'Contents/MacOS/ocmh').read_bytes():
+    raise SystemExit('Packaged helper still contains the private build directory.')
 shutil.copy2(root/'native/Sources/quill/Resources/ocmh-dark.png',app/'Contents/Resources/ocmh-dark.png')
 cloudflared_path=os.environ.get('OPENCLAW_TEAMS_CLOUDFLARED') or shutil.which('cloudflared')
 if not cloudflared_path:
