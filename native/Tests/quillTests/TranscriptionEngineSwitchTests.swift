@@ -32,7 +32,7 @@ final class TranscriptionEngineSwitchTests: XCTestCase, @unchecked Sendable {
     func testSwitchReleasesPreviousEngineAndPreservesProvenanceAndOffsets() async throws {
         let parakeet = StubTranscriptionEngine(.parakeet), elevenlabs = StubTranscriptionEngine(.elevenLabs)
         let dir = try session()
-        let coordinator = TranscriptionCoordinator(activityLockPath: dir.appendingPathComponent("lifecycle.lock")) { kind, _ in kind == .parakeet ? parakeet : elevenlabs }
+        let coordinator = TranscriptionCoordinator(activityLockPath: dir.appendingPathComponent("lifecycle.lock"), makeEngine: { kind, _ in kind == .parakeet ? parakeet : elevenlabs })
         defer { try? FileManager.default.removeItem(at: dir) }
         for kind in [TranscriptionEngineKind.parakeet, .elevenLabs, .parakeet] {
             try await coordinator.transcribe(dir, detectSpeakers: false, engineOverride: kind)
@@ -49,7 +49,7 @@ final class TranscriptionEngineSwitchTests: XCTestCase, @unchecked Sendable {
     func testAllTrackFailuresRemainPendingWithoutFallback() async throws {
         let elevenlabs = StubTranscriptionEngine(.elevenLabs, failing: true)
         let dir = try session()
-        let coordinator = TranscriptionCoordinator(activityLockPath: dir.appendingPathComponent("lifecycle.lock")) { _, _ in elevenlabs }
+        let coordinator = TranscriptionCoordinator(activityLockPath: dir.appendingPathComponent("lifecycle.lock"), makeEngine: { _, _ in elevenlabs })
         defer { try? FileManager.default.removeItem(at: dir) }
         do {
             try await coordinator.transcribe(dir, detectSpeakers: false, engineOverride: .elevenLabs)
@@ -62,7 +62,7 @@ final class TranscriptionEngineSwitchTests: XCTestCase, @unchecked Sendable {
     func testCloudSecondTrackFailureDoesNotPublishPartialTranscript() async throws {
         let engine = StubTranscriptionEngine(.elevenLabs, failOnSystem: true)
         let dir = try session()
-        let coordinator = TranscriptionCoordinator(activityLockPath: dir.appendingPathComponent("lifecycle.lock")) { _, _ in engine }
+        let coordinator = TranscriptionCoordinator(activityLockPath: dir.appendingPathComponent("lifecycle.lock"), makeEngine: { _, _ in engine })
         defer { try? FileManager.default.removeItem(at: dir) }
         do {
             try await coordinator.transcribe(dir, detectSpeakers: false, engineOverride: .elevenLabs)
@@ -82,7 +82,7 @@ final class TranscriptionEngineSwitchTests: XCTestCase, @unchecked Sendable {
         try JSONSerialization.data(withJSONObject: meta).write(to: dir.appendingPathComponent("meta.json"))
         try Data().write(to: dir.appendingPathComponent("mic-2.caf"))
         let engine = StubTranscriptionEngine(.parakeet)
-        let coordinator = TranscriptionCoordinator(activityLockPath: dir.appendingPathComponent("lifecycle.lock")) { _, _ in engine }
+        let coordinator = TranscriptionCoordinator(activityLockPath: dir.appendingPathComponent("lifecycle.lock"), makeEngine: { _, _ in engine })
         try await coordinator.transcribe(dir, detectSpeakers: false, engineOverride: .parakeet)
         let transcript = try JSONDecoder().decode(Transcript.self, from: Data(contentsOf: dir.appendingPathComponent("transcript.json")))
         XCTAssertEqual(transcript.segments.map(\.start_ms), [600, 700, 30500])

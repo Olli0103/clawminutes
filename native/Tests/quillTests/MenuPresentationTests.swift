@@ -20,11 +20,22 @@ final class MenuPresentationTests: XCTestCase {
         XCTAssertFalse(activity.isWorking)
         XCTAssertEqual(MenuPresentation.title(style: .descriptive, activity: activity, backend: "Local only"), " Needs attention · Local only")
     }
+    func testArchivePendingShowsCompletedTranscriptAndTheSpecificNextStep() throws {
+        let status = TranscriptionCoordinator.Status.archivePending(session: "AI weekly")
+        let activity = MenuPresentation.activity(recording: false, elapsed: "0:00", status: status)
+        XCTAssertEqual(activity, .archivePending)
+        XCTAssertEqual(activity.title, "Transcript ready")
+        XCTAssertFalse(activity.isWorking)
+        let detail = try XCTUnwrap(MenuPresentation.pipelineDetail(status))
+        XCTAssertTrue(detail.contains("Transcript ready on this Mac"))
+        XCTAssertTrue(detail.contains("retry pending saves"))
+        XCTAssertFalse(detail.contains("Transcription did not finish"))
+    }
     func testRecordingTakesPriorityWhilePreviousMeetingTranscribes() {
         XCTAssertEqual(MenuPresentation.activity(recording: true, elapsed: "1:24", status: .transcribing(session: "previous", queued: 0)), .recording("1:24"))
     }
     func testIconOnlyHidesTextInEveryState() {
-        for state in [HelperActivity.ready, .failed, .transcribing, .recording("1:00")] {
+        for state in [HelperActivity.ready, .failed, .archivePending, .transcribing, .recording("1:00")] {
             XCTAssertEqual(MenuPresentation.title(style: .iconOnly, activity: state, backend: "Local only"), "")
         }
     }

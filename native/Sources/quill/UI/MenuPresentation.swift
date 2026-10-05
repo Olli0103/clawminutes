@@ -6,7 +6,7 @@ enum MenuBarStyle: String, CaseIterable {
 }
 
 enum HelperActivity: Equatable {
-    case ready, recording(String), transcribing, preparing, failed
+    case ready, recording(String), transcribing, preparing, failed, archivePending
 
     var title: String {
         switch self {
@@ -15,6 +15,7 @@ enum HelperActivity: Equatable {
         case .transcribing: return "Transcribing"
         case .preparing: return "Setting up"
         case .failed: return "Needs attention"
+        case .archivePending: return "Transcript ready"
         }
     }
     var isWorking: Bool {
@@ -30,6 +31,16 @@ enum MenuPresentation {
         case .idle: return .ready
         case .transcribing, .postprocessing: return .transcribing
         case .failed: return .failed
+        case .archivePending: return .archivePending
+        }
+    }
+    static func pipelineDetail(_ status: TranscriptionCoordinator.Status) -> String? {
+        switch status {
+        case .idle: return nil
+        case .transcribing(let name, let queued): return "Transcribing \(name)" + (queued > 0 ? " · \(queued) waiting" : "")
+        case .postprocessing(let name, _): return "Finishing \(name)"
+        case .failed(let name): return "Transcription did not finish for \(name). Audio is retained. See transcribe.log for the failed step."
+        case .archivePending(let name): return "Transcript ready on this Mac. Saving \(name) to the Gateway is pending. Check the Gateway connection and retry pending saves. Audio is retained."
         }
     }
     static func meetingTitle(promptsEnabled: Bool, accessibilityGranted: Bool, detection: String) -> String {

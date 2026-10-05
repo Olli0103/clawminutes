@@ -13,6 +13,7 @@ actor TranscriptionCoordinator {
         case transcribing(session: String, queued: Int)
         case postprocessing(session: String, queued: Int)
         case failed(session: String)
+        case archivePending(session: String)
     }
 
     private var queue: [URL] = []
@@ -20,11 +21,13 @@ actor TranscriptionCoordinator {
     private var engine: TranscriptionEngine?
     private var engineOffline = false
     private let makeEngine: @Sendable (TranscriptionEngineKind, Bool) -> any TranscriptionEngine
-    private var lastFailure: String?
+    private var lastIssue: Status?
     private var statusHandler: (@Sendable (Status) -> Void)?
     private let activityLockPath: URL
+    private let saveArchive: @Sendable (URL) async throws -> Void
 
     init(activityLockPath: URL = HelperWorkLease.path,
+         saveArchive: @escaping @Sendable (URL) async throws -> Void = { try await GatewayArchive.save($0) },
          makeEngine: @escaping @Sendable (TranscriptionEngineKind, Bool) -> any TranscriptionEngine = { kind, offline in
         switch kind {
         case .parakeet: return ParakeetEngine()
@@ -32,6 +35,7 @@ actor TranscriptionCoordinator {
         }
     }) {
         self.activityLockPath = activityLockPath
+        self.saveArchive = saveArchive
         self.makeEngine = makeEngine
     }
 
@@ -41,8 +45,8 @@ actor TranscriptionCoordinator {
 
     /// Queue a finished session. With transcription disabled in config, the
     /// on_stop hook still fires — it just gets an untranscribed folder.
-    func enqueue(_ sessionDir: URL) async {
-        guard Config.transcriptionEnabled() else {
+    func enqueue(_ sessionDir: URL, transcriptionEnabled: Bool = Config.transcriptionEnabled()) async {
+        guard transcriptionEnabled else {
             await runHook(for: sessionDir)
             return
         }
@@ -103,7 +107,7 @@ actor TranscriptionCoordinator {
     private func drainIfIdle() {
         guard !draining, !queue.isEmpty else { return }
         draining = true
-        lastFailure = nil
+        lastIssue = nil
         Task { await drain() }
     }
 
@@ -129,7 +133,7 @@ actor TranscriptionCoordinator {
                 await runHook(for: dir)
             } catch {
                 log(dir, "transcription failed: \(error)")
-                lastFailure = dir.lastPathComponent
+                lastIssue = .failed(session: dir.lastPathComponent)
                 notifyUser(
                     title: "ocmh: transcription failed",
                     body: "\(dir.lastPathComponent) — see transcribe.log"
@@ -138,7 +142,7 @@ actor TranscriptionCoordinator {
         }
         await engine?.release()
         engine = nil
-        publish(lastFailure.map { .failed(session: $0) } ?? .idle)
+        publish(lastIssue ?? .idle)
         draining = false
         // An enqueue that landed between the loop exiting and the release
         // finishing would otherwise sit until the next enqueue.
@@ -296,11 +300,14 @@ actor TranscriptionCoordinator {
     }
     private func runHook(for dir: URL) async {
         do {
-            try await GatewayArchive.save(dir)
+            try await saveArchive(dir)
             log(dir, "Gateway Meetings archive saved and read back")
             applyRetention(dir)
+            if case .archivePending(let pending) = lastIssue, pending == dir.lastPathComponent { lastIssue = nil }
+            if !draining { publish(lastIssue ?? .idle) }
         } catch {
-            lastFailure = dir.lastPathComponent
+            lastIssue = .archivePending(session: dir.lastPathComponent)
+            if !draining { publish(.archivePending(session: dir.lastPathComponent)) }
             log(dir, "archive failed: \(error); recording and transcript preserved. Reconnect Gateway and retry archive.")
         }
     }

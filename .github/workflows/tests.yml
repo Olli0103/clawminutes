@@ -25,4 +25,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: swift --version
-      - run: swift test --package-path native -j 4 --filter 'MeetingNotesTests|RecordingIdentityTests|AudioRetentionTests|GatewayArchiveTests|MenuPresentationTests|CaptureRecoveryTests|TranscriptionEngineSwitchTests|HelperWorkLeaseTests|AppRunLockTests'
+      - run: swift test --package-path native -j 4 --filter 'MeetingNotesTests|RecordingIdentityTests|AudioRetentionTests|GatewayArchiveTests|MenuPresentationTests|CaptureRecoveryTests|TranscriptionEngineSwitchTests|HelperWorkLeaseTests|AppRunLockTests|ArchiveFailureStatusTests'

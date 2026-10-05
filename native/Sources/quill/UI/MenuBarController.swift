@@ -88,7 +88,7 @@ final class MenuBarController: NSObject, ObservableObject {
         meetingSubject ?? MenuPresentation.meetingTitle(promptsEnabled: promptsEnabled, accessibilityGranted: accessibilityGranted, detection: detection)
     }
     func setStartingRecording(_ value: Bool) { startingRecording = value; refreshTitle() }
-    var isFailure: Bool { if case .failed = activity { return true }; return false }
+    var isFailure: Bool { switch activity { case .failed, .archivePending: return true; default: return false } }
 
     init(keychain: ElevenLabsKeychain = .shared) {
         self.keychain = keychain
@@ -375,19 +375,14 @@ final class MenuBarController: NSObject, ObservableObject {
     func updateTranscriptionStatus(_ status: TranscriptionCoordinator.Status) {
         pipelineStatus = status
         switch status {
-        case .transcribing(let name, _), .postprocessing(let name, _), .failed(let name):
+        case .transcribing(let name, _), .postprocessing(let name, _), .failed(let name), .archivePending(let name):
             let metaURL = Config.resolveRoot(cliOverride: nil).appendingPathComponent(name).appendingPathComponent("meta.json")
             if let data = try? Data(contentsOf: metaURL), let meta = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                 transcriptionBackend = meta["backend"] as? String
             }
         case .idle: transcriptionBackend = nil
         }
-        switch status {
-        case .idle: detail = nil
-        case .transcribing(let name, let queued): detail = "Processing \(name)" + (queued > 0 ? " · \(queued) waiting" : "")
-        case .postprocessing(let name, _): detail = "Finishing \(name)"
-        case .failed(let name): detail = "Could not finish processing \(name). Your audio is safe. See transcribe.log for the failed step."
-        }
+        detail = MenuPresentation.pipelineDetail(status)
         refreshTitle()
     }
 
