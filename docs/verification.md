@@ -39,3 +39,11 @@ New helper capture-gap exports require the matching Gateway plugin contract. A G
 - The release helper was built, signed, installed, and observed in its Settings window. The designated signing requirement and configuration remained unchanged.
 - With Settings open, the old process used 88.6% of one CPU core over 30 seconds. The updated process used 6.4% over 60 seconds. This comparison includes a process restart; it does not isolate each UI change or establish long-term resource stability.
 - Device-change recovery during a live call and Gateway event-loop or memory behavior still require separate runtime evidence.
+
+## Version 0.2.7 checks
+
+- Fractional-second ISO end timestamps previously caused the audio-retention check to reject a finished recording as incomplete. A failing regression test reproduced that error. Both whole-second and fractional-second clocks now reach the same transcript, archive, export, and coverage checks.
+- 88 native tests passed, one live Teams diagnostic test was skipped, and 18 JavaScript tests passed locally.
+- The installed, signed helper transcribed a synthetic three-voice recording with networking denied. The recording had two remote audio segments separated by an explicit five-second gap. All 15 utterances and both capture-gap records survived isolated OpenClaw SDK storage, repeated saving, and Markdown export.
+- The retention check kept all three fixture audio files because gaps require review. Their SHA-256 hashes remained unchanged. This fixture contacted no Gateway and used injected speaker observations, so it does not establish live Teams attribution or Gateway model completion.
+- The packaged plugin and helper report the same version. The extracted helper passed signature verification. Recordings, diagnostic evidence, credentials, and signing material were excluded from the package.

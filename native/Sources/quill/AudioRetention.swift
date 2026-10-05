@@ -34,6 +34,13 @@ enum AudioRetention {
         return value
     }
 
+    private static func endDate(_ value: String) -> Date? {
+        let clock = ISO8601DateFormatter()
+        if let date = clock.date(from: value) { return date }
+        clock.formatOptions.insert(.withFractionalSeconds)
+        return clock.date(from: value)
+    }
+
     @discardableResult static func deleteAfterVerification(
         _ dir: URL, measure: (URL) throws -> Double = duration
     ) throws -> Int {
@@ -60,7 +67,7 @@ enum AudioRetention {
 
         guard meta["status"] as? String == "stopped",
               let started = meta["audio_started_at"] as? Double,
-              let end = meta["ended"] as? String, let ended = ISO8601DateFormatter().date(from: end),
+              let end = meta["ended"] as? String, let ended = endDate(end),
               ended.timeIntervalSince1970 > started else { throw TranscriptionFailure("Recording is active or incomplete; audio kept") }
         let elapsed = ended.timeIntervalSince1970 - started
         if let gaps = meta["capture_gaps"] as? [Any], !gaps.isEmpty {

@@ -49,6 +49,11 @@ final class AudioRetentionTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: dir.appendingPathComponent("transcript.json")), text)
         XCTAssertEqual(try AudioRetention.deleteAfterVerification(dir, measure: { _ in XCTFail("Already removed"); return 0 }), 0)
     }
+    func testFractionalISOEndClockPassesTheSameVerification() throws {
+        let dir = try fixture(); defer { try? FileManager.default.removeItem(at: dir) }
+        try change(dir, file: "meta.json", key: "ended", value: "2026-10-02T10:01:00.000Z")
+        XCTAssertEqual(try AudioRetention.deleteAfterVerification(dir, measure: { _ in 60 }), 2)
+    }
     func testActiveRecordingIsNeverDeleted() throws {
         let dir = try fixture(); defer { try? FileManager.default.removeItem(at: dir) }
         try change(dir, file: "meta.json", key: "status", value: "recording")
