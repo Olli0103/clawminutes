@@ -1,9 +1,10 @@
 import fs from 'node:fs/promises';
-import {createReadStream} from 'node:fs';
+import {createReadStream,readFileSync} from 'node:fs';
 import {pipeline} from 'node:stream/promises';
 import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-const {version}=JSON.parse(await fs.readFile(new URL('../package.json',import.meta.url),'utf8'));
+// Gateway plugin loading is synchronous. Downloads themselves remain async.
+const {version}=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8'));
 export const helperArchive=fileURLToPath(new URL('../helper/recording-mac.zip',import.meta.url));
 export async function distributionHandler(req,res){
   if(req.method!=='GET'){res.writeHead(405);res.end();return true;}

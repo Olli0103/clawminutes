@@ -25,3 +25,20 @@ test('real SDK archive preserves names, timing and gaps through repeated saves',
     await assert.rejects(saveEnvelope(corrected,options),/Archived transcript differs/);
   } finally {await fs.rm(stateDir,{recursive:true,force:true});}
 });
+
+test('concurrent saves of the same meeting share one AI completion and receipt',async()=>{
+  const stateDir=await fs.mkdtemp(path.join(os.tmpdir(),'clawminutes-concurrent-save-'));
+  let release;const gate=new Promise(resolve=>{release=resolve;});let called;const started=new Promise(resolve=>{called=resolve;});
+  let calls=0;
+  try {
+    const payload={recordingId:'concurrent-fixture',meta:{started:'2026-10-05T10:00:00Z',ended:'2026-10-05T10:01:00Z',audio_started_at:1791194400,status:'stopped',fixture:true,notes_mode:'ai',note_template:{id:'test',name:'Test',context:'Fixture',sections:[{title:'Summary',instructions:'Summarize'}]}},transcript:{engine:'parakeet',model:'parakeet-tdt-0.6b-v3-coreml',created_at:'2026-10-05T10:02:00Z',execution_machine:'fixture',execution_location:'recording_mac',segments:[{speaker:'unknown',source:'system',start_ms:0,end_ms:1000,text:'Synthetic speech.'}]}};
+    const options={stateDir,openclawDir:process.env.OPENCLAW_TEAMS_SDK_TEST_DIR||installedRuntimeDirectory(),complete:async()=>{calls++;called();await gate;return {text:JSON.stringify({sections:[{title:'Summary',body:`- Fixture completion ${calls}`}]}),provider:'fixture',model:'fixture-model'};}};
+    const first=saveEnvelope(payload,options);await started;
+    const second=saveEnvelope(structuredClone(payload),options);
+    const changed=structuredClone(payload);changed.transcript.segments[0].text='Different speech.';
+    await assert.rejects(saveEnvelope(changed,options),/different save.*in progress/);
+    release();const receipts=await Promise.all([first,second]);
+    assert.equal(calls,1,'Automatic recovery and a manual retry must not create competing AI notes');
+    assert.deepEqual(receipts[0],receipts[1]);assert.equal(receipts[0].utteranceCount,1);
+  } finally {release();await fs.rm(stateDir,{recursive:true,force:true});}
+});

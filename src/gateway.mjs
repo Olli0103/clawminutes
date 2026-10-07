@@ -3,6 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
+import {isDeepStrictEqual} from 'node:util';
 import {archiveAdapter,meetingRecord,assertArchiveReadback,assertUtteranceCompatibility} from './archive.mjs';
 import {validateTemplate,validateContext,validateParticipants,generateNotes,documents} from './notes.mjs';
 export function validateEnvelope(value){
@@ -44,8 +45,21 @@ export function validateEnvelope(value){
   if(m.participants!==undefined)validateParticipants(m.participants);
   return {recordingId:value.recordingId,meta:{started:m.started,ended:m.ended,audio_started_at:m.audio_started_at,status:m.status,fixture:m.fixture===true,notes_mode:m.notes_mode||'simple',note_template:m.note_template,meeting_context:m.meeting_context,participants:m.participants},transcript:{engine:t.engine,model:t.model,created_at:t.created_at,execution_machine:t.execution_machine,execution_location:t.execution_location,segments:t.segments,capture_gaps:t.capture_gaps}};
 }
-export async function saveEnvelope(envelope,{openclawDir,stateDir,complete}={}){
-  const e=validateEnvelope(envelope);const id='teams-'+createHash('sha256').update(e.meta.started+'\n'+e.recordingId).digest('hex').slice(0,24);
+const pendingSaves=new Map();
+export async function saveEnvelope(envelope,options={}){
+  const e=validateEnvelope(envelope);
+  const key=JSON.stringify([path.resolve(options.stateDir),e.meta.started,e.recordingId]);
+  const pending=pendingSaves.get(key);
+  if(pending){
+    if(!isDeepStrictEqual(pending.envelope,e)||pending.complete!==options.complete)throw Error('A different save of this meeting is in progress. Retry after it finishes.');
+    return pending.promise;
+  }
+  const promise=persistEnvelope(e,options);
+  pendingSaves.set(key,{envelope:e,complete:options.complete,promise});
+  try{return await promise;}finally{pendingSaves.delete(key);}
+}
+async function persistEnvelope(envelope,{openclawDir,stateDir,complete}={}){
+  const e=envelope;const id='teams-'+createHash('sha256').update(e.meta.started+'\n'+e.recordingId).digest('hex').slice(0,24);
   const record=meetingRecord(e.meta,e.transcript,id);record.session.metadata.fixture=e.meta.fixture===true;
   const Store=await archiveAdapter(openclawDir);const store=new Store(path.join(stateDir,'transcripts'),{env:{...process.env,OPENCLAW_STATE_DIR:stateDir}});
   const existing=await store.readSession(id);
