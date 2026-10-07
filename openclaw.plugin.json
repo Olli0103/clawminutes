@@ -32,7 +32,7 @@
       "help": "The Gateway agent whose provider credentials are used. No agent session or tools are run."
     }
   },
-  "version": "0.2.10",
+  "version": "0.2.11",
   "activation": {
     "onStartup": true
   },

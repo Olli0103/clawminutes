@@ -94,7 +94,11 @@ enum TeamsMeetingTitle {
            account.range(of: #"^[^\s@]+@[^\s@]+\.[^\s@]+$"#, options: .regularExpression) != nil {
             value = parts.dropLast(2).joined(separator: " | ")
         }
-        let generic = ["microsoft teams", "teams", "meeting", "call", "besprechung", "anruf", "microsoft teams meeting", "meeting | microsoft teams"]
+        let compactPrefix = "Meeting compact view | "
+        if value.lowercased().hasPrefix(compactPrefix.lowercased()) {
+            value = String(value.dropFirst(compactPrefix.count)).trimmingCharacters(in: .whitespaces)
+        }
+        let generic = ["microsoft teams", "teams", "meeting", "call", "besprechung", "anruf", "microsoft teams meeting", "meeting | microsoft teams", "meeting compact view"]
         guard !value.isEmpty, value.count <= 256, !value.contains("\n"), !generic.contains(value.lowercased()) else { return nil }
         return value
     }

@@ -78,3 +78,10 @@ A real completed call on 5 October exposed a separate status bug: local Parakeet
 Capture warnings were previously held only in the running helper's memory. Reopening a meeting with pending archiving could hide its saved timing-review warning. The controls now restore that warning from the meeting's `capture_gaps`. Cumulative frame shortfalls are described as timing uncertainty, without claiming that the whole marked span is missing or that recovery succeeded. A previous meeting cannot override a current recording's warning.
 
 A focused regression reproduced the missing warning before the fix. Native tests cover restoration, active-recording priority, interruption wording, clearing a previous warning for a clean meeting, and preserving a known warning when metadata cannot be read. The focused native suite passes 59 tests; the Gateway suite passes 20. These checks do not establish fresh Gateway deployment or AI notes.
+
+
+## Version 0.2.11
+
+Teams can prefix a real call subject with `Meeting compact view | `. The helper now removes that UI label from the meeting title and generated recording and notes folder names. The Gateway also removes it when importing a pending transcript from an older helper, while retaining the original observed title in metadata. Matching native and Gateway regressions reproduced the unwanted prefix before the fix.
+
+Cloudflare Access sessions expire according to the server policy. Renewing sign-in restores authentication but cannot repair an unavailable plugin route. Gateway activation remains a separate operation and can reload or restart the shared service.

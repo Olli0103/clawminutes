@@ -22,6 +22,14 @@ final class MeetingNotesTests: XCTestCase {
         XCTAssertNil(TeamsMeetingTitle.clean("Meeting - Microsoft Teams"))
         XCTAssertNil(TeamsMeetingTitle.clean("Title\nInjected heading"))
     }
+    func testTeamsCompactViewLabelIsNotPartOfMeetingTitleOrFolder() {
+        XCTAssertEqual(TeamsMeetingTitle.clean("Meeting compact view | AI Standup"), "AI Standup")
+        XCTAssertEqual(TeamsMeetingTitle.clean("Meeting compact view | AI Standup | Microsoft Teams"), "AI Standup")
+        XCTAssertEqual(TeamsMeetingTitle.clean("Meeting compact view | Council | weekly | Example Org | alex@example.com"), "Council | weekly")
+        XCTAssertEqual(MeetingDocuments.component("Meeting compact view | AI Standup"), "AI-Standup")
+        XCTAssertNil(TeamsMeetingTitle.clean("Meeting compact view"))
+        XCTAssertEqual(TeamsMeetingTitle.clean("Discussion about Meeting compact view"), "Discussion about Meeting compact view")
+    }
     func testExportCannotEscapeRootAndPreservesEditsOnRetry() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
