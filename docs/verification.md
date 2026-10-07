@@ -85,3 +85,10 @@ A focused regression reproduced the missing warning before the fix. Native tests
 Teams can prefix a real call subject with `Meeting compact view | `. The helper now removes that UI label from the meeting title and generated recording and notes folder names. The Gateway also removes it when importing a pending transcript from an older helper, while retaining the original observed title in metadata. Matching native and Gateway regressions reproduced the unwanted prefix before the fix.
 
 Cloudflare Access sessions expire according to the server policy. Renewing sign-in restores authentication but cannot repair an unavailable plugin route. Gateway activation remains a separate operation and can reload or restart the shared service.
+
+
+## Version 0.2.12
+
+Consent was keyed to a single window and forgotten after one end observation. Two failing native regressions reproduced repeated prompts when Teams replaced its call window or briefly reported an end. Consent now covers the native Teams process's ongoing call windows and clears only after all observed windows continuously report an end for 30 seconds. Unknown or missing observations cancel that confirmation. An open consent dialog blocks another dialog and cannot re-arm consent through nested scans. A manual recording start also marks the detected call as handled.
+
+This groups full-size and compact windows for the current native Teams detector. Calls that follow one another without 30 seconds of confirmed end remain one detection episode; recording can still be started manually. Regression checks cover window replacement, persistence, transient and uncertain observations, dialog scans, manual recording, independent processes, and later calls after old windows retire. 81 focused native tests, 21 Gateway tests using the real 2026.9.8 SDK, and 9 installer tests passed locally. These are automated checks, not observed live-call acceptance. The candidate helper is not installed or restarted until the user approves the idle update.

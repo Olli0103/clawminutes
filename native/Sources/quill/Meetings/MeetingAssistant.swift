@@ -18,6 +18,7 @@ final class MeetingAssistant {
     private var scanning = false
     private let recordingNotification: (String, String) -> Void
     private var automaticStart: DetectedMeeting?
+    private var consentPromptInProgress = false
     private var enabled = Config.meetingDetection()
     private var lastStatus: String?
     private var consent = ConsentPromptState(prompted: Set(UserDefaults.standard.stringArray(forKey: "teamsPromptedMeetingIDs") ?? []))
@@ -78,6 +79,10 @@ final class MeetingAssistant {
 
     func recordingStarted() {
         recordingContextID = contextForStart?.meeting_id
+        if let id = recordingContextID {
+            _ = consent.observe(DetectedMeeting(id: id, app: "Teams", service: "Microsoft Teams"))
+            persistConsent()
+        }
         recordingGeneration += 1
         policy.recordingStarted(for: automaticStart, automatic: automaticStart != nil)
         recordingSpeakerMeetingID = tracking.recordingMeetingID(preferred: automaticStart?.id, previous: nil)
@@ -144,7 +149,15 @@ final class MeetingAssistant {
             self.tracking.update(scan.observations, at: scan.observedAt)
             for roster in scan.rosters { self.tracking.observe(roster) }
             let previousMeeting = self.recordingSpeakerMeetingID
-            for (id, observation) in scan.observations where observation == .ended { self.consent.ended(id); UserDefaults.standard.set(Array(self.consent.prompted), forKey: "teamsPromptedMeetingIDs") }
+            let promptedBefore = self.consent.prompted
+            self.consent.update(scan.observations, now: ProcessInfo.processInfo.systemUptime,
+                                promptInProgress: self.consentPromptInProgress)
+            if self.policy.recording {
+                for observation in scan.observations.values {
+                    if case .present(let meeting) = observation { _ = self.consent.observe(meeting) }
+                }
+            }
+            if self.consent.prompted != promptedBefore { self.persistConsent() }
             let action = self.policy.update(scan.observations, now: ProcessInfo.processInfo.systemUptime)
             self.recordingSpeakerMeetingID = self.policy.recording
                 ? self.tracking.recordingMeetingID(preferred: self.policy.recordingMeeting?.id, previous: previousMeeting) : nil
@@ -170,16 +183,11 @@ final class MeetingAssistant {
             }
             switch action {
             case .start(let meeting):
-                guard self.consent.observe(meeting) else { break }
-                UserDefaults.standard.set(Array(self.consent.prompted), forKey: "teamsPromptedMeetingIDs")
+                guard !self.consentPromptInProgress else { break }
+                let shouldPrompt = self.consent.observe(meeting)
+                self.persistConsent()
                 self.policy.startFailed(for: meeting)
-                NSApp.activate(ignoringOtherApps: true)
-                let alert = MeetingConsentPrompt.make(title: self.contexts[meeting.id]?.title)
-                if alert.runModal() == .alertFirstButtonReturn {
-                    self.automaticStart = meeting
-                    _ = await self.onStart?()
-                    self.automaticStart = nil
-                }
+                if shouldPrompt { await self.requestConsent(for: meeting) }
             case .countdown(let seconds):
                 self.report("Meeting ended; stopping automatically in \(seconds)s", true)
             case .stop:
@@ -189,6 +197,22 @@ final class MeetingAssistant {
             case .none:
                 break
             }
+        }
+    }
+
+    private func persistConsent() {
+        UserDefaults.standard.set(Array(consent.prompted).sorted(), forKey: "teamsPromptedMeetingIDs")
+    }
+
+    private func requestConsent(for meeting: DetectedMeeting) async {
+        consentPromptInProgress = true
+        defer { consentPromptInProgress = false }
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = MeetingConsentPrompt.make(title: contexts[meeting.id]?.title)
+        if alert.runModal() == .alertFirstButtonReturn {
+            automaticStart = meeting
+            _ = await onStart?()
+            automaticStart = nil
         }
     }
 

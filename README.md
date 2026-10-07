@@ -60,7 +60,7 @@ Packaging finds `cloudflared` on `PATH`, or uses `OPENCLAW_TEAMS_CLOUDFLARED`. T
 Copy the npm archive to your existing Gateway host and run there:
 
 ```sh
-openclaw plugins install ./openclaw-teams-transcribe-0.2.11.tgz --accept-capabilities
+openclaw plugins install ./openclaw-teams-transcribe-0.2.12.tgz --accept-capabilities
 openclaw plugins enable teams-transcribe --accept-capabilities
 openclaw teams-transcribe helper-export --output ./ocmh-recording-mac.zip
 ```
