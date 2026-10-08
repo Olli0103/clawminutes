@@ -47,13 +47,13 @@ cd clawminutes
 brew install cloudflared
 npm run build:native
 python3 scripts/local-signing.py
-npm run pack:helper
+npm run pack:helper -- --mode local --identity "ocmh local signing" --keychain /path/from/local-signing-output
 npm pack
 ```
 
 Select Xcode 27.2 beta as your active developer directory. This is the toolchain used for the working local build. CI selects the same preview toolchain explicitly. Xcode 16.4 and 26.3 rejected actor-isolated Accessibility code and encountered compiler crashes in clean builds; those toolchains are currently unsupported. A command-line-tools-only installation is insufficient for this macOS app.
 
-`local-signing.py` creates a private certificate for your local builds. Packaging reuses it so helper updates retain the same signing identity. Keep its signing directory private. You can instead provide `OPENCLAW_TEAMS_SIGNING_IDENTITY` and `OPENCLAW_TEAMS_SIGNING_KEYCHAIN`. A build without an available identity is signed ad hoc and may need new permission grants after updates. Local signing is not Apple Developer ID signing or notarization.
+`local-signing.py` explicitly creates or unlocks a private certificate for local builds. Supply the keychain path it reports. Packaging requires an explicit mode and never creates, unlocks or recovers a keychain or silently changes signing identity. `--mode ad-hoc` is available for disposable development builds; `--mode developer-id` requires an identity, Team ID and existing notary profile, uploads to Apple, validates/staples the ticket and checks Gatekeeper before publication. Actual Developer ID credentials, notarization and permission continuity remain unverified. See [release packaging](docs/release-packaging.md).
 
 Packaging finds `cloudflared` on `PATH`, or uses `OPENCLAW_TEAMS_CLOUDFLARED`. The resulting `helper/recording-mac.zip` contains the app and installer. The npm archive contains the Gateway plugin and helper distribution. This repository does not include prebuilt apps or model weights.
 

@@ -17,7 +17,7 @@ jobs:
           node-version: '24'
       - run: npm install --ignore-scripts --package-lock=false --no-audit --no-fund openclaw@${{ matrix.sdk }}
       - run: npm test
-      - run: python3 -m unittest discover -s test -p 'test_helper_lifecycle.py'
+      - run: python3 -m unittest discover -s test -p 'test_helper_*.py'
   native-core:
     runs-on: xcode-27
     steps:
