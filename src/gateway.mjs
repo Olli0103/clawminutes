@@ -10,6 +10,7 @@ import {DeliveryError,deliveryError,safeErrorDiagnostic} from './delivery-errors
 import {withNotesAttempt,validateNotesRecovery,authorizeTranscriptRecovery} from './notes-attempts.mjs';
 import {archiveIdentity,validateRevision,verifyRevisionParent} from './revisions.mjs';
 import {gatewayCapabilities} from './capabilities.mjs';
+import {withSaveOwnership} from './save-ownership.mjs';
 // Native recovery can retain more than 32 ranges across its bounded segment
 // manifest. Keep a separate finite text-evidence limit; never truncate warnings.
 export const maximumCaptureGaps=4096;
@@ -67,7 +68,9 @@ export async function saveEnvelope(envelope,options={}){
     if(!isDeepStrictEqual(pending.envelope,e)||pending.complete!==options.complete)throw new DeliveryError('save_in_progress','A different save of this meeting is in progress. Retry after it finishes.',{retryable:true,status:409});
     return pending.promise;
   }
-  const promise=persistEnvelope(e,options);
+  // Keep the process-local shared promise, and serialize the complete read,
+  // reservation, generation, canonical write and readback across processes.
+  const promise=withSaveOwnership(options.stateDir,archiveIdentity(e.meta.started,e.recordingId),()=>persistEnvelope(e,options));
   pendingSaves.set(key,{envelope:e,complete:options.complete,promise});
   try{return await promise;}finally{pendingSaves.delete(key);}
 }

@@ -116,6 +116,8 @@ The meeting library searches local titles, notes and transcripts, with matching 
 
 Failed AI notes offer transcript-only recovery or an explicit additional attempt when the existing budget permits it. Recovery preserves the original transcript and earlier failures; it cannot reset paid-attempt limits. See [notes recovery](docs/notes-recovery.md) for replay behavior and legacy-ledger limits.
 
+Participating Gateway processes serialize each meeting's complete save with a private OS-managed mutex. A competing save waits for a later retry without consuming a paid attempt. The mutex stays on disk and releases on connection close or process death; do not delete it to clear contention. See [Gateway save ownership](docs/gateway-save-ownership.md) for storage and deployment limits. Actual installed ownership and provider-completion accounting remain unverified.
+
 Connection and delivery now require a [verified Gateway text/archive handshake](docs/gateway-capabilities.md). A successful HTTP response alone cannot send a meeting. The adapter checks synthetic storage and existing-archive reader behavior in a private child process with a 20-second deadline. Package discovery and the native handshake allow newer SDK versions that pass the stronger contract.
 
 ## Data flow and audio retention
