@@ -27,6 +27,26 @@ export async function archiveAdapter(openclawDir) {
   }
   throw new DeliveryError('plugin_update_needed','needs_evidence: OpenClaw transcript store implementation changed. Recording preserved.',{status:503});
 }
+// Use the pinned SDK's pure path resolver before constructing a read worker.
+// The worker otherwise creates an empty state directory even in readOnly mode.
+export async function archiveDatabaseResolver(openclawDir){
+  const dist=path.join(openclawDir,'dist');
+  for(const name of (await fs.readdir(dist)).filter(name=>/^openclaw-state-db\.paths-.*\.mjs$/.test(name))){
+    const module=await import(pathToFileURL(path.join(dist,name)).href);
+    const resolve=Object.values(module).find(value=>typeof value==='function'&&value.name==='resolveOpenClawStateSqlitePath');
+    if(resolve)return resolve;
+  }
+  throw new DeliveryError('plugin_update_needed','The installed SDK archive path resolver could not be verified. No canonical archive was opened.',{status:503});
+}
+export async function existingArchiveDatabase(openclawDir,stateDir){
+  const resolve=await archiveDatabaseResolver(openclawDir);
+  const file=resolve({...process.env,OPENCLAW_STATE_DIR:stateDir});
+  try{
+    const info=await fs.lstat(file);
+    if(!info.isFile()||info.isSymbolicLink())throw Error('Archive database requires review');
+    return file;
+  }catch(error){if(error.code==='ENOENT')return null;throw error;}
+}
 export function meetingRecord(meta,transcript,id) {
   if(!Array.isArray(transcript.segments) || !transcript.engine || !transcript.model) throw Error('Invalid transcript provenance');
   const origin=meta.audio_started_at*1000;

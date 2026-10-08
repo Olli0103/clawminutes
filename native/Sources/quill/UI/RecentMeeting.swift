@@ -13,6 +13,7 @@ struct RecentMeeting: Identifiable, Sendable {
     let transcript: URL?
     var revision: Int = 1
     var completionAttempts: Int = 0
+    var canVerifyLegacyReceipt = false
     var canRetryAINotes: Bool { needsAttention && NotesRecovery.permits(.retryAI, failure: issue, completions: completionAttempts) }
     var canSaveTranscriptOnly: Bool { needsAttention && NotesRecovery.permits(.transcriptOnly, failure: issue, completions: completionAttempts) }
     var id: String { directory.path }
@@ -55,7 +56,8 @@ struct RecentMeeting: Identifiable, Sendable {
             stage: state?.stage ?? .needsAttention, issue: issue,
             detail: issue?.detail ?? item.reason, notes: notes,
             transcript: readableDocument(transcript) ? transcript : nil,
-            revision: state?.revision ?? 1, completionAttempts: item.retry?.completionAttempts ?? 0)
+            revision: state?.revision ?? 1, completionAttempts: item.retry?.completionAttempts ?? 0,
+            canVerifyLegacyReceipt: item.reason == LegacyReceiptReconciliation.reason)
     }
     static func readableDocument(_ file: URL) -> Bool {
         guard let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),

@@ -101,6 +101,7 @@ struct MeetingDetailView: View {
     @State private var revisionMode: MeetingRevisionEditor.Mode?
     @State private var unidentifiedTurns: Int?
     @State private var recoveryKind: NotesRecovery.Kind?
+    @State private var verifyingLegacyReceipt = false
     var body: some View {
         ScrollView {
             if let meeting = controller.recentMeetings.first(where: { $0.id == meetingID }) {
@@ -139,6 +140,9 @@ struct MeetingDetailView: View {
                     if meeting.canRetryAINotes {
                         Button("Try AI notes again…") { recoveryKind = .retryAI }
                     }
+                    if meeting.canVerifyLegacyReceipt {
+                        Button("Verify saved meeting…") { verifyingLegacyReceipt = true }
+                    }
                     Button("Review this meeting’s audio…") { controller.reviewRecordedAudio([meeting]) }
                     Button("Show files in Finder") { controller.openDocument(meeting.directory) }.buttonStyle(.link)
                     DisclosureGroup("Technical details") {
@@ -146,6 +150,7 @@ struct MeetingDetailView: View {
                     }
                 }.padding(24).frame(maxWidth: .infinity, alignment: .leading)
                     .sheet(item: $revisionMode) { mode in MeetingRevisionEditor(controller: controller, meeting: meeting, mode: mode) }
+                    .sheet(isPresented: $verifyingLegacyReceipt) { LegacyReceiptView(controller: controller, meeting: meeting) }
                     .sheet(item: $recoveryKind) { kind in NotesRecoveryEditor(controller: controller, meeting: meeting, kind: kind) }
             } else { Text("This meeting is no longer in the current list.").padding(24) }
         }.frame(minWidth: 430, minHeight: 320)

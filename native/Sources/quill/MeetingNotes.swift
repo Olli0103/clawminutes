@@ -253,13 +253,25 @@ enum MeetingDocuments {
         try Data(destination.path.utf8).write(to: recording.appendingPathComponent("notes-export-path.txt"), options: .atomic)
         return destination
     }
-    static func export(receipt: [String: Any], root: URL, recording: URL) throws -> URL {
+    struct ValidatedDocuments {
+        let id: String, title: String, notes: String, transcript: String
+        let date: Date
+        let metadata: [String: Any]
+    }
+    /// Validate without publishing a receipt or touching the notes folder.
+    static func validateDocuments(_ receipt: [String: Any]) throws -> ValidatedDocuments {
         guard let id = receipt["sessionId"] as? String, id.range(of: "^teams-[a-f0-9]{24}$", options: .regularExpression) != nil,
               let docs = receipt["documents"] as? [String: Any], let title = docs["title"] as? String,
               let start = docs["startedAt"] as? String, let date = ISO8601DateFormatter().date(from: start),
               let notes = docs["notesMarkdown"] as? String, let transcript = docs["transcriptMarkdown"] as? String,
               let metadata = docs["metadata"] as? [String: Any], metadata["sessionId"] as? String == id,
               notes.utf8.count < 2_000_000, transcript.utf8.count < 16_000_000 else { throw TranscriptionFailure("Gateway returned incomplete meeting documents. Recording preserved.") }
+        return ValidatedDocuments(id: id, title: title, notes: notes, transcript: transcript, date: date, metadata: metadata)
+    }
+    static func export(receipt: [String: Any], root: URL, recording: URL) throws -> URL {
+        let documents = try validateDocuments(receipt)
+        let id = documents.id, title = documents.title, date = documents.date
+        let notes = documents.notes, transcript = documents.transcript, metadata = documents.metadata
         let format = DateFormatter(); format.locale = Locale(identifier: "en_US_POSIX"); format.dateFormat = "yyyy/MM/yyyy.MM.dd-HHmm"
         let base = root.appendingPathComponent(format.string(from: date) + "_" + (component(title).isEmpty ? "Meeting" : component(title)), isDirectory: true)
         let manager = FileManager.default

@@ -94,7 +94,7 @@ enum ArchiveBacklog {
             let savedReceipt = try? object(dir.appendingPathComponent("archive-receipt.json"))
             if let receipt = savedReceipt, receipt["localTranscriptSHA256"] == nil,
                receiptIdentityMatches(receipt, transcriptData: data, meta: meta, directory: dir) {
-                return item(.needsReview, "Legacy saved receipt lacks a transcript hash; verify delivery before retry")
+                return item(.needsReview, LegacyReceiptReconciliation.reason)
             }
             guard let receipt = savedReceipt,
                   receiptMatches(receipt, transcriptData: data, meta: meta, directory: dir) else {

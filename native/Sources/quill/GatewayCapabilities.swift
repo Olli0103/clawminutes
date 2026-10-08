@@ -10,6 +10,7 @@ struct GatewayCapabilities: Decodable, Sendable {
         let cappedNotesAttempts: Int
         let revisions: Int
         let notesRecovery: Int
+        let receiptVerification: Int?
     }
     struct Archive: Decodable, Sendable {
         let adapterVersion: Int

@@ -96,9 +96,14 @@ enum GatewayArchive {
         return try JSONSerialization.data(withJSONObject: ["recordingId": recordingID, "meta": meta.filter { metaKeys.contains($0.key) }, "transcript": text])
     }
 
-    static func request(body: Data? = nil) async throws -> Data {
+    static func request(body: Data? = nil, verifying: Bool = false) async throws -> Data {
         let config = Config.gateway(), url = try origin(config["url"] ?? "")
         var request = URLRequest(url: url.appendingPathComponent("plugins/teams-transcribe/ingest"))
+        if verifying {
+            var components = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)!
+            components.queryItems = [URLQueryItem(name: "mode", value: "verify")]
+            request.url = components.url
+        }
         request.timeoutInterval = body == nil ? 30 : 150
         request.httpMethod = body == nil ? "GET" : "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -131,6 +136,21 @@ enum GatewayArchive {
         return try GatewayCapabilities.verify(data)
     }
 
+    static func deliveryMetadata(_ original: [String: Any], directory dir: URL) -> [String: Any] {
+        var meta = original
+        if let rosterData = try? ArchiveBacklog.read(dir.appendingPathComponent("participants.json")),
+           let roster = try? JSONDecoder().decode(ParticipantRoster.self, from: rosterData) {
+            let sources: Set<String> = ["meeting_roster", "meeting_tile", "meeting_ui", "accessibility_active_speaker", "meeting_tile_edge"]
+            let joined = roster.participants.compactMap { member -> [String: Any]? in
+                let evidence = member.sources.filter { sources.contains($0) }
+                guard !evidence.isEmpty else { return nil }
+                return ["name": member.name, "first_seen": member.first_seen, "last_seen": member.last_seen, "sources": evidence]
+            }
+            meta["participants"] = ["joined": joined, "coverage": joined.isEmpty ? "unavailable" : "partial", "invited": [], "invitees_status": "unavailable"]
+        }
+        return meta
+    }
+
     static func save(_ dir: URL,
                      transport: @Sendable (Data) async throws -> Data = { try await request(body: $0) },
                      capabilityTransport: @Sendable () async throws -> Data = { try await request() },
@@ -155,16 +175,12 @@ enum GatewayArchive {
             try MeetingDocuments.rememberExport(destination, root: exportRoot, recording: dir, sessionID: receipt["sessionId"] as! String)
             return
         }
-        if let rosterData = try? Data(contentsOf: dir.appendingPathComponent("participants.json")),
-           let roster = try? JSONDecoder().decode(ParticipantRoster.self, from: rosterData) {
-            let sources: Set<String> = ["meeting_roster", "meeting_tile", "meeting_ui", "accessibility_active_speaker", "meeting_tile_edge"]
-            let joined = roster.participants.compactMap { member -> [String: Any]? in
-                let evidence = member.sources.filter { sources.contains($0) }
-                guard !evidence.isEmpty else { return nil }
-                return ["name": member.name, "first_seen": member.first_seen, "last_seen": member.last_seen, "sources": evidence]
-            }
-            meta["participants"] = ["joined": joined, "coverage": joined.isEmpty ? "unavailable" : "partial", "invited": [], "invitees_status": "unavailable"]
+        if let receipt = try? ArchiveBacklog.object(dir.appendingPathComponent("archive-receipt.json")),
+           receipt["localTranscriptSHA256"] == nil,
+           ArchiveBacklog.receiptIdentityMatches(receipt, transcriptData: transcriptData, meta: meta, directory: dir) {
+            throw TranscriptionFailure(LegacyReceiptReconciliation.reason)
         }
+        meta = deliveryMetadata(meta, directory: dir)
         let retry = try MeetingPipelineState.load(dir).deliveryRetry
         guard retry == nil || retry?.transcriptSHA256 == AudioRetention.digest(transcriptData) else { throw MeetingPipelineState.invalidState }
         if let recovery = try NotesRecovery.active(dir, retry: retry, transcriptData: transcriptData) { meta["notes_recovery"] = recovery.json }

@@ -30,8 +30,9 @@ final class GatewayHTTPContractTests: XCTestCase, @unchecked Sendable {
         let origin = URL(string: "http://127.0.0.1:\(port)")!
         let session = URLSession(configuration: .ephemeral, delegate: NoGatewayRedirect(), delegateQueue: nil)
         defer { session.invalidateAndCancel() }
-        @Sendable func post(_ body: Data) async throws -> (Data, Int) {
+        @Sendable func post(_ body: Data, verifying: Bool = false) async throws -> (Data, Int) {
             var request = URLRequest(url: origin.appendingPathComponent("plugins/teams-transcribe/ingest"))
+            if verifying { request.url = URL(string: request.url!.absoluteString + "?mode=verify") }
             request.timeoutInterval = 20
             request.httpMethod = "POST"
             request.httpBody = body
@@ -122,6 +123,17 @@ final class GatewayHTTPContractTests: XCTestCase, @unchecked Sendable {
         if case .saved = await delivery.deliver(local, now: 300) {} else { XCTFail("Transcript-only recovery must save") }
         let recovered = try ArchiveBacklog.object(local.appendingPathComponent("archive-receipt.json"))
         XCTAssertEqual((recovered["notes"] as? [String: Any])?["backend"] as? String, "transcript-only")
+        var legacyRecovery = recovered
+        legacyRecovery.removeValue(forKey: "localTranscriptSHA256")
+        try JSONSerialization.data(withJSONObject: legacyRecovery).write(to: local.appendingPathComponent("archive-receipt.json"))
+        let recoveryPlan = try LegacyReceiptReconciliation.prepare(local, notesRoot: notesRoot)
+        let verifiedRecovery = try await LegacyReceiptReconciliation.apply(recoveryPlan, transport: { body in
+            let (data, status) = try await post(body, verifying: true)
+            guard status == 200 else { throw DeliveryFailure.response(status: status, data: data) }
+            return data
+        }, capabilityTransport: capabilities, activityLockPath: lease)
+        XCTAssertTrue(verifiedRecovery.exported)
+        XCTAssertEqual(try MeetingPipelineState.load(local).delivery.completionAttempts, 2)
         XCTAssertEqual(ArchiveBacklog.inspect(local, notesRoot: notesRoot).state, .needsReview, "Capture gaps still require review after recovery")
         XCTAssertEqual(try ArchiveBacklog.read(local.appendingPathComponent("transcript.json")), originalTranscript)
         XCTAssertEqual(try ArchiveBacklog.object(local.appendingPathComponent("meta.json"))["notes_mode"] as? String, "ai")
@@ -135,6 +147,27 @@ final class GatewayHTTPContractTests: XCTestCase, @unchecked Sendable {
         try await GatewayArchive.save(regenerated, transport: { _ in XCTFail("Saved exports must not send speech again"); throw URLError(.notConnectedToInternet) },
             capabilityTransport: { XCTFail("Verified local exports must remain usable offline"); throw URLError(.notConnectedToInternet) },
             exportRootOverride: notesRoot, activityLockPath: lease)
+        var legacy = newReceipt
+        legacy.removeValue(forKey: "localTranscriptSHA256")
+        let legacyBytes = try JSONSerialization.data(withJSONObject: legacy)
+        try legacyBytes.write(to: regenerated.appendingPathComponent("archive-receipt.json"))
+        let blocked = ArchiveBacklog.inspect(regenerated, notesRoot: notesRoot)
+        XCTAssertTrue(RecentMeeting.make(blocked).canVerifyLegacyReceipt)
+        let plan = try LegacyReceiptReconciliation.prepare(regenerated, notesRoot: notesRoot)
+        let exportedPath = try String(contentsOf: regenerated.appendingPathComponent("notes-export-path.txt"), encoding: .utf8)
+        let editedNotes = URL(fileURLWithPath: exportedPath).appendingPathComponent("notes.md")
+        try Data("User-edited notes stay".utf8).write(to: editedNotes)
+        let verification = try await LegacyReceiptReconciliation.apply(plan, transport: { body in
+            let (data, status) = try await post(body, verifying: true)
+            guard status == 200 else { throw DeliveryFailure.response(status: status, data: data) }
+            return data
+        }, capabilityTransport: capabilities, activityLockPath: lease)
+        XCTAssertTrue(verification.exported)
+        XCTAssertEqual(try String(contentsOf: editedNotes, encoding: .utf8), "User-edited notes stay")
+        XCTAssertEqual(try ArchiveBacklog.object(regenerated.appendingPathComponent("archive-receipt.json"))["localTranscriptSHA256"] as? String, plan.transcriptSHA256)
+        let preserved = regenerated.appendingPathComponent("archive-receipt.legacy-" + AudioRetention.digest(legacyBytes) + ".json")
+        XCTAssertEqual(try ArchiveBacklog.read(preserved), legacyBytes)
+        XCTAssertFalse(RecentMeeting.make(ArchiveBacklog.inspect(regenerated, notesRoot: notesRoot)).canVerifyLegacyReceipt)
         let (counts, _) = try await session.data(from: origin.appendingPathComponent("statistics"))
         XCTAssertEqual((try JSONSerialization.jsonObject(with: counts) as? [String: Int])?["completions"], 5)
     }

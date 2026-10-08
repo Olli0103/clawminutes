@@ -4,7 +4,7 @@ import os from 'node:os';
 import {createHash,randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {isDeepStrictEqual} from 'node:util';
-import {archiveAdapter,meetingRecord,assertArchiveReadback,assertUtteranceCompatibility} from './archive.mjs';
+import {archiveAdapter,existingArchiveDatabase,meetingRecord,assertArchiveReadback,assertUtteranceCompatibility} from './archive.mjs';
 import {validateTemplate,validateContext,validateParticipants,generateNotes,documents,restoreGeneratedNotes} from './notes.mjs';
 import {DeliveryError,deliveryError,safeErrorDiagnostic} from './delivery-errors.mjs';
 import {withNotesAttempt,validateNotesRecovery,authorizeTranscriptRecovery} from './notes-attempts.mjs';
@@ -74,26 +74,8 @@ async function persistEnvelope(envelope,{openclawDir,stateDir,complete}={}){
   await verifyRevisionParent(store,record,e.meta.revision);
   const existing=await store.readSession(id);
   if(existing){
-    const rows=await store.readUtterancesForSession(existing);
-    assertUtteranceCompatibility(record,rows);
-    const snapshot=await store.readSummary(existing);
-    if(snapshot?.summary){
-      if(rows.length!==record.utterances.length)throw new DeliveryError('revision_conflict','Archived transcript differs. Save changes as a new revision; saved notes are preserved.',{status:409});
-      // The previous HTTP response may have been lost after a successful commit.
-      // Return the persisted documents without another model call or store write.
-      const same=(a,b)=>isDeepStrictEqual(JSON.parse(JSON.stringify(a??null)),JSON.parse(JSON.stringify(b??null)));
-      const summary=snapshot.summary;
-      if(summary.sessionId!==id||summary.utteranceCount!==rows.length||!same(summary.transcript,record.summary.transcript))throw new DeliveryError('archive_integrity','Canonical archive readback mismatch',{status:409});
-      const fallback=existing.metadata?.notesRecovery;
-      if(fallback&&!same(fallback,e.meta.notes_recovery))throw new DeliveryError('revision_conflict','This meeting was explicitly saved as transcript-only notes. Existing notes are preserved.',{status:409});
-      const notesBackend=fallback?.kind==='transcript_only'?'transcript-only':e.meta.notes_mode==='ai'?'gateway-model':record.session.metadata.notes.backend;
-      if(['title','startedAt','stoppedAt','source'].some(k=>!same(existing[k],record.session[k]))||
-         ['stt','meetingContext','participants','captureStatus','captureGaps','fixture','revision'].some(k=>!same(existing.metadata?.[k],record.session.metadata[k]))||
-         existing.metadata?.notes?.backend!==notesBackend||!same(summary.template,e.meta.note_template))throw new DeliveryError('revision_conflict','Archived meeting metadata differs. Save changes as a new revision; saved notes are preserved.',{status:409});
-      const saved={session:existing,utterances:rows,summary};
-      assertArchiveReadback(saved,rows,snapshot);
-      return archiveReceipt(saved,rows);
-    }
+    const receipt=await completedReceipt(e,record,store,existing);
+    if(receipt)return receipt;
   }
   if(e.meta.notes_recovery?.kind==='transcript_only'){
     await authorizeTranscriptRecovery(stateDir,id,e);
@@ -119,6 +101,47 @@ async function persistEnvelope(envelope,{openclawDir,stateDir,complete}={}){
   assertArchiveReadback(record,rows,summary);
   return archiveReceipt(record,rows);
 }
+// Read the canonical store with the SDK's readOnly admission. Verification never
+// reserves notes attempts, generates a summary or writes session/export records.
+export async function verifyEnvelope(envelope,{openclawDir,stateDir}={}){
+  let e;
+  try{e=validateEnvelope(envelope);}catch(error){throw new DeliveryError('invalid_payload',error.message);}
+  const key=JSON.stringify([path.resolve(stateDir),e.meta.started,e.recordingId]);
+  if(pendingSaves.has(key))throw new DeliveryError('save_in_progress','A save is in progress. Wait before verifying.',{retryable:true,status:409});
+  const id=archiveIdentity(e.meta.started,e.recordingId);
+  const record=meetingRecord(e.meta,e.transcript,id);record.session.metadata.fixture=e.meta.fixture===true;
+  const Store=await archiveAdapter(openclawDir);
+  const databasePath=await existingArchiveDatabase(openclawDir,stateDir);
+  if(!databasePath)throw new DeliveryError('archive_not_verified','A completed Gateway archive was not found. No meeting was saved.',{status:409});
+  const store=new Store(path.join(stateDir,'transcripts'),{path:databasePath,readOnly:true,env:{...process.env,OPENCLAW_STATE_DIR:stateDir}});
+  const existing=await store.readSession(id);
+  const receipt=existing&&await completedReceipt(e,record,store,existing);
+  if(!receipt)throw new DeliveryError('archive_not_verified','A matching completed Gateway meeting was not found. Local files are preserved; nothing was saved.',{status:409});
+  return receipt;
+}
+async function completedReceipt(e,record,store,existing){
+  const id=record.session.sessionId;
+  const rows=await store.readUtterancesForSession(existing);
+  assertUtteranceCompatibility(record,rows);
+  const snapshot=await store.readSummary(existing);
+  if(snapshot?.summary){
+    if(rows.length!==record.utterances.length)throw new DeliveryError('revision_conflict','Archived transcript differs. Save changes as a new revision; saved notes are preserved.',{status:409});
+    // The previous HTTP response may have been lost after a successful commit.
+    // Return the persisted documents without another model call or store write.
+    const same=(a,b)=>isDeepStrictEqual(JSON.parse(JSON.stringify(a??null)),JSON.parse(JSON.stringify(b??null)));
+    const summary=snapshot.summary;
+    if(summary.sessionId!==id||summary.utteranceCount!==rows.length||!same(summary.transcript,record.summary.transcript))throw new DeliveryError('archive_integrity','Canonical archive readback mismatch',{status:409});
+    const fallback=existing.metadata?.notesRecovery;
+    if(fallback&&!same(fallback,e.meta.notes_recovery))throw new DeliveryError('revision_conflict','This meeting was explicitly saved as transcript-only notes. Existing notes are preserved.',{status:409});
+    const notesBackend=fallback?.kind==='transcript_only'?'transcript-only':e.meta.notes_mode==='ai'?'gateway-model':record.session.metadata.notes.backend;
+    if(['title','startedAt','stoppedAt','source'].some(k=>!same(existing[k],record.session[k]))||
+       ['stt','meetingContext','participants','captureStatus','captureGaps','fixture','revision'].some(k=>!same(existing.metadata?.[k],record.session.metadata[k]))||
+       existing.metadata?.notes?.backend!==notesBackend||!same(summary.template,e.meta.note_template))throw new DeliveryError('revision_conflict','Archived meeting metadata differs. Save changes as a new revision; saved notes are preserved.',{status:409});
+    const saved={session:existing,utterances:rows,summary};
+    assertArchiveReadback(saved,rows,snapshot);
+    return archiveReceipt(saved,rows);
+  }
+}
 function archiveReceipt(record,rows){
   return {saved:true,sessionId:record.session.sessionId,utteranceCount:rows.length,stt:record.session.metadata.stt,notes:record.session.metadata.notes,documents:documents(record),archiveExecutionMachine:os.hostname(),savedAt:new Date().toISOString()};
 }
@@ -135,7 +158,9 @@ export function gatewayHandler(options){
       try { options?.onFailure?.({requestId,...(recordingRef?{recordingRef}:{}),code:failure.code,retryable:failure.retryable,completionAttempted:failure.completionAttempted,...safeErrorDiagnostic(failure)}); } catch { /* best effort */ }
     };
     if(req.method==='GET'){
-      try{const status=await gatewayCapabilities(options);res.writeHead(200);res.end(JSON.stringify(status));}
+      try{
+        if(new URL(req.url||'/', 'http://gateway.invalid').search)throw new DeliveryError('invalid_payload','Verification requires a POST transcript package.');
+        const status=await gatewayCapabilities(options);res.writeHead(200);res.end(JSON.stringify(status));}
       catch(error){fail(error);}
       return true;
     }
@@ -147,7 +172,12 @@ export function gatewayHandler(options){
       let envelope;
       try{envelope=JSON.parse(Buffer.concat(chunks).toString('utf8'));}catch{throw new DeliveryError('invalid_payload','The meeting package is not valid JSON.');}
       if(typeof envelope?.recordingId==='string'&&envelope.recordingId.length<=128)recordingRef=createHash('sha256').update(envelope.recordingId).digest('hex').slice(0,24);
-      const receipt=await saveEnvelope(envelope,options);
+      const parsedURL=new URL(req.url||'/', 'http://gateway.invalid');
+      const query=[...parsedURL.searchParams];
+      if(query.length&&(query.length!==1||query[0][0]!=='mode'||query[0][1]!=='verify'))throw new DeliveryError('invalid_payload','Unsupported request mode. No meeting was saved.');
+      const verifying=query.length===1;
+      const receipt=verifying?await verifyEnvelope(envelope,options):await saveEnvelope(envelope,options);
+      if(verifying)receipt.verification={version:1,mode:'canonical_readback',requestSHA256:createHash('sha256').update(Buffer.concat(chunks)).digest('hex')};
       res.writeHead(200);res.end(JSON.stringify(receipt));
     }catch(error){
       fail(error);
