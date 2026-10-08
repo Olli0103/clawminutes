@@ -37,7 +37,7 @@ final class NotesRecoveryTests: XCTestCase {
         XCTAssertEqual(item.retry?.completionAttempts, 3)
         try ArchiveBacklog.recordFailure(DeliveryFailure.signInRequired, directory: directory)
         XCTAssertFalse(ArchiveBacklog.inspect(directory).pending)
-        try ArchiveBacklog.rearmSignIn(ArchiveBacklog.inspect(directory), now: 1200)
+        try ArchiveBacklog.rearmConnection(ArchiveBacklog.inspect(directory), now: 1200)
         XCTAssertTrue(ArchiveBacklog.inspect(directory).pending, "A sign-in remedy must not be blocked by an old AI budget during text-only recovery")
         XCTAssertEqual(ArchiveBacklog.inspect(directory).retry?.completionAttempts, 3)
         let history = try XCTUnwrap(NotesRecovery.read(directory, transcriptData: transcript)).history

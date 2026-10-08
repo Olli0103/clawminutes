@@ -242,8 +242,8 @@ final class AppController: NSObject, NSApplicationDelegate {
         menuBar.onDetectionToggle = { [weak self] in self?.meetings.toggleEnabled() }
         menuBar.onPermission = { [weak self] in self?.meetings.requestPermission() }
         menuBar.onKeepRecording = { [weak self] in self?.meetings.keepRecording() }
-        menuBar.onRetryArchive = { [transcription, root] in
-            let report = try await transcription.retryArchiveBacklog(root: root, force: true)
+        menuBar.onRetryArchive = { [transcription, root] capabilities in
+            let report = try await transcription.retryArchiveBacklog(root: root, force: true, capabilities: capabilities)
             return report.busy ? "A backlog check is already running" : "Checked pending saves: \(report.attempted) attempted, \(report.pending) waiting"
         }
         menuBar.onTextPrepared = { [transcription, root] in

@@ -9,6 +9,7 @@ import {validateTemplate,validateContext,validateParticipants,generateNotes,docu
 import {DeliveryError,deliveryError,safeErrorDiagnostic} from './delivery-errors.mjs';
 import {withNotesAttempt,validateNotesRecovery,authorizeTranscriptRecovery} from './notes-attempts.mjs';
 import {archiveIdentity,validateRevision,verifyRevisionParent} from './revisions.mjs';
+import {gatewayCapabilities} from './capabilities.mjs';
 export function validateEnvelope(value){
   if(!value || typeof value!=='object' || Array.isArray(value) || Object.keys(value).some(k=>!['meta','transcript','recordingId'].includes(k)))throw Error('Only transcript metadata is accepted. Raw audio is forbidden.');
   if(typeof value.recordingId!=='string'||!/^[-\w.]{1,128}$/.test(value.recordingId))throw Error('Invalid recording identity');
@@ -133,7 +134,11 @@ export function gatewayHandler(options){
       // Diagnostics must never turn a completed HTTP response into a rejected handler.
       try { options?.onFailure?.({requestId,...(recordingRef?{recordingRef}:{}),code:failure.code,retryable:failure.retryable,completionAttempted:failure.completionAttempted,...safeErrorDiagnostic(failure)}); } catch { /* best effort */ }
     };
-    if(req.method==='GET'){res.writeHead(200);res.end(JSON.stringify({plugin:'teams-transcribe',gatewayMachine:os.hostname(),rawAudioAccepted:false,notesModelConfigured:options?.notesModel||null,capabilities:{structuredErrors:1,idempotentCompletedSave:true,cappedNotesAttempts:3,revisions:1,notesRecovery:1}}));return true;}
+    if(req.method==='GET'){
+      try{const status=await gatewayCapabilities(options);res.writeHead(200);res.end(JSON.stringify(status));}
+      catch(error){fail(error);}
+      return true;
+    }
     if(req.method!=='POST'){fail(new DeliveryError('method_not_allowed','POST required',{status:405}));return true;}
     if(!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type']||'')){fail(new DeliveryError('content_type_required','JSON transcript metadata only',{status:415}));return true;}
     let size=0;const chunks=[];

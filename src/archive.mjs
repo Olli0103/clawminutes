@@ -4,20 +4,26 @@ import os from 'node:os';
 import {pathToFileURL} from 'node:url';
 import {createHash} from 'node:crypto';
 import {DeliveryError} from './delivery-errors.mjs';
+import {verifyArchiveStore} from './archive-contract.mjs';
 // Verified SDK releases expose no public completed-record import.
 // Use its real canonical store and lease machinery, never write guessed SQLite rows.
-const verifiedArchiveVersions = ['2026.9.7','2026.9.8'];
+export const verifiedArchiveVersions = Object.freeze(['2026.9.7','2026.9.8']);
 export async function archiveAdapter(openclawDir) {
-  if(!openclawDir) throw Error('needs_evidence: installed OpenClaw directory is required for the Meetings archive adapter.');
-  const pkg=JSON.parse(await fs.readFile(path.join(openclawDir,'package.json'),'utf8'));
-  if(!verifiedArchiveVersions.includes(pkg.version)) throw new DeliveryError('plugin_update_needed',`Archive adapter verified only for OpenClaw ${verifiedArchiveVersions.join(' or ')}, found ${pkg.version}. Recording preserved.`,{status:503});
-  const dist=path.join(openclawDir,'dist');
-  for(const f of (await fs.readdir(dist)).filter(f=>/^store-.*\.mjs$/.test(f))) {
-    const source=await fs.readFile(path.join(dist,f),'utf8');
-    if(!source.includes('src/transcripts/store.ts')) continue;
-    const module=await import(pathToFileURL(path.join(dist,f)).href);
-    const Store=Object.values(module).find(v=>typeof v==='function' && typeof v.prototype?.appendUtteranceForSession==='function');
-    if(Store) return Store;
+  if(!openclawDir) throw new DeliveryError('plugin_update_needed','needs_evidence: installed OpenClaw directory is required for the Meetings archive adapter.',{status:503});
+  try{
+    const pkg=JSON.parse(await fs.readFile(path.join(openclawDir,'package.json'),'utf8'));
+    if(!verifiedArchiveVersions.includes(pkg.version)) throw new DeliveryError('plugin_update_needed',`Archive adapter verified only for OpenClaw ${verifiedArchiveVersions.join(' or ')}. This SDK version is unsupported. Recording preserved.`,{status:503});
+    const dist=path.join(openclawDir,'dist');
+    for(const f of (await fs.readdir(dist)).filter(f=>/^store-.*\.mjs$/.test(f))) {
+      const source=await fs.readFile(path.join(dist,f),'utf8');
+      if(!source.includes('src/transcripts/store.ts')) continue;
+      const module=await import(pathToFileURL(path.join(dist,f)).href);
+      const Store=Object.values(module).find(v=>typeof v==='function' && typeof v.prototype?.appendUtteranceForSession==='function');
+      if(Store) { await verifyArchiveStore(Store); return Store; }
+    }
+  }catch(cause){
+    if(cause instanceof DeliveryError)throw cause;
+    throw new DeliveryError('plugin_update_needed','The Gateway archive implementation could not be verified. Check the installed SDK and plugin versions. Local files are preserved.',{status:503,cause});
   }
   throw new DeliveryError('plugin_update_needed','needs_evidence: OpenClaw transcript store implementation changed. Recording preserved.',{status:503});
 }

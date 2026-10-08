@@ -14,7 +14,7 @@ struct SetupLocal: AsyncParsableCommand {
 
 struct GatewayStatus: AsyncParsableCommand {
     static let configuration = CommandConfiguration(commandName: "gateway-status", abstract: "Check the configured Gateway without capture or uploads.")
-    mutating func run() async throws { print(try await GatewayArchive.status()) }
+    mutating func run() async throws { print(try await GatewayArchive.status().description) }
 }
 
 struct ArchiveSession: AsyncParsableCommand {
@@ -36,7 +36,8 @@ struct ArchiveBacklogCommand: AsyncParsableCommand {
             guard let lock = try AppRunLock.acquire() else { throw ValidationError("The helper is running. Use Retry pending saves in its Settings.") }
             defer { withExtendedLifetime(lock) {} }
             let coordinator = TranscriptionCoordinator()
-            let report = try await coordinator.retryArchiveBacklog(root: root, force: true)
+            let capabilities = try? await GatewayArchive.status()
+            let report = try await coordinator.retryArchiveBacklog(root: root, force: true, capabilities: capabilities)
             print(String(decoding: try JSONEncoder().encode(report), as: UTF8.self))
         } else {
             let rows = try ArchiveBacklog.scan(root: root)

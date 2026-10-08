@@ -141,16 +141,17 @@ enum ArchiveBacklog {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
     }
 
-    /// Reconnection or an explicit Retry permits one new authenticated send.
-    /// This never grants an AI attempt. Text-only recovery can sign in at the AI cap.
-    static func rearmSignIn(_ item: Item, now: TimeInterval) throws {
-        guard item.retry?.lastError?.code == "sign_in_required" else { return }
+    /// Reconnection permits one authenticated send. Compatibility failures need
+    /// a verified handshake. Model errors and paid limits remain blocked.
+    static func rearmConnection(_ item: Item, now: TimeInterval, capabilities: GatewayCapabilities? = nil) throws {
+        let cause = item.retry?.lastError?.code
+        guard cause == "sign_in_required" || (cause == "plugin_update_needed" && capabilities != nil) else { return }
         let file = item.directory.appendingPathComponent("archive-retry.json")
         let transcriptOnly = try NotesRecovery.active(item.directory, retry: item.retry,
             transcriptData: read(item.directory.appendingPathComponent("transcript.json")))?.kind == .transcriptOnly
         guard (item.retry?.completionAttempts ?? 0) < 3 || transcriptOnly else { return }
         var retry = try JSONDecoder().decode(Retry.self, from: read(file))
-        guard retry.lastError?.code == "sign_in_required", retry.transcriptSHA256 == item.retry?.transcriptSHA256 else { return }
+        guard retry.lastError?.code == cause, retry.transcriptSHA256 == item.retry?.transcriptSHA256 else { return }
         retry.lastError = nil
         retry.nextAttemptAt = now
         try JSONEncoder().encode(retry).write(to: file, options: .atomic)

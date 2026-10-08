@@ -39,6 +39,14 @@ final class GatewayHTTPContractTests: XCTestCase, @unchecked Sendable {
             let (data, response) = try await session.data(for: request)
             return (data, try XCTUnwrap(response as? HTTPURLResponse).statusCode)
         }
+        @Sendable func capabilities() async throws -> Data {
+            let (data, response) = try await session.data(from: origin.appendingPathComponent("plugins/teams-transcribe/ingest"))
+            let status = try XCTUnwrap(response as? HTTPURLResponse).statusCode
+            guard status == 200 else { throw DeliveryFailure.response(status: status, data: data) }
+            return data
+        }
+        let negotiated = try GatewayCapabilities.verify(await capabilities())
+        XCTAssertEqual(negotiated.archive.verification, "isolated-readback-v1")
         let meta: [String: Any] = ["started": "2026-10-08T08:00:00Z", "ended": "2026-10-08T08:01:00Z", "audio_started_at": 1791446400.0,
             "status": "stopped", "fixture": true, "notes_mode": "ai", "files": ["mic": "/forbidden/audio"],
             "note_template": ["id": "fixture", "name": "Fixture", "context": "Synthetic", "sections": [["title": "Summary", "instructions": "Summarize"]]]]
@@ -101,7 +109,7 @@ final class GatewayHTTPContractTests: XCTestCase, @unchecked Sendable {
                 let (data, status) = try await post(body)
                 guard status == 200 else { throw DeliveryFailure.response(status: status, data: data) }
                 return data
-            }, exportRootOverride: notesRoot, activityLockPath: lease)
+            }, capabilityTransport: capabilities, exportRootOverride: notesRoot, activityLockPath: lease)
         }, onSaved: { _ in })
         if case .failed(let failure) = await delivery.deliver(local, now: 100) { XCTAssertEqual(failure.code, "ai_invalid_output") }
         else { XCTFail("Synthetic invalid AI output must fail") }
@@ -124,6 +132,9 @@ final class GatewayHTTPContractTests: XCTestCase, @unchecked Sendable {
         XCTAssertNotEqual(newReceipt["sessionId"] as? String, recovered["sessionId"] as? String)
         XCTAssertEqual((newReceipt["notes"] as? [String: Any])?["backend"] as? String, "gateway-model")
         XCTAssertEqual((try ArchiveBacklog.object(local.appendingPathComponent("archive-receipt.json"))["notes"] as? [String: Any])?["backend"] as? String, "transcript-only")
+        try await GatewayArchive.save(regenerated, transport: { _ in XCTFail("Saved exports must not send speech again"); throw URLError(.notConnectedToInternet) },
+            capabilityTransport: { XCTFail("Verified local exports must remain usable offline"); throw URLError(.notConnectedToInternet) },
+            exportRootOverride: notesRoot, activityLockPath: lease)
         let (counts, _) = try await session.data(from: origin.appendingPathComponent("statistics"))
         XCTAssertEqual((try JSONSerialization.jsonObject(with: counts) as? [String: Int])?["completions"], 5)
     }

@@ -104,6 +104,8 @@ Saved meeting details offer **Identify speakers…** and **Regenerate notes…**
 
 Failed AI notes offer transcript-only recovery or an explicit additional attempt when the existing budget permits it. Recovery preserves the original transcript and earlier failures; it cannot reset paid-attempt limits. See [notes recovery](docs/notes-recovery.md) for replay behavior and legacy-ledger limits.
 
+Connection and delivery now require a [verified Gateway text/archive handshake](docs/gateway-capabilities.md). A successful HTTP response alone cannot send a meeting. The adapter checks its storage behavior with synthetic data in a temporary directory, while retaining the supported SDK version pins.
+
 ## Data flow and audio retention
 
 Parakeet keeps audio and speech recognition on the recording Mac. The Gateway receives transcript text and approved metadata, including captured meeting and participant observations. Its selected AI provider receives that text for note generation. The plugin's ingestion endpoint rejects raw audio.

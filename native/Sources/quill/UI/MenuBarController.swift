@@ -104,7 +104,7 @@ final class MenuBarController: NSObject, ObservableObject {
     @Published var pendingArchiveCount = 0
     var onSpeechCredentialsInstalled: (() async throws -> Void)?
     var onLocalModelInstalled: (() async throws -> Void)?
-    var onRetryArchive: (() async throws -> String)?
+    var onRetryArchive: ((GatewayCapabilities?) async throws -> String)?
     var onTextPrepared: (() async throws -> Void)?
     func queuePreparedText() async { try? await onTextPrepared?() }
     private var gatewayCancelled = false
@@ -350,8 +350,10 @@ final class MenuBarController: NSObject, ObservableObject {
         gatewayOperation = true
         defer { gatewayOperation = false }
         let wasConnected = gatewayConnected
+        let capabilities: GatewayCapabilities
         do {
-            gatewayStatus = try await GatewayArchive.status()
+            capabilities = try await GatewayArchive.status()
+            gatewayStatus = capabilities.description
             gatewayConnected = true
         }
         catch {
@@ -360,7 +362,7 @@ final class MenuBarController: NSObject, ObservableObject {
             return
         }
         if !wasConnected {
-            do { _ = try await onRetryArchive?() }
+            do { _ = try await onRetryArchive?(capabilities) }
             catch { gatewayStatus += "\nPending saves could not be checked. Files preserved." }
         }
     }
@@ -414,9 +416,10 @@ final class MenuBarController: NSObject, ObservableObject {
                 }
                 guard !gatewayCancelled else { return }
                 try Config.setGateway(url: value, authentication: authentication)
-                gatewayStatus = try await GatewayArchive.status()
+                let capabilities = try await GatewayArchive.status()
+                gatewayStatus = capabilities.description
                 gatewayConnected = true
-                do { _ = try await onRetryArchive?() }
+                do { _ = try await onRetryArchive?(capabilities) }
                 catch { gatewayStatus += "\nPending saves could not be checked. Files preserved." }
             } catch {
                 guard !gatewayCancelled else { return }
@@ -444,7 +447,8 @@ final class MenuBarController: NSObject, ObservableObject {
         Task {
             defer { gatewayOperation = false }
             do {
-                gatewayStatus = try await onRetryArchive?() ?? "Backlog check is not ready"
+                let capabilities = try? await GatewayArchive.status()
+                gatewayStatus = try await onRetryArchive?(capabilities) ?? "Backlog check is not ready"
             } catch { gatewayStatus = "Archive pending; reconnect Gateway. Recordings retained" }
         }
     }

@@ -45,14 +45,14 @@ actor TranscriptionCoordinator {
     func setBacklogHandler(_ handler: @escaping @Sendable (Int) -> Void) { backlogHandler = handler }
 
     /// Reconcile text delivery while the app stays running. Never starts capture or inference.
-    func retryArchiveBacklog(root: URL, force: Bool = false,
+    func retryArchiveBacklog(root: URL, force: Bool = false, capabilities: GatewayCapabilities? = nil,
                              now: TimeInterval = Date().timeIntervalSince1970) async throws -> BacklogReport {
         guard !checkingBacklog else { return BacklogReport(busy: true) }
         checkingBacklog = true
         defer { checkingBacklog = false }
         var report = BacklogReport()
         if force {
-            for item in try backlogIndex.scan(root: root) { try ArchiveBacklog.rearmSignIn(item, now: now) }
+            for item in try backlogIndex.scan(root: root) { try ArchiveBacklog.rearmConnection(item, now: now, capabilities: capabilities) }
         }
         let items = try backlogIndex.scan(root: root)
         for item in items where item.pending && report.attempted < 5 {

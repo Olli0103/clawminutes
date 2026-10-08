@@ -126,15 +126,14 @@ enum GatewayArchive {
         return data
     }
 
-    static func status() async throws -> String {
+    static func status() async throws -> GatewayCapabilities {
         let data = try await request()
-        guard let result = try JSONSerialization.jsonObject(with: data) as? [String: Any], result["plugin"] as? String == "teams-transcribe",
-              result["rawAudioAccepted"] as? Bool == false else { throw TranscriptionFailure("The Teams transcription Gateway plugin is not available.") }
-        return "Gateway connected: \(result["gatewayMachine"] as? String ?? "unknown host")\nAI notes model configured: \(result["notesModelConfigured"] as? String ?? "unavailable")"
+        return try GatewayCapabilities.verify(data)
     }
 
     static func save(_ dir: URL,
                      transport: @Sendable (Data) async throws -> Data = { try await request(body: $0) },
+                     capabilityTransport: @Sendable () async throws -> Data = { try await request() },
                      exportRootOverride: URL? = nil, activityLockPath: URL = HelperWorkLease.path) async throws {
         let workLease = try HelperWorkLease.acquire(at: activityLockPath)
         defer { withExtendedLifetime(workLease) {} }
@@ -169,6 +168,9 @@ enum GatewayArchive {
         let retryFile = dir.appendingPathComponent("archive-retry.json")
         let retry = FileManager.default.fileExists(atPath: retryFile.path) ? try JSONDecoder().decode(ArchiveBacklog.Retry.self, from: ArchiveBacklog.read(retryFile)) : nil
         if let recovery = try NotesRecovery.active(dir, retry: retry, transcriptData: transcriptData) { meta["notes_recovery"] = recovery.json }
+        // Verify before transmitting speech. Receipted local-export recovery
+        // above remains usable offline and does not need this request.
+        _ = try GatewayCapabilities.verify(await capabilityTransport())
         let data = try await transport(envelope(meta: meta, transcript: transcript, recordingID: meta["recording_id"] as? String ?? dir.lastPathComponent))
         guard var receipt = try JSONSerialization.jsonObject(with: data) as? [String: Any], receipt["saved"] as? Bool == true,
               let sessionID = receipt["sessionId"] as? String, sessionID.hasPrefix("teams-"),
