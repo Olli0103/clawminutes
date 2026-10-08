@@ -471,7 +471,9 @@ actor MeetingScanner {
                         continue
                     }
                     // Never infer end merely from a temporarily hidden Leave button.
-                    result.observations[entry.meeting.id] = ended && !leave && window.complete ? .ended : (leave ? .present(entry.meeting) : .unknown)
+                    // A readable explicit end message is positive evidence even when
+                    // an unrelated AX leaf is unavailable. Missing controls alone are not.
+                    result.observations[entry.meeting.id] = endState.observation(for: entry.meeting, inCall: leave, endScreen: ended && !leave)
                     continue
                 }
                 let tabPresent = window.browserTabs.contains { node in
@@ -510,7 +512,11 @@ actor MeetingScanner {
                     entry.document.map { CFEqual($0, node.element) } == true
                         && node.url.hasPrefix("http") && MeetingEvidence.service(url: node.url) == nil
                 }
-                if endState.isEnded(entry.meeting.id, endScreen: navigatedAway || (documentPresent && ended && !leave), inCall: !navigatedAway && documentPresent && leave) {
+                // Call controls and end text must belong to this document, not another tab.
+                let document = entry.document.flatMap { window.documents[$0] }
+                let scopedLeave = document.map { hasCallControls($0, service: entry.meeting.service) } ?? false
+                let scopedEnd = document?.nodes.contains { MeetingEvidence.isEndMessage($0.text) } ?? false
+                if endState.isEnded(entry.meeting.id, endScreen: navigatedAway || (documentPresent && scopedEnd && !scopedLeave), inCall: !navigatedAway && documentPresent && scopedLeave) {
                     result.observations[entry.meeting.id] = .ended
                 } else if tabPresent || documentPresent {
                     result.observations[entry.meeting.id] = .present(entry.meeting)

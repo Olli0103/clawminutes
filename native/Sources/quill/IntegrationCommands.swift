@@ -26,6 +26,26 @@ struct ArchiveSession: AsyncParsableCommand {
     }
 }
 
+struct ArchiveBacklogCommand: AsyncParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "archive-backlog", abstract: "Check finished transcript delivery and local exports. Read-only unless --retry is supplied.")
+    @Option var out: String?
+    @Flag(help: "Retry pending text saves. Use Settings while the helper is running.") var retry = false
+    mutating func run() async throws {
+        let root = Config.resolveRoot(cliOverride: out)
+        if retry {
+            guard let lock = try AppRunLock.acquire() else { throw ValidationError("The helper is running. Use Retry pending saves in its Settings.") }
+            defer { withExtendedLifetime(lock) {} }
+            let coordinator = TranscriptionCoordinator()
+            let report = try await coordinator.retryArchiveBacklog(root: root, force: true)
+            print(String(decoding: try JSONEncoder().encode(report), as: UTF8.self))
+        } else {
+            let rows = try ArchiveBacklog.scan(root: root)
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            print(String(decoding: try encoder.encode(rows), as: UTF8.self))
+        }
+    }
+}
+
 struct VerifyAudioRetention: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "verify-audio-retention", abstract: "Verify saved transcript, notes and audio coverage, then delete the finished raw tracks. Never starts capture or contacts the Gateway.")
     @Option var directory: String

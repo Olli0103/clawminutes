@@ -63,14 +63,35 @@ async function persistEnvelope(envelope,{openclawDir,stateDir,complete}={}){
   const record=meetingRecord(e.meta,e.transcript,id);record.session.metadata.fixture=e.meta.fixture===true;
   const Store=await archiveAdapter(openclawDir);const store=new Store(path.join(stateDir,'transcripts'),{env:{...process.env,OPENCLAW_STATE_DIR:stateDir}});
   const existing=await store.readSession(id);
-  if(existing)assertUtteranceCompatibility(record,await store.readUtterancesForSession(existing));
+  if(existing){
+    const rows=await store.readUtterancesForSession(existing);
+    assertUtteranceCompatibility(record,rows);
+    const snapshot=await store.readSummary(existing);
+    if(rows.length===record.utterances.length&&snapshot?.summary){
+      // The previous HTTP response may have been lost after a successful commit.
+      // Return the persisted documents without another model call or store write.
+      const same=(a,b)=>isDeepStrictEqual(JSON.parse(JSON.stringify(a??null)),JSON.parse(JSON.stringify(b??null)));
+      const summary=snapshot.summary;
+      if(summary.sessionId!==id||summary.utteranceCount!==rows.length||!same(summary.transcript,record.summary.transcript))throw Error('Canonical archive readback mismatch');
+      const notesBackend=e.meta.notes_mode==='ai'?'gateway-model':record.session.metadata.notes.backend;
+      if(['title','startedAt','stoppedAt','source'].some(k=>!same(existing[k],record.session[k]))||
+         ['stt','meetingContext','participants','captureStatus','captureGaps','fixture'].some(k=>!same(existing.metadata?.[k],record.session.metadata[k]))||
+         existing.metadata?.notes?.backend!==notesBackend||!same(summary.template,e.meta.note_template))throw Error('Archived meeting metadata differs. Save changes as a new revision; saved notes are preserved.');
+      const saved={session:existing,utterances:rows,summary};
+      assertArchiveReadback(saved,rows,snapshot);
+      return archiveReceipt(saved,rows);
+    }
+  }
   await generateNotes(record,e.meta,complete);
   await store.writeSession(record.session);
   for(const utterance of record.utterances)await store.appendUtteranceForSession(record.session,utterance);
   await store.writeSummary(record.summary,record.session);
   const rows=await store.readUtterancesForSession(record.session);const summary=await store.readSummary(record.session);
   assertArchiveReadback(record,rows,summary);
-  return {saved:true,sessionId:id,utteranceCount:rows.length,stt:record.session.metadata.stt,notes:record.session.metadata.notes,documents:documents(record),archiveExecutionMachine:os.hostname(),savedAt:new Date().toISOString()};
+  return archiveReceipt(record,rows);
+}
+function archiveReceipt(record,rows){
+  return {saved:true,sessionId:record.session.sessionId,utteranceCount:rows.length,stt:record.session.metadata.stt,notes:record.session.metadata.notes,documents:documents(record),archiveExecutionMachine:os.hostname(),savedAt:new Date().toISOString()};
 }
 export function gatewayHandler(options){
   return async(req,res)=>{

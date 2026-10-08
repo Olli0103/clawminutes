@@ -34,7 +34,7 @@ struct Quill: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "ocmh",
         abstract: "Meeting recorder + transcriber. Records mic and system audio, then transcribes locally or with ElevenLabs.",
-        subcommands: [Run.self, Doctor.self, Meetings.self, Transcribe.self, Transcription.self, SetupLocal.self, CaptureFixture.self, RecoverSessions.self, GatewayStatus.self, ArchiveSession.self, VerifyAudioRetention.self, NameRecordingFolder.self, NameNotesFolder.self, ExportIcon.self],
+        subcommands: [Run.self, Doctor.self, Meetings.self, Transcribe.self, Transcription.self, SetupLocal.self, CaptureFixture.self, RecoverSessions.self, GatewayStatus.self, ArchiveSession.self, ArchiveBacklogCommand.self, VerifyAudioRetention.self, NameRecordingFolder.self, NameNotesFolder.self, ExportIcon.self],
         defaultSubcommand: Run.self
     )
 }
@@ -214,6 +214,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private let meetings = MeetingAssistant()
     private var session: RecordingSession?
     private var ticker: Timer?
+    private var backlogTask: Task<Void, Never>?
     private var starting = false
     private var stopping = false
     private let showMenuOnLaunch: Bool
@@ -231,6 +232,10 @@ final class AppController: NSObject, NSApplicationDelegate {
         menuBar.onDetectionToggle = { [weak self] in self?.meetings.toggleEnabled() }
         menuBar.onPermission = { [weak self] in self?.meetings.requestPermission() }
         menuBar.onKeepRecording = { [weak self] in self?.meetings.keepRecording() }
+        menuBar.onRetryArchive = { [transcription, root] in
+            let report = try await transcription.retryArchiveBacklog(root: root, force: true)
+            return report.busy ? "A backlog check is already running" : "Checked pending saves: \(report.attempted) attempted, \(report.pending) waiting"
+        }
         meetings.onStart = { [weak self] in
             guard let self, self.session == nil else { return false }
             return await self.startSession()
@@ -242,18 +247,28 @@ final class AppController: NSObject, NSApplicationDelegate {
         meetings.onSpeakers = { [weak self] observation in self?.session?.recordSpeakers(observation) }
         meetings.start()
 
-        Task { [transcription, root] in
-            await transcription.setStatusHandler { status in
+        backlogTask = Task { [weak self, transcription, root] in
+            await transcription.setBacklogHandler { [weak self] count in
+                Task { @MainActor [weak self] in self?.menuBar.pendingArchiveCount = count }
+            }
+            await transcription.setStatusHandler { [weak self] status in
                 Task { @MainActor [weak self] in
                     self?.showTranscription(status)
                 }
             }
             await transcription.resumePending(root: root)
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(60)) }
+                catch { break }
+                do { _ = try await transcription.retryArchiveBacklog(root: root) }
+                catch { FileHandle.standardError.write(Data("Archive backlog check unavailable. Recordings preserved.\n".utf8)) }
+            }
         }
     }
 
     /// Stop any live session cleanly (finalizing files) and exit.
     func shutdown() {
+        backlogTask?.cancel()
         meetings.shutdown()
         Task {
             if let session { await finishSession(session) }

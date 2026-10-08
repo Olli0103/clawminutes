@@ -4,6 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {saveEnvelope,installedRuntimeDirectory} from '../src/gateway.mjs';
+import {archiveAdapter,meetingRecord} from '../src/archive.mjs';
 
 test('real SDK archive preserves names, timing and gaps through repeated saves',async()=>{
   const stateDir=await fs.mkdtemp(path.join(os.tmpdir(),'clawminutes-sdk-contract-'));
@@ -40,5 +41,30 @@ test('concurrent saves of the same meeting share one AI completion and receipt',
     release();const receipts=await Promise.all([first,second]);
     assert.equal(calls,1,'Automatic recovery and a manual retry must not create competing AI notes');
     assert.deepEqual(receipts[0],receipts[1]);assert.equal(receipts[0].utteranceCount,1);
+    const recovered=await saveEnvelope(structuredClone(payload),options);
+    assert.equal(calls,1,'A lost receipt must not regenerate already saved AI notes');
+    assert.deepEqual(recovered.documents,receipts[0].documents);
+    const changedTemplate=structuredClone(payload);changedTemplate.meta.note_template.context='Changed instructions';
+    await assert.rejects(saveEnvelope(changedTemplate,options),/Archived meeting metadata differs/);
+    assert.equal(calls,1,'A conflicting retry must preserve saved notes');
   } finally {release();await fs.rm(stateDir,{recursive:true,force:true});}
+});
+
+test('a retry completes a partial archive rather than claiming delivery',async()=>{
+  const stateDir=await fs.mkdtemp(path.join(os.tmpdir(),'clawminutes-partial-save-'));
+  try {
+    const payload={recordingId:'partial-fixture',meta:{started:'2026-10-07T10:00:00Z',ended:'2026-10-07T10:01:00Z',audio_started_at:1791367200,status:'stopped',fixture:true,notes_mode:'transcript'},transcript:{engine:'parakeet',model:'parakeet-tdt-0.6b-v3-coreml',created_at:'2026-10-07T10:02:00Z',execution_machine:'fixture',execution_location:'recording_mac',segments:[{start_ms:0,end_ms:1000,text:'First fixture utterance.'},{start_ms:1000,end_ms:2000,text:'Second fixture utterance.'}]}};
+    const options={stateDir,openclawDir:process.env.OPENCLAW_TEAMS_SDK_TEST_DIR||installedRuntimeDirectory()};
+    const {createHash}=await import('node:crypto');
+    const id='teams-'+createHash('sha256').update(payload.meta.started+'\n'+payload.recordingId).digest('hex').slice(0,24);
+    const record=meetingRecord(payload.meta,payload.transcript,id);
+    const Store=await archiveAdapter(options.openclawDir);
+    const store=new Store(path.join(stateDir,'transcripts'),{env:{...process.env,OPENCLAW_STATE_DIR:stateDir}});
+    await store.writeSession(record.session);
+    await store.appendUtteranceForSession(record.session,record.utterances[0]);
+    const receipt=await saveEnvelope(payload,options);
+    assert.equal(receipt.saved,true);assert.equal(receipt.utteranceCount,2);
+    assert.match(receipt.documents.transcriptMarkdown,/Second fixture utterance/);
+    assert.equal((await store.readUtterancesForSession(record.session)).length,2);
+  } finally {await fs.rm(stateDir,{recursive:true,force:true});}
 });

@@ -2,6 +2,24 @@ import XCTest
 @testable import quill
 
 final class MeetingEvidenceTests: XCTestCase {
+    func testNativeEndSurvivesPartialReadsAndOnlyCallControlsResetIt() {
+        var state = MeetingEndState()
+        let meeting = DetectedMeeting(id: "teams", app: "Teams", service: "Microsoft Teams")
+        XCTAssertEqual(state.observation(for: meeting, inCall: false, endScreen: false), .unknown)
+        XCTAssertEqual(state.observation(for: meeting, inCall: false, endScreen: true), .ended)
+        XCTAssertEqual(state.observation(for: meeting, inCall: false, endScreen: false), .ended)
+        XCTAssertEqual(state.observation(for: meeting, inCall: true, endScreen: true), .present(meeting))
+        XCTAssertEqual(state.observation(for: meeting, inCall: false, endScreen: false), .unknown)
+    }
+    func testTeamsLocalizedCallControlsAndEndScreens() {
+        XCTAssertTrue(MeetingEvidence.hasCallControls(["Verlassen", "Mikrofon stummschalten"]))
+        XCTAssertTrue(MeetingEvidence.isLeaveControl("Auflegen (Befehl + Umschalt + H)"))
+        XCTAssertTrue(MeetingEvidence.isEndMessage("Sie haben die Besprechung verlassen. Wie war die Anrufqualität?"))
+        XCTAssertTrue(MeetingEvidence.isEndMessage("You've left this meeting"))
+        XCTAssertFalse(MeetingEvidence.isEndMessage("Die Besprechung endet um 16 Uhr"))
+        XCTAssertFalse(MeetingEvidence.isLeaveControl("Verlassen Sie einen Kommentar"))
+    }
+
     func testEndedMeetingCannotRestartFromItsBackgroundTab() {
         var state = MeetingEndState()
         XCTAssertTrue(state.isEnded("meeting", endScreen: true, inCall: false))

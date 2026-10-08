@@ -33,7 +33,10 @@ final class MenuBarController: NSObject, ObservableObject {
     @Published private(set) var accessibilityGranted = AXIsProcessTrusted()
     @Published private(set) var gatewayStatus = "Checking connection…"
     @Published private(set) var gatewayOperation = false
+    private var gatewayConnected = false
     @Published private(set) var gatewaySigningIn = false
+    @Published var pendingArchiveCount = 0
+    var onRetryArchive: (() async throws -> String)?
     private var gatewayCancelled = false
     @Published private(set) var hasAPIKey = false
     @Published private(set) var localModelReady = AsrModels.modelsExist(at: AsrModels.defaultCacheDirectory(for: .v3), version: .v3)
@@ -252,8 +255,16 @@ final class MenuBarController: NSObject, ObservableObject {
         guard !gatewayOperation else { return }
         gatewayOperation = true
         defer { gatewayOperation = false }
-        do { gatewayStatus = try await GatewayArchive.status() }
-        catch { gatewayStatus = "Not connected. Your recordings stay on this Mac." }
+        let wasConnected = gatewayConnected
+        do {
+            gatewayStatus = try await GatewayArchive.status()
+            gatewayConnected = true
+        }
+        catch { gatewayConnected = false; gatewayStatus = "Not connected. Your recordings stay on this Mac."; return }
+        if !wasConnected {
+            do { _ = try await onRetryArchive?() }
+            catch { gatewayStatus += "\nPending saves could not be checked. Files preserved." }
+        }
     }
     private func showError(_ text: String) {
         let alert = NSAlert(); alert.messageText = "ocmh"; alert.informativeText = text; alert.runModal()
@@ -306,8 +317,12 @@ final class MenuBarController: NSObject, ObservableObject {
                 guard !gatewayCancelled else { return }
                 try Config.setGateway(url: value, authentication: authentication)
                 gatewayStatus = try await GatewayArchive.status()
+                gatewayConnected = true
+                do { _ = try await onRetryArchive?() }
+                catch { gatewayStatus += "\nPending saves could not be checked. Files preserved." }
             } catch {
                 guard !gatewayCancelled else { return }
+                gatewayConnected = false
                 let unavailableRoute = error is GatewayArchive.ConnectionIssue
                 gatewayStatus = unavailableRoute ? "Teams endpoint unavailable · HTTP 404" : "Gateway connection failed; recordings retained"
                 let failure = NSAlert()
@@ -331,15 +346,7 @@ final class MenuBarController: NSObject, ObservableObject {
         Task {
             defer { gatewayOperation = false }
             do {
-                let root = Config.resolveRoot(cliOverride: nil)
-                let entries = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
-                var count = 0
-                for dir in entries where FileManager.default.fileExists(atPath: dir.appendingPathComponent("transcript.json").path)
-                    && !FileManager.default.fileExists(atPath: dir.appendingPathComponent("archive-receipt.json").path) {
-                    try await GatewayArchive.save(dir)
-                    count += 1
-                }
-                gatewayStatus = "Gateway archive saved: \(count) pending meetings"
+                gatewayStatus = try await onRetryArchive?() ?? "Backlog check is not ready"
             } catch { gatewayStatus = "Archive pending; reconnect Gateway. Recordings retained" }
         }
     }

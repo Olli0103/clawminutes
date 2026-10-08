@@ -137,16 +137,23 @@ enum GatewayArchive {
     static func save(_ dir: URL) async throws {
         let workLease = try HelperWorkLease.acquire()
         defer { withExtendedLifetime(workLease) {} }
-        if let data = try? Data(contentsOf: dir.appendingPathComponent("archive-receipt.json")),
+        guard ArchiveBacklog.isFinished(dir) else { throw TranscriptionFailure("Active or incomplete recording left untouched.") }
+        guard let archiveLease = try AppRunLock.acquire(at: dir.appendingPathComponent("archive.lock")) else {
+            throw TranscriptionFailure("This meeting is already being saved. Recording preserved.")
+        }
+        defer { withExtendedLifetime(archiveLease) {} }
+        guard ArchiveBacklog.isFinished(dir) else { throw TranscriptionFailure("Active or incomplete recording left untouched.") }
+        var meta = try ArchiveBacklog.object(dir.appendingPathComponent("meta.json"))
+        let transcriptData = try ArchiveBacklog.read(dir.appendingPathComponent("transcript.json"))
+        let transcript = try JSONSerialization.jsonObject(with: transcriptData) as? [String: Any] ?? [:]
+        if let data = try? ArchiveBacklog.read(dir.appendingPathComponent("archive-receipt.json")),
            let receipt = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], receipt["saved"] as? Bool == true,
+           ArchiveBacklog.receiptMatches(receipt, transcriptData: transcriptData, meta: meta, directory: dir),
            receipt["documents"] != nil {
             let destination = try MeetingDocuments.export(receipt: receipt, root: MeetingNotesSettings.folder, recording: dir)
             try Data(destination.path.utf8).write(to: dir.appendingPathComponent("notes-export-path.txt"), options: .atomic)
             return
         }
-        var meta = try JSONSerialization.jsonObject(with: Data(contentsOf: dir.appendingPathComponent("meta.json"))) as? [String: Any] ?? [:]
-        let transcriptData = try Data(contentsOf: dir.appendingPathComponent("transcript.json"))
-        let transcript = try JSONSerialization.jsonObject(with: transcriptData) as? [String: Any] ?? [:]
         if let rosterData = try? Data(contentsOf: dir.appendingPathComponent("participants.json")),
            let roster = try? JSONDecoder().decode(ParticipantRoster.self, from: rosterData) {
             let sources: Set<String> = ["meeting_roster", "meeting_tile", "meeting_ui", "accessibility_active_speaker", "meeting_tile_edge"]
@@ -168,6 +175,9 @@ enum GatewayArchive {
             throw TranscriptionFailure("Transcript changed during Gateway save. Audio kept.")
         }
         receipt["localTranscriptSHA256"] = AudioRetention.digest(transcriptData)
+        guard ArchiveBacklog.receiptMatches(receipt, transcriptData: transcriptData, meta: meta, directory: dir) else {
+            throw TranscriptionFailure("Gateway receipt does not match this recording. Audio kept.")
+        }
         try JSONSerialization.data(withJSONObject: receipt).write(to: dir.appendingPathComponent("archive-receipt.json"), options: .atomic)
         if receipt["documents"] != nil {
             let destination = try MeetingDocuments.export(receipt: receipt, root: MeetingNotesSettings.folder, recording: dir)

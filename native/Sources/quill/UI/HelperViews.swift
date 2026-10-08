@@ -173,6 +173,8 @@ struct HelperSettings: View {
             } header: { Text("Note templates & files") }
             Section {
                 Text(controller.gatewayStatus).font(.callout).textSelection(.enabled)
+                Text("\(controller.pendingArchiveCount) finished meeting(s) waiting to save. Checked automatically every minute.")
+                    .font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Button("Connect…", action: controller.connectGateway).disabled(controller.gatewayOperation)
                     if controller.gatewaySigningIn { Button("Cancel sign-in", action: controller.cancelSignIn) }

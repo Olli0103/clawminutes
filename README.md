@@ -60,7 +60,7 @@ Packaging finds `cloudflared` on `PATH`, or uses `OPENCLAW_TEAMS_CLOUDFLARED`. T
 Copy the npm archive to your existing Gateway host and run there:
 
 ```sh
-openclaw plugins install ./openclaw-teams-transcribe-0.2.15.tgz --accept-capabilities
+openclaw plugins install ./openclaw-teams-transcribe-0.2.16.tgz --accept-capabilities
 openclaw plugins enable teams-transcribe --accept-capabilities
 openclaw teams-transcribe helper-export --output ./ocmh-recording-mac.zip
 ```
@@ -105,6 +105,12 @@ Parakeet keeps audio and speech recognition on the recording Mac. The Gateway re
 If you explicitly select ElevenLabs, audio goes directly from the Mac to ElevenLabs for speech recognition.
 
 Recordings and retry receipts live under `~/.openclaw/teams-transcribe`. Audio is kept by default. Enable **Delete audio after verified notes** to remove finished microphone and system tracks only after verification. Transcripts, notes, metadata, and deletion receipts remain. Deleting audio prevents later retranscription from those tracks.
+
+The helper checks finished transcript delivery at launch and every minute while running. Failed saves retry after 30 seconds, 2 minutes, 10 minutes, then every 30 minutes, subject to the one-minute check. Retry times survive relaunch. Reconnecting or choosing **Retry pending saves** checks immediately. Settings shows the pending count. Each pass attempts at most five saves; active recordings and synthetic fixtures are excluded. A valid receipt must match the recording ID, utterance count and current transcript hash, and the exported files must exist. Older saved receipts without hashes require manual verification rather than automatic resend.
+
+Run `ocmh archive-backlog` for a read-only delivery report. It distinguishes pending upload, pending local export, missing transcription, active recording and records needing review. With the helper stopped, `ocmh archive-backlog --retry` retries pending text saves. While it is running, use Settings. Retries never start recording, run speech recognition or send raw audio. The Gateway returns existing verified notes for an identical completed save, including recovery after a lost response; changed speech or meeting metadata requires a new revision.
+
+Call-end detection recognizes English and German Teams end messages and call controls. A confirmed end remains remembered across partial Accessibility reads, with the existing 30-second stop countdown and **Keep recording** override. New call controls clear the remembered end. Missing controls alone, silence or a hidden window do not prove that a call ended.
 
 Capture recovery monitors successful disk writes, including silent PCM. After ten seconds without progress, a failed stream, or a cumulative frame shortfall, it tries a new segment for the affected audio source. It keeps the other source running and limits retries to three with at least fifteen seconds between attempts. The transcript and Gateway notes retain gap evidence. Automatic audio deletion stays off for that recording when a gap is recorded. These protections have deterministic tests; live device-change recovery still needs verification.
 

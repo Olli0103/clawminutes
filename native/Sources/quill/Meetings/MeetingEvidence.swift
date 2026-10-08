@@ -12,6 +12,12 @@ struct MeetingEndState {
     }
 
     mutating func forget(_ id: String) { ended.remove(id) }
+
+    /// Positive end evidence stays latched through partial AX reads. Only new call controls clear it.
+    mutating func observation(for meeting: DetectedMeeting, inCall: Bool, endScreen: Bool) -> MeetingObservation {
+        if isEnded(meeting.id, endScreen: endScreen, inCall: inCall) { return .ended }
+        return inCall ? .present(meeting) : .unknown
+    }
 }
 
 enum MeetingEvidence {
@@ -50,23 +56,29 @@ enum MeetingEvidence {
 
     static func isLeaveControl(_ text: String) -> Bool {
         let text = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        return ["leave call", "leave meeting", "end meeting", "hang up", "end call"]
+        if text == "auflegen" || text.hasPrefix("auflegen (") || text.hasPrefix("auflegen(") { return true }
+        return ["leave call", "leave meeting", "end meeting", "hang up", "end call", "besprechung verlassen", "besprechung beenden", "anruf beenden"]
             .contains { text == $0 || text.hasPrefix($0 + " ") || text.hasPrefix($0 + "(") }
     }
 
     static func hasCallControls(_ buttons: [String]) -> Bool {
         if buttons.contains(where: isLeaveControl) { return true }
         let normalized = buttons.map { $0.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) }
-        let hasLeave = normalized.contains { $0 == "leave" || $0 == "end" }
-        let hasAudio = normalized.contains { $0.hasPrefix("mute") || $0.hasPrefix("unmute") || $0.hasPrefix("turn off microphone") || $0.hasPrefix("turn on microphone") }
+        let hasLeave = normalized.contains { text in ["leave", "end", "verlassen", "beenden"].contains { text == $0 || text.hasPrefix($0 + " (") || text.hasPrefix($0 + "(") } }
+        let hasAudio = normalized.contains { $0.hasPrefix("mute") || $0.hasPrefix("unmute") || $0.hasPrefix("turn off microphone") || $0.hasPrefix("turn on microphone") || $0.hasPrefix("mikrofon stummschalten") || $0.hasPrefix("stummschaltung aufheben") }
         return hasLeave && hasAudio
     }
 
     static func isEndMessage(_ text: String) -> Bool {
-        let text = text.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = text.lowercased().replacingOccurrences(of: "’", with: "'").trimmingCharacters(in: .whitespacesAndNewlines)
         return ["you left the meeting", "you've left the meeting", "you have left the meeting",
                 "the meeting has ended", "this meeting has ended", "your call has ended",
-                "you left the call", "you've left the call", "the host has ended this meeting"]
-            .contains { text == $0 || text.hasPrefix($0 + ".") }
+                "you left the call", "you've left the call", "the host has ended this meeting",
+                "you've left this meeting", "you have left this meeting", "you left this meeting",
+                "you've left this call", "this call has ended", "call ended",
+                "sie haben die besprechung verlassen", "du hast die besprechung verlassen",
+                "sie haben den anruf verlassen", "du hast den anruf verlassen",
+                "die besprechung wurde beendet", "die besprechung ist beendet", "der anruf wurde beendet", "anruf beendet"]
+            .contains { phrase in text == phrase || [".", "!", "\n"].contains(where: { text.hasPrefix(phrase + $0) }) }
     }
 }

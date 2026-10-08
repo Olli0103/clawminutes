@@ -23,7 +23,7 @@ final class ArchiveFailureStatusTests: XCTestCase, @unchecked Sendable {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("clawminutes-archive-status-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
-        try Data(#"{"files":{"mic":"mic.caf"}}"#.utf8).write(to: dir.appendingPathComponent("meta.json"))
+        try Data(#"{"status":"stopped","ended":"2026-10-07T10:00:00Z","files":{"mic":"mic.caf"}}"#.utf8).write(to: dir.appendingPathComponent("meta.json"))
         try Data().write(to: dir.appendingPathComponent("mic.caf"))
         let engine = ArchiveFixtureEngine()
         let coordinator = TranscriptionCoordinator(activityLockPath: dir.appendingPathComponent("lifecycle.lock"),

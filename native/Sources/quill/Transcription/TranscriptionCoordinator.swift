@@ -25,6 +25,44 @@ actor TranscriptionCoordinator {
     private var statusHandler: (@Sendable (Status) -> Void)?
     private let activityLockPath: URL
     private let saveArchive: @Sendable (URL) async throws -> Void
+    private var archiving = false
+    private var checkingBacklog = false
+    private var backlogHandler: (@Sendable (Int) -> Void)?
+
+    struct BacklogReport: Codable, Sendable {
+        var attempted = 0
+        var pending = 0
+        var transcriptionPending = 0
+        var needsReview = 0
+        var busy = false
+    }
+
+    func setBacklogHandler(_ handler: @escaping @Sendable (Int) -> Void) { backlogHandler = handler }
+
+    /// Reconcile text delivery while the app stays running. Never starts capture or inference.
+    func retryArchiveBacklog(root: URL, force: Bool = false,
+                             now: TimeInterval = Date().timeIntervalSince1970) async throws -> BacklogReport {
+        guard !checkingBacklog else { return BacklogReport(busy: true) }
+        checkingBacklog = true
+        defer { checkingBacklog = false }
+        var report = BacklogReport()
+        let items = try ArchiveBacklog.scan(root: root)
+        for item in items where item.pending && report.attempted < 5 {
+            guard !archiving else { break }
+            if !force, let retry = item.retry, retry.nextAttemptAt > now { continue }
+            if await runHook(for: item.directory, now: now) { report.attempted += 1 }
+        }
+        let remaining = try ArchiveBacklog.scan(root: root)
+        report.pending = remaining.filter(\.pending).count
+        report.transcriptionPending = remaining.filter { $0.state == .transcriptionPending }.count
+        report.needsReview = remaining.filter { $0.state == .needsReview }.count
+        backlogHandler?(report.pending)
+        if let pending = remaining.first(where: \.pending) {
+            lastIssue = .archivePending(session: pending.directory.lastPathComponent)
+        } else if case .archivePending = lastIssue { lastIssue = nil }
+        if !draining { publish(lastIssue ?? .idle) }
+        return report
+    }
 
     init(activityLockPath: URL = HelperWorkLease.path,
          saveArchive: @escaping @Sendable (URL) async throws -> Void = { try await GatewayArchive.save($0) },
@@ -43,13 +81,14 @@ actor TranscriptionCoordinator {
         statusHandler = handler
     }
 
-    /// Queue a finished session. With transcription disabled in config, the
-    /// on_stop hook still fires — it just gets an untranscribed folder.
+    /// Queue a finished session. Existing transcripts can still be delivered
+    /// when transcription is disabled.
     func enqueue(_ sessionDir: URL, transcriptionEnabled: Bool = Config.transcriptionEnabled()) async {
         guard transcriptionEnabled else {
             await runHook(for: sessionDir)
             return
         }
+        guard !queue.contains(sessionDir) else { return }
         queue.append(sessionDir)
         drainIfIdle()
     }
@@ -58,7 +97,6 @@ actor TranscriptionCoordinator {
     /// but were never transcribed. Folder names sort chronologically, so
     /// oldest-first is a name sort.
     func resumePending(root: URL) async {
-        guard Config.transcriptionEnabled() else { return }
         var workLease: HelperWorkLease?
         // The installer can still hold its lease when launchctl starts this
         // process. Wait briefly so startup recovery is not silently skipped.
@@ -80,15 +118,17 @@ actor TranscriptionCoordinator {
         let pending = entries
             .filter {
                 fm.fileExists(atPath: $0.appendingPathComponent("meta.json").path)
+                    && ArchiveBacklog.isFinished($0)
                     && !fm.fileExists(atPath: $0.appendingPathComponent("transcript.json").path)
                     && !RecordingSession.isUnstartedAttempt($0)
                     && !AudioRetention.explicitlyRemoved($0)
             }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
-        for dir in pending where !queue.contains(dir) {
+        for dir in pending where Config.transcriptionEnabled() && !queue.contains(dir) {
             queue.append(dir)
         }
-        for dir in entries where fm.fileExists(atPath: dir.appendingPathComponent("transcript.json").path) && (!fm.fileExists(atPath: dir.appendingPathComponent("archive-receipt.json").path) || Self.needsNotesExport(dir)) { await runHook(for: dir) }
+        do { _ = try await retryArchiveBacklog(root: root) }
+        catch { FileHandle.standardError.write(Data("Could not check pending meeting saves. Recording files preserved.\n".utf8)) }
         if Config.deleteAudioAfterVerification() {
             for dir in entries where fm.fileExists(atPath: dir.appendingPathComponent("archive-receipt.json").path) && !AudioRetention.explicitlyRemoved(dir) {
                 applyRetention(dir)
@@ -289,18 +329,19 @@ actor TranscriptionCoordinator {
         return next
     }
 
-    /// Fires the configured on_stop shell command with the session directory
-    /// as its sole argument, after the transcript exists (or immediately after
-    /// recording when transcription is disabled).
-    private static func needsNotesExport(_ dir: URL) -> Bool {
-        guard !FileManager.default.fileExists(atPath: dir.appendingPathComponent("notes-export-path.txt").path),
-              let data = try? Data(contentsOf: dir.appendingPathComponent("archive-receipt.json")),
-              let receipt = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return false }
-        return receipt["documents"] != nil
-    }
-    private func runHook(for dir: URL) async {
+    /// Save a finished transcript through the same guarded path used by retries.
+    @discardableResult private func runHook(for dir: URL, now: TimeInterval = Date().timeIntervalSince1970) async -> Bool {
+        guard !archiving, ArchiveBacklog.isFinished(dir) else { return false }
+        archiving = true
+        defer { archiving = false }
         do {
+            let workLease = try HelperWorkLease.acquire(at: activityLockPath)
+            defer { withExtendedLifetime(workLease) {} }
+            let item = ArchiveBacklog.inspect(dir)
+            guard item.pending else { return false }
+            try ArchiveBacklog.reserve(item, now: now)
             try await saveArchive(dir)
+            try? FileManager.default.removeItem(at: dir.appendingPathComponent("archive-retry.json"))
             log(dir, "Gateway Meetings archive saved and read back")
             applyRetention(dir)
             if case .archivePending(let pending) = lastIssue, pending == dir.lastPathComponent { lastIssue = nil }
@@ -308,8 +349,9 @@ actor TranscriptionCoordinator {
         } catch {
             lastIssue = .archivePending(session: dir.lastPathComponent)
             if !draining { publish(.archivePending(session: dir.lastPathComponent)) }
-            log(dir, "archive failed: \(error); recording and transcript preserved. Reconnect Gateway and retry archive.")
+            log(dir, "archive failed: \(error); recording and transcript preserved. Automatic retry scheduled.")
         }
+        return true
     }
 
     private func applyRetention(_ dir: URL) {
