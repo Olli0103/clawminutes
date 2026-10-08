@@ -6,6 +6,8 @@ Local Teams transcription on your Mac. AI meeting notes from your OpenClaw Gatew
 
 ClawMinutes records microphone and Teams audio after you choose Start, transcribes with Parakeet on the recording Mac, and sends the finished transcript and meeting metadata to OpenClaw. The Gateway generates notes using your chosen model and template. No meeting bot joins the call. The Mac helper is called `ocmh` and needs no local OpenClaw installation.
 
+The [current review status](docs/review-status.md) maps implemented source changes, remaining ambiguities and live acceptance gates. Public binary release still requires Developer ID signing, notarization and approved installed checks.
+
 ```mermaid
 flowchart LR
     Teams[Teams call] --> Capture[Local audio capture]

@@ -92,6 +92,7 @@ final class ConsentIdentityTests: XCTestCase {
         for other in [
             ConsentEndWindow(identity: nil, complete: false, minimized: false, inCall: false, endScreen: false),
             ConsentEndWindow(identity: nil, complete: true, minimized: true, inCall: false, endScreen: false),
+            ConsentEndWindow(identity: nil, complete: true, minimized: nil, inCall: false, endScreen: false),
             ConsentEndWindow(identity: nil, complete: true, minimized: false, inCall: true, endScreen: false)
         ] {
             XCTAssertTrue(MeetingEvidence.confirmedConsentEnds([ended, other]).isEmpty)

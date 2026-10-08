@@ -176,13 +176,13 @@ actor MeetingScanner {
             // can retire it; an active or unreadable replacement blocks this.
             result.confirmedEndedConsentCalls += MeetingEvidence.confirmedConsentEnds(windows.map { window in
                 let ended = window.nodes.contains { MeetingEvidence.isEndMessage($0.text) }
-                let title = TeamsMeetingTitle.clean(string(window.element, kAXTitleAttribute))
                 let identity = (ended ? app.processStartedAt : nil).map {
                     MeetingConsentIdentity(processID: app.pid, processStartedAt: $0,
-                        windowID: windowNumber(pid: app.pid, window: window.element), title: title)
+                        windowID: windowNumber(pid: app.pid, window: window.element),
+                        title: TeamsMeetingTitle.clean(string(window.element, kAXTitleAttribute)))
                 }
                 return ConsentEndWindow(identity: identity, complete: window.complete,
-                    minimized: bool(window.element, kAXMinimizedAttribute), inCall: hasCallControls(window),
+                    minimized: optionalBool(window.element, kAXMinimizedAttribute), inCall: hasCallControls(window),
                     endScreen: ended)
             })
             for window in windows where hasCallControls(window) && !window.nodes.contains(where: { MeetingEvidence.isEndMessage($0.text) }) {
@@ -360,9 +360,13 @@ actor MeetingScanner {
     }
 
     private func bool(_ element: AXUIElement, _ attribute: String) -> Bool {
+        optionalBool(element, attribute) ?? false
+    }
+
+    private func optionalBool(_ element: AXUIElement, _ attribute: String) -> Bool? {
         var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return false }
-        return (value as? NSNumber)?.boolValue ?? false
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return nil }
+        return (value as? NSNumber)?.boolValue
     }
 
     private func windowInventory() -> [[String: Any]]? {

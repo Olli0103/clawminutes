@@ -5,7 +5,7 @@ import Foundation
 struct ConsentEndWindow: Sendable {
     let identity: MeetingConsentIdentity?
     let complete: Bool
-    let minimized: Bool
+    let minimized: Bool?
     let inCall: Bool
     let endScreen: Bool
 }
@@ -33,7 +33,7 @@ struct MeetingEndState {
 enum MeetingEvidence {
     static func confirmedConsentEnds(_ windows: [ConsentEndWindow]) -> [MeetingConsentIdentity] {
         guard !windows.isEmpty,
-              windows.allSatisfy({ $0.complete && !$0.minimized && !$0.inCall }) else { return [] }
+              windows.allSatisfy({ $0.complete && $0.minimized == false && !$0.inCall }) else { return [] }
         return windows.compactMap { window in
             guard window.endScreen, let identity = window.identity, identity.persistable else { return nil }
             return identity
