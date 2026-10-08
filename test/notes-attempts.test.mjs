@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {createHash,randomUUID} from 'node:crypto';
-import {withNotesAttempt} from '../src/notes-attempts.mjs';
+import {withNotesAttempt,authorizeTranscriptRecovery} from '../src/notes-attempts.mjs';
 
 test('transient model failures stop at three durable reservations',async()=>{
  const state=await fs.mkdtemp(path.join(os.tmpdir(),'clawminutes-budget-'));let calls=0;
@@ -24,6 +24,28 @@ test('unreadable retry state cannot reset the AI budget',async()=>{
   await assert.rejects(withNotesAttempt(state,'teams-test',{},async()=>{calls++;}),e=>e.code==='notes_state_conflict'&&!e.retryable);
   assert.equal(calls,0);
  }finally{await fs.rm(state,{recursive:true,force:true});}
+});
+
+test('malformed failure records cannot authorize retries or overwrite paid history',async()=>{
+ const stateDir=await fs.mkdtemp(path.join(os.tmpdir(),'notes-invalid-failure-'));let calls=0;
+ try{
+  const envelope={synthetic:true};
+  const directory=path.join(stateDir,'teams-transcribe/notes-attempts');await fs.mkdir(directory,{recursive:true});
+  const file=path.join(directory,'teams-test.json');
+  const failure={code:'ai_invalid_output',detail:'Synthetic failure',retryable:false,status:422};
+  for(const invalid of [false,null,0,'',[],{...failure,code:false},{...failure,code:['ai_invalid_output']},
+    {...failure,code:'ai_invalid_output\n'},{...failure,detail:''},{...failure,detail:'Invalid\u007fcontrol'},
+    {...failure,retryable:0},{...failure,status:422.5}]){
+    const bytes=JSON.stringify({schemaVersion:1,attempts:1,fingerprint:createHash('sha256').update(JSON.stringify(envelope)).digest('hex'),failure:invalid});
+    await fs.writeFile(file,bytes);
+    for(const recoveryId of [undefined,randomUUID()]){
+      await assert.rejects(withNotesAttempt(stateDir,'teams-test',envelope,async()=>{calls++;return 'must not run';},{recoveryId}),e=>e.code==='notes_state_conflict'&&!e.completionAttempted);
+      assert.equal(calls,0);assert.equal(await fs.readFile(file,'utf8'),bytes);
+    }
+    await assert.rejects(authorizeTranscriptRecovery(stateDir,'teams-test',envelope),e=>e.code==='notes_state_conflict');
+    assert.equal(await fs.readFile(file,'utf8'),bytes);
+  }
+ }finally{await fs.rm(stateDir,{recursive:true,force:true});}
 });
 
 test('successful generation survives a later archive failure without another completion',async()=>{

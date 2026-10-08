@@ -14,7 +14,7 @@ After transcript-only recovery succeeds, **Regenerate notes…** can create a se
 
 Version 2 fingerprints sort JSON object keys recursively while preserving array order. Swift can serialize the same object with different key orders; key order must not change delivery identity. Recovery UUIDs are excluded from this fingerprint. Speech, participant evidence, templates and other delivery metadata remain bound to it.
 
-Legacy ledgers retain their existing hash and attempt count when the original ordered payload still matches. An unmatched or corrupt old hash is preserved and blocked; it never becomes a fresh budget. Older failed records whose original serialization is unavailable still need an explicit reconciliation path. That limitation remains open with legacy receipt reconciliation. Completed canonical records use their saved-record readback and do not need a ledger reset.
+Legacy ledgers retain their existing hash and attempt count when the original ordered payload still matches. An unmatched or corrupt old hash is preserved and blocked; it never becomes a fresh budget. A present failure record must have the expected object, code, nonempty detail, boolean retryability and HTTP status fields. Values such as false, null, zero or an empty string are malformed evidence, not an absent failure. Automatic retry, explicit AI retry and transcript-only authorization reject them without changing the ledger or invoking a model. Older failed records whose original serialization is unavailable still need an explicit reconciliation path. That limitation remains open with legacy receipt reconciliation. Completed canonical records use their saved-record readback and do not need a ledger reset.
 
 ## Evidence and activation
 

@@ -112,6 +112,31 @@ extension MeetingPipelineStateTests {
         try migrated.write(dir)
         XCTAssertEqual(try ArchiveBacklog.read(file), committed, "Unchanged state is not another generation")
     }
+    func testMalformedSchemaOneDeliveryCannotBeHiddenByAValidRetryLedger() throws {
+        let dir = try folder(); defer { try? FileManager.default.removeItem(at: dir) }
+        _ = try legacyDelivery(dir)
+        let file = dir.appendingPathComponent("state.json"), legacy = dir.appendingPathComponent("archive-retry.json")
+        let failure: [String: Any] = ["code": "ai_invalid_output", "detail": "Synthetic failure", "retryable": false, "completionAttempted": true]
+        let invalidDeliveries: [[String: Any]] = [
+            ["count": -1, "nextAttemptAt": 7000],
+            ["count": 5, "nextAttemptAt": 7000, "lastError": failure.merging(["code": "INVALID"]) { _, new in new }],
+            ["count": 5, "nextAttemptAt": 7000, "lastError": failure.merging(["detail": "Invalid\ncontrol"]) { _, new in new }],
+            ["count": 5, "nextAttemptAt": 7000, "transcriptSHA256": "not-a-hash"],
+            ["count": 5, "nextAttemptAt": 7000, "completionAttempts": -1]
+        ]
+        for delivery in invalidDeliveries {
+            let old: [String: Any] = ["schemaVersion": 1, "recordingIdentity": try MeetingPipelineState.identity(dir),
+                "revision": 1, "stage": "needsAttention", "updatedAt": 6000,
+                "transcription": ["count": 2, "nextAttemptAt": 0], "delivery": delivery]
+            let original = try JSONSerialization.data(withJSONObject: old), oldRetry = try ArchiveBacklog.read(legacy)
+            try original.write(to: file)
+            XCTAssertThrowsError(try MeetingPipelineState.load(dir), "A newer ledger must not silently sanitize malformed state")
+            XCTAssertEqual(ArchiveBacklog.inspect(dir).state, .needsReview)
+            XCTAssertEqual(try ArchiveBacklog.read(file), original)
+            XCTAssertEqual(try ArchiveBacklog.read(legacy), oldRetry)
+        }
+    }
+
     func testChangedOrRemovedLegacyEvidenceCannotResetMigratedCounts() throws {
         for remove in [false, true] {
             let dir = try folder(); defer { try? FileManager.default.removeItem(at: dir) }

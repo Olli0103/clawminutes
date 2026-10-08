@@ -4,7 +4,7 @@
 
 ## Migration
 
-Inspection imports schema 1 or missing state in memory. Reading a meeting does not publish files, contact a provider or change documents. The next pipeline mutation writes schema 2 under `state.lock`, with generation 1. Transcription counters and the legacy delivery record are preserved. Legacy attempt counts cannot be lower than the earlier state mirror. Hashes, limits, identities, revisions, failures and recovery requests are validated before admission.
+Inspection imports schema 1 or missing state in memory. Reading a meeting does not publish files, contact a provider or change documents. The next pipeline mutation writes schema 2 under `state.lock`, with generation 1. Transcription counters and the legacy delivery record are preserved. Legacy attempt counts cannot be lower than the earlier state mirror. Hashes, limits, identities, revisions, failures and recovery requests are validated before admission. The original schema-1 attempt fields are validated before the retry ledger can replace delivery fields. A valid ledger cannot hide a malformed earlier count, cause or fingerprint. Malformed evidence stays unchanged and requires review.
 
 Existing retry and recovery files stay in place as frozen evidence. Their digests are recorded in schema 2. Later changes, removal, newly introduced files or symbolic links block work rather than overriding counters. Do not edit or delete these files to retry a meeting. A downlevel writer cannot silently reset the new helper's budget. Running an older helper against migrated folders is unsupported; migration is a source candidate until installation is approved.
 

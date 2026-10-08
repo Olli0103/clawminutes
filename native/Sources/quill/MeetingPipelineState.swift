@@ -94,7 +94,7 @@ struct MeetingPipelineState: Codable, Sendable {
     static func validHash(_ value: String?) -> Bool {
         value == nil || value!.range(of: #"^[a-f0-9]{64}$"#, options: .regularExpression) != nil
     }
-    private func validate() throws {
+    private func validateAttempts() throws {
         for attempt in [transcription, delivery] {
             guard (0...1000).contains(attempt.count), attempt.nextAttemptAt.isFinite,
                   attempt.lastErrorAt.map({ $0.isFinite }) ?? true,
@@ -102,6 +102,9 @@ struct MeetingPipelineState: Codable, Sendable {
                   attempt.completionAttempts.map({ (0...3).contains($0) }) ?? true,
                   attempt.recoveryID.map({ UUID(uuidString: $0) != nil }) ?? true else { throw Self.invalidState }
         }
+    }
+    private func validate() throws {
+        try validateAttempts()
         if let attempt = localExport {
             guard (0...1000).contains(attempt.count), attempt.nextAttemptAt.isFinite,
                   attempt.lastErrorAt.map({ $0.isFinite }) ?? true,
@@ -144,6 +147,10 @@ struct MeetingPipelineState: Codable, Sendable {
                 try value.validate()
                 return value
             }
+            // Validate the original mirror before a newer retry ledger replaces
+            // any delivery fields. Migration cannot sanitize malformed evidence.
+            guard value.updatedAt.isFinite else { throw invalidState }
+            try value.validateAttempts()
         } else {
             let stage: Stage = metadata["status"] as? String == "recording" ? .capturing
                 : metadata["status"] as? String == "interrupted" ? .interrupted : .recorded

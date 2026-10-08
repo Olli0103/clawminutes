@@ -54,7 +54,10 @@ async function attemptState(stateDir,id,envelope){
     const data=await readPrivate(file,4096);
     if(data.length>4096)throw Error('Oversized attempt state');
     state=JSON.parse(data);
-    if(state.failure&&(!/^[a-z][a-z0-9_]{0,79}$/.test(state.failure.code)||typeof state.failure.detail!=='string'||state.failure.detail.length>512||/[\x00-\x1f]/.test(state.failure.detail)||typeof state.failure.retryable!=='boolean'||!Number.isInteger(state.failure.status)||state.failure.status<400||state.failure.status>599))throw Error('Invalid failure state');
+    if(state.failure!==undefined&&(!state.failure||typeof state.failure!=='object'||Array.isArray(state.failure)||
+       typeof state.failure.code!=='string'||!/^[a-z][a-z0-9_]{0,79}$(?![\s\S])/.test(state.failure.code)||
+       typeof state.failure.detail!=='string'||!state.failure.detail.length||state.failure.detail.length>512||/[\x00-\x1f\x7f]/.test(state.failure.detail)||
+       typeof state.failure.retryable!=='boolean'||!Number.isInteger(state.failure.status)||state.failure.status<400||state.failure.status>599))throw Error('Invalid failure state');
     if(state.schemaVersion!==1||!Number.isSafeInteger(state.attempts)||state.attempts<0||state.attempts>3||
        ![undefined,2].includes(state.fingerprintVersion)||
        (state.fingerprint!==fingerprint&&!(state.fingerprintVersion===undefined&&state.fingerprint===legacyFingerprint)))throw Error('Conflicting attempt state');
