@@ -21,15 +21,17 @@ final class HelperPopoverTests: XCTestCase {
         defer { NSApp.appearance = previousAppearance }
         NSApp.appearance = NSAppearance(named: .aqua)
         for page in HelperSettingsPage.allCases {
-            let settings = NSHostingView(rootView: HelperSettings(controller: controller, initialPage: page).environment(\.colorScheme, .light))
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 690, height: 620), styleMask: [.titled], backing: .buffered, defer: false)
-            window.appearance = NSAppearance(named: .aqua); window.contentView = settings
-            settings.layoutSubtreeIfNeeded()
-            let bitmap = try XCTUnwrap(settings.bitmapImageRepForCachingDisplay(in: settings.bounds))
-            settings.cacheDisplay(in: settings.bounds, to: bitmap)
-            let data = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
-            try data.write(to: URL(fileURLWithPath: preview).appendingPathComponent("settings-" + page.id + ".png"))
-            XCTAssertFalse(window.isVisible)
+            for dark in page == .general ? [false, true] : [false] {
+                let settings = NSHostingView(rootView: HelperSettings(controller: controller, initialPage: page).environment(\.colorScheme, dark ? .dark : .light))
+                let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 690, height: 620), styleMask: [.titled], backing: .buffered, defer: false)
+                window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua); window.contentView = settings
+                settings.layoutSubtreeIfNeeded()
+                let bitmap = try XCTUnwrap(settings.bitmapImageRepForCachingDisplay(in: settings.bounds))
+                settings.cacheDisplay(in: settings.bounds, to: bitmap)
+                let data = try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                try data.write(to: URL(fileURLWithPath: preview).appendingPathComponent("settings-" + page.id + (dark ? "-dark" : "") + ".png"))
+                XCTAssertFalse(window.isVisible)
+            }
         }
         for (name, content, size) in [
             ("meeting-library", AnyView(MeetingLibraryView(controller: controller)), NSSize(width: 660, height: 560)),

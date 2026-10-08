@@ -8,6 +8,24 @@ import FluidAudio
 final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
     private let keychain: ElevenLabsKeychain
     private let statusItem: NSStatusItem?
+    private let previewMode: Bool
+    private let loginItem = HelperLoginItem()
+    @Published private(set) var loginStatus: HelperLoginItem.Status = .unavailable
+    @Published private(set) var loginSettingError: String?
+    func refreshLoginSetting() {
+        guard !previewMode else { return }
+        loginStatus = loginItem.status(); loginSettingError = nil
+    }
+    func setLaunchAtLogin(_ value: Bool) {
+        guard !previewMode else { return }
+        do {
+            loginStatus = try loginItem.setEnabled(value, expected: loginStatus)
+            loginSettingError = nil
+        } catch {
+            loginSettingError = String(describing: error)
+            loginStatus = loginItem.status()
+        }
+    }
     private var appearanceObserver: NSKeyValueObservation?
     private var applicationAppearanceObserver: NSKeyValueObservation?
     private let popover = NSPopover()
@@ -284,8 +302,10 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
     init(keychain: ElevenLabsKeychain = .shared, preview: Bool = false, captureCheck: CaptureCheckRunner = CaptureCheckRunner()) {
         self.keychain = keychain
         self.captureCheck = captureCheck
+        self.previewMode = preview
         statusItem = preview ? nil : NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
+        loginStatus = preview ? .preview : loginItem.status()
         if let app = NSApp {
             applicationAppearanceObserver = app.observe(\.effectiveAppearance, options: [.initial, .new]) { _, _ in
                 Task { @MainActor in NSApp.applicationIconImage = HelperAppIcon.image() }
@@ -417,6 +437,7 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
         engineClicked(item)
     }
     func showSettings() {
+        refreshLoginSetting()
         popover.performClose(nil)
         if settingsWindow == nil {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 690, height: 620), styleMask: [.titled, .closable], backing: .buffered, defer: false)

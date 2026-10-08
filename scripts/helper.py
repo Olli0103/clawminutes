@@ -5,6 +5,7 @@ import argparse, contextlib, fcntl, hashlib, json, os, pathlib, plistlib, shutil
 LABEL = 'ai.openclaw.teams-transcribe'
 NAME = 'ocmh.app'
 PENDING = 'installation-pending.json'
+DISABLED_AGENT = 'launch-at-login-disabled.plist'
 
 
 def present(path):
@@ -156,10 +157,19 @@ def verify_agent(snapshot, app, legacy, parser):
         parser.error('An unrelated LaunchAgent occupies the helper path. It was left untouched.')
 
 
+def login_agent(root, normal, parser):
+    disabled = root/DISABLED_AGENT
+    if present(normal) and present(disabled):
+        parser.error('Conflicting login settings need review. Both LaunchAgent files were left untouched.')
+    return disabled if present(disabled) else normal
+
+
 def install_candidate(args, root, source, agent, domain, stop_owned_app, parser, allow_orphans):
     """Ordinary failures roll back. Crash/rollback uncertainty retains private backups."""
     app, legacy = root/NAME, root/'OpenClaw Teams Transcription.app'
-    paths = [root/'config.json', agent, root/'installation-receipt.json']
+    normal_agent = agent
+    agent = login_agent(root, normal_agent, parser)
+    paths = [root/'config.json', normal_agent, root/DISABLED_AGENT, root/'installation-receipt.json']
     before = {path: file_snapshot(path) for path in paths}
     # Derive edits from the same bytes backed up by this transaction, rather
     # than a configuration read before acquiring installer ownership.
@@ -200,19 +210,21 @@ def install_candidate(args, root, source, agent, domain, stop_owned_app, parser,
         receipt = {'pluginOwner': 'teams-transcribe', 'version': info['CFBundleShortVersionString'],
                    'helperSHA256': hashlib.sha256((candidate/'Contents/MacOS/ocmh').read_bytes()).hexdigest(),
                    'gatewayConfigured': isinstance(gateway, dict) and bool(gateway.get('url')),
+                   'launchAtLogin': agent == normal_agent,
                    'localOpenClawRequired': False, 'launched': not args.no_launch}
         replacements = {paths[0]: (json.dumps(settings, indent=2).encode(), 0o600),
-                        agent: (plistlib.dumps(plist), 0o600), paths[2]: (json.dumps(receipt, indent=2).encode(), 0o600)}
+                        agent: (plistlib.dumps(plist), 0o600), paths[3]: (json.dumps(receipt, indent=2).encode(), 0o600)}
         manifest_files = []
         for index, path in enumerate(paths):
             snapshot = before[path]
             if snapshot: atomic_file(stage/f'file-{index}.before', snapshot[0])
-            atomic_file(stage/f'file-{index}.after', replacements[path][0])
+            replacement = replacements.get(path)
+            if replacement: atomic_file(stage/f'file-{index}.after', replacement[0])
             manifest_files.append({'path': str(path), 'existed': snapshot is not None,
                                    'mode': snapshot[1] if snapshot else None,
                                    'backup': f'file-{index}.before' if snapshot else None,
                                    'beforeSHA256': hashlib.sha256(snapshot[0]).hexdigest() if snapshot else None,
-                                   'afterSHA256': hashlib.sha256(replacements[path][0]).hexdigest()})
+                                   'afterSHA256': hashlib.sha256(replacement[0]).hexdigest() if replacement else None})
         manifest = {'schemaVersion': 1, 'stage': str(stage), 'previousJobLoaded': loaded,
                     'launchRequested': not args.no_launch, 'files': manifest_files,
                     'apps': [{'path': str(path), 'existed': identity is not None, 'backup': f'app-{index}.before'}
@@ -325,6 +337,7 @@ def perform(args, root, settings, parser, *, allow_orphans=False):
             time.sleep(.05)
 
     if args.action in ['remove', 'run']:
+        agent = login_agent(root, agent, parser)
         agent_snapshot = file_snapshot(agent)
         verify_agent(agent_snapshot, app, legacy, parser)
         if args.action == 'run' and agent_snapshot is None:

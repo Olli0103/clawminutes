@@ -221,6 +221,15 @@ struct HelperSettings: View {
                         Toggle("Ask when a Teams call starts", isOn: Binding(get: { controller.promptsEnabled }, set: { _ in controller.togglePrompts() }))
                         Text("One prompt per call. Dismiss keeps audio off. You can always start from the menu bar.")
                             .font(.caption).foregroundStyle(.secondary)
+                        Toggle("Launch at login", isOn: Binding(get: { controller.loginStatus.enabled == true }, set: controller.setLaunchAtLogin))
+                            .disabled(controller.loginStatus.enabled == nil)
+                        Text(controller.loginStatus.detail).font(.caption).foregroundStyle(.secondary)
+                        if let issue = controller.loginSettingError {
+                            Text(issue).font(.caption).foregroundStyle(.orange)
+                        }
+                        if controller.loginStatus.enabled == nil || controller.loginSettingError != nil {
+                            Button("Check login setting again", action: controller.refreshLoginSetting)
+                        }
                         Button("Setup checklist…", action: controller.showSetup)
                         Button("Open recording controls", action: controller.openMenu)
                     }

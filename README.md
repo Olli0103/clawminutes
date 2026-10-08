@@ -79,6 +79,8 @@ python3 scripts/helper.py install --gateway https://your-gateway.example
 
 The helper opens a setup checklist once on first launch. Reopen it from General Settings. Every permission, download, sign-in and audio-check action is explicit. See [setup and audio check](docs/setup-checklist.md).
 
+General Settings includes Launch at login. It changes the next login without unloading the current helper. The installer preserves this preference across updates; manual `helper.py run` remains available with crash supervision. See [launch at login](docs/launch-at-login.md) for ownership checks and installed acceptance limits.
+
 Open the helper's Settings and connect the Gateway. Choose Cloudflare Access when your Gateway uses its GitHub sign-in, or use direct Gateway token authentication. Tokens are stored locally through macOS Keychain or Cloudflare's application-scoped session cache. Remote Gateways require HTTPS.
 
 Grant the helper microphone, Screen & System Audio Recording, and Accessibility access. Use Check again after changing permissions. Teams system audio uses application-filtered, audio-only ScreenCaptureKit capture; the app registers no screen output and saves no screenshots or video.

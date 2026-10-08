@@ -462,5 +462,58 @@ helper.main()
         self.assertEqual(agent.read_bytes(), data)
         self.assertEqual(self.commands, [])
 
+    def parked_install(self):
+        before = self.previous_install()
+        normal = self.home / 'Library/LaunchAgents' / f'{helper.LABEL}.plist'
+        parked = self.state / helper.DISABLED_AGENT
+        normal.rename(parked)
+        before[parked] = before.pop(normal)
+        return before, normal, parked
+
+    def test_update_preserves_disabled_login_and_crash_supervision(self):
+        _, normal, parked = self.parked_install()
+        self.assertEqual(self.invoke('update'), 0)
+        self.assertFalse(normal.exists())
+        plist = plistlib.loads(parked.read_bytes())
+        self.assertEqual(plist['KeepAlive'], {'SuccessfulExit': False})
+        self.assertIs(plist['RunAtLoad'], True)
+        self.assertEqual(plist['EnvironmentVariables']['OPENCLAW_TEAMS_HOME'], str(self.state))
+        self.assertIs(json.loads((self.state / 'installation-receipt.json').read_text())['launchAtLogin'], False)
+
+    def test_manual_run_bootstraps_parked_job_without_reenabling_login(self):
+        _, normal, parked = self.parked_install()
+        self.job_loaded = False
+        self.assertEqual(self.invoke('run', launch=True), 0)
+        self.assertIn(('/bin/launchctl', 'bootstrap', f'gui/{os.getuid()}', str(parked)), self.commands)
+        self.assertFalse(normal.exists())
+        self.assertTrue(parked.exists())
+
+    def test_failed_update_restores_parked_agent_and_normal_absence(self):
+        before, normal, _ = self.parked_install(); self.fail_bootstrap = True
+        with self.assertRaises(RuntimeError): self.invoke('update', launch=True, gateway='https://new.example')
+        self.assert_prior_files(before)
+        self.assertFalse(normal.exists())
+        self.assertEqual(self.bootstrap_calls, 2)
+        self.assertFalse((self.state / helper.PENDING).exists())
+
+    def test_remove_uses_parked_agent_and_preserves_configuration(self):
+        before, normal, parked = self.parked_install()
+        self.assertEqual(self.invoke('remove'), 0)
+        self.assertFalse(parked.exists())
+        self.assertFalse(normal.exists())
+        self.assertFalse((self.state / helper.NAME).exists())
+        self.assertEqual((self.state / 'config.json').read_bytes(), before[self.state / 'config.json'][0])
+
+    def test_conflicting_normal_and_parked_jobs_block_every_lifecycle_action(self):
+        before = self.previous_install()
+        normal = self.home / 'Library/LaunchAgents' / f'{helper.LABEL}.plist'
+        parked = self.state / helper.DISABLED_AGENT
+        parked.write_bytes(before[normal][0])
+        for action in ['install', 'update', 'run', 'remove']:
+            self.assertEqual(self.invoke(action), 2)
+        self.assertEqual(normal.read_bytes(), before[normal][0])
+        self.assertEqual(parked.read_bytes(), before[normal][0])
+        self.assertEqual(self.commands, [])
+
 if __name__ == '__main__':
     unittest.main()
