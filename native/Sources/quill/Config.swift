@@ -14,9 +14,10 @@ import Foundation
 /// directory as its argument — after the transcript is written, or right
 /// after recording when transcription is disabled.
 enum Config {
+    private static let reader = SettingsSnapshotReader()
     static func deleteAudioAfterVerification() -> Bool { retentionOptIn(at: path) != nil }
     static func retentionOptIn(at settingsURL: URL = path) -> Double? {
-        let settings = load(at: settingsURL)
+        let settings = reader.fresh(at: settingsURL)
         guard settings?["audio_retention"] as? String == "delete_after_verification",
               let since = settings?["audio_retention_opted_in_at"] as? Double, since.isFinite, since > 0 else { return nil }
         return since
@@ -31,7 +32,7 @@ enum Config {
     @discardableResult static func setNotesMode(_ mode: String, at settingsURL: URL = path) -> Bool {
         guard ["simple", "transcript", "ai"].contains(mode) else { return false }
         do {
-            let existing = load(at: settingsURL)
+            let existing = reader.fresh(at: settingsURL)
             guard existing != nil || !FileManager.default.fileExists(atPath: settingsURL.path) else { return false }
             var config = existing ?? [:]
             config["notes_mode"] = mode
@@ -59,12 +60,12 @@ enum Config {
         } catch { return false }
     }
 
-    static func gateway() -> [String: String] { load()?["gateway"] as? [String: String] ?? [:] }
+    static func gateway() -> [String: String] { reader.fresh(at: path)?["gateway"] as? [String: String] ?? [:] }
 
     static func setGateway(url: String, authentication: String, at settingsURL: URL = path) throws {
         _ = try GatewayArchive.origin(url)
         guard ["cloudflare", "token"].contains(authentication) else { throw TranscriptionFailure("Unknown Gateway sign-in method") }
-        let existing = load(at: settingsURL)
+        let existing = reader.fresh(at: settingsURL)
         guard existing != nil || !FileManager.default.fileExists(atPath: settingsURL.path) else {
             throw TranscriptionFailure("Could not read ClawMinutes settings. The existing file was left untouched.")
         }
@@ -79,7 +80,7 @@ enum Config {
     }
 
     @discardableResult static func setPostProcessingMode(_ mode: PostProcessingMode) -> Bool {
-        let existing = load()
+        let existing = reader.fresh(at: path)
         guard existing != nil || !FileManager.default.fileExists(atPath: path.path) else { return false }
         var config = existing ?? [:]
         var options = config["post_processing"] as? [String: Any] ?? [:]
@@ -96,7 +97,7 @@ enum Config {
     static func voiceMemoryEnabled() -> Bool { load()?["speaker_voice_memory"] as? Bool ?? false }
 
     static func setVoiceMemoryEnabled(_ enabled: Bool) throws {
-        let existing = load()
+        let existing = reader.fresh(at: path)
         guard existing != nil || !FileManager.default.fileExists(atPath: path.path) else {
             throw TranscriptionFailure("Could not read ocmh configuration.")
         }
@@ -119,7 +120,7 @@ enum Config {
     static func meetingDetection() -> Bool { load()?["meeting_detection"] as? Bool ?? true }
 
     @discardableResult static func setMeetingDetection(_ enabled: Bool) -> Bool {
-        let existing = load()
+        let existing = reader.fresh(at: path)
         guard existing != nil || !FileManager.default.fileExists(atPath: path.path) else { return false }
         var config = existing ?? [:]
         config["meeting_detection"] = enabled
@@ -186,7 +187,7 @@ enum Config {
     }
 
     private static func transcription() -> [String: Any]? {
-        load()?["transcription"] as? [String: Any]
+        reader.fresh(at: path)?["transcription"] as? [String: Any]
     }
 
     /// Apple voice processing (acoustic echo cancellation) on the mic, so
@@ -198,22 +199,8 @@ enum Config {
         load()?["mic_voice_processing"] as? Bool ?? false
     }
 
-    /// Parse the config file. A malformed config is reported on stderr rather
-    /// than silently ignored — recordings landing in an unexpected place is
-    /// worse than a warning.
-    private static func load(at path: URL = path) -> [String: Any]? {
-        guard FileManager.default.fileExists(atPath: path.path) else { return nil }
-        guard
-            let data = try? Data(contentsOf: path),
-            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else {
-            FileHandle.standardError.write(Data(
-                "warning: \(path.path) is not valid JSON — ignoring config\n".utf8
-            ))
-            return nil
-        }
-        return json
-    }
+    /// Reuse small polling preferences while the source fingerprint is unchanged.
+    private static func load() -> [String: Any]? { reader.read(at: path) }
 
     /// Resolve the recordings root from an optional CLI override.
     static func resolveRoot(cliOverride: String?) -> URL {

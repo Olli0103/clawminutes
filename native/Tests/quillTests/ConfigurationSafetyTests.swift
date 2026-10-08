@@ -12,6 +12,26 @@ final class ConfigurationSafetyTests: XCTestCase {
         XCTAssertFalse(Config.setNotesMode("ai", at: path))
         XCTAssertEqual(try Data(contentsOf: path), original)
     }
+    func testWritersPreserveUnknownKeysAndTemplatesAcrossExternalEdits() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("config.json")
+        let templates = [String(repeating: "template content ", count: 100_000)]
+        let original: [String: Any] = ["note_templates": templates, "extension_setting": "original"]
+        try JSONSerialization.data(withJSONObject: original).write(to: path)
+        XCTAssertTrue(Config.setNotesMode("ai", at: path))
+        var current = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: path)) as? [String: Any])
+        XCTAssertEqual(current["note_templates"] as? [String], templates)
+        XCTAssertEqual(current["extension_setting"] as? String, "original")
+        current["extension_setting"] = "external edit"
+        try JSONSerialization.data(withJSONObject: current).write(to: path, options: .atomic)
+        try Config.setGateway(url: "https://gateway.example", authentication: "token", at: path)
+        current = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: path)) as? [String: Any])
+        XCTAssertEqual(current["extension_setting"] as? String, "external edit")
+        XCTAssertEqual(current["note_templates"] as? [String], templates)
+        XCTAssertEqual(current["notes_mode"] as? String, "ai")
+    }
     func testGatewayDoesNotReplaceMalformedConfiguration() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
