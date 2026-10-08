@@ -30,17 +30,17 @@ test('matching SDK version and method names cannot admit a store that loses read
 });
 
 
-test('a future SDK version with the same real store is admitted by its observable contract',async()=>{
+test('an unlisted SDK version with the same real store is admitted by its observable contract',async()=>{
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'clawminutes-future-sdk-'));
   try{
     const sdk=process.env.OPENCLAW_TEAMS_SDK_TEST_DIR||installedRuntimeDirectory();
-    await fs.writeFile(path.join(root,'package.json'),JSON.stringify({name:'openclaw',version:'2026.9.9'}));
+    await fs.writeFile(path.join(root,'package.json'),JSON.stringify({name:'openclaw',version:'2099.1.1'}));
     await fs.symlink(path.join(sdk,'dist'),path.join(root,'dist'),'dir');
     assert.equal(typeof (await archiveRuntime(root)).Store,'function');
     let calls=0;
     const response={setHeader(){},writeHead(code){this.code=code;},end(body){this.body=JSON.parse(body);}};
     await gatewayHandler({openclawDir:root,stateDir:path.join(root,'canonical'),complete:async()=>{calls++;}})({method:'GET'},response);
-    assert.equal(response.code,200);assert.equal(response.body.archive.sdkVersion,'2026.9.9');
+    assert.equal(response.code,200);assert.equal(response.body.archive.sdkVersion,'2099.1.1');
     assert.equal(response.body.archive.verification,'isolated-readback-v2');
     assert.equal(calls,0);await assert.rejects(fs.stat(path.join(root,'canonical')),e=>e.code==='ENOENT');
   }finally{await fs.rm(root,{recursive:true,force:true});}
@@ -162,7 +162,7 @@ test('a changed source cannot reuse a prior admission or differ between parent a
 test('SDK provenance and version display are checked before admission',async t=>{
   const root=await sdkFixture(t);
   for(const pkg of [{name:'other',version:'2026.9.7'},{name:'openclaw'},
-    ...['2026.9.9\n','../archive','2026.9.9 ','9'.repeat(81)].map(version=>({name:'openclaw',version}))]){
+    ...['2026.9.9\n','../archive','2026.9.9\u0000','9'.repeat(81)].map(version=>({name:'openclaw',version}))]){
     await fs.writeFile(path.join(root,'package.json'),JSON.stringify(pkg));
     await assert.rejects(archiveRuntime(root),e=>e.code==='plugin_update_needed');
   }
