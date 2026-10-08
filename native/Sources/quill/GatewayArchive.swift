@@ -83,7 +83,8 @@ enum GatewayArchive {
         var verifiedMeta = meta
         verifiedMeta["recording_id"] = recordingID
         _ = try MeetingRevisions.descriptor(meta: verifiedMeta, directory: URL(fileURLWithPath: "/unused"))
-        let metaKeys = ["started", "ended", "audio_started_at", "status", "fixture", "notes_mode", "note_template", "meeting_context", "participants", "revision"]
+        if let recovery = meta["notes_recovery"] { _ = try NotesRecovery.Request.decode(recovery) }
+        let metaKeys = ["started", "ended", "audio_started_at", "status", "fixture", "notes_mode", "note_template", "meeting_context", "participants", "revision", "notes_recovery"]
         let transcriptKeys = ["engine", "model", "created_at", "execution_machine", "execution_location", "segments", "capture_gaps"]
         let segmentKeys: Set<String> = ["speaker", "start_ms", "end_ms", "text", "source", "speaker_name", "attribution"]
         var text = transcript.filter { transcriptKeys.contains($0.key) }
@@ -132,8 +133,10 @@ enum GatewayArchive {
         return "Gateway connected: \(result["gatewayMachine"] as? String ?? "unknown host")\nAI notes model configured: \(result["notesModelConfigured"] as? String ?? "unavailable")"
     }
 
-    static func save(_ dir: URL) async throws {
-        let workLease = try HelperWorkLease.acquire()
+    static func save(_ dir: URL,
+                     transport: @Sendable (Data) async throws -> Data = { try await request(body: $0) },
+                     exportRootOverride: URL? = nil, activityLockPath: URL = HelperWorkLease.path) async throws {
+        let workLease = try HelperWorkLease.acquire(at: activityLockPath)
         defer { withExtendedLifetime(workLease) {} }
         guard ArchiveBacklog.isFinished(dir) else { throw TranscriptionFailure("Active or incomplete recording left untouched.") }
         guard let archiveLease = try AppRunLock.acquire(at: dir.appendingPathComponent("archive.lock")) else {
@@ -141,7 +144,7 @@ enum GatewayArchive {
         }
         defer { withExtendedLifetime(archiveLease) {} }
         guard ArchiveBacklog.isFinished(dir) else { throw TranscriptionFailure("Active or incomplete recording left untouched.") }
-        let exportRoot = try MeetingDocuments.exportRoot(recording: dir, fallbackRoot: MeetingNotesSettings.folder)
+        let exportRoot = try MeetingDocuments.exportRoot(recording: dir, fallbackRoot: exportRootOverride ?? MeetingNotesSettings.folder)
         var meta = try ArchiveBacklog.object(dir.appendingPathComponent("meta.json"))
         let transcriptData = try ArchiveBacklog.read(dir.appendingPathComponent("transcript.json"))
         let transcript = try JSONSerialization.jsonObject(with: transcriptData) as? [String: Any] ?? [:]
@@ -163,7 +166,10 @@ enum GatewayArchive {
             }
             meta["participants"] = ["joined": joined, "coverage": joined.isEmpty ? "unavailable" : "partial", "invited": [], "invitees_status": "unavailable"]
         }
-        let data = try await request(body: envelope(meta: meta, transcript: transcript, recordingID: meta["recording_id"] as? String ?? dir.lastPathComponent))
+        let retryFile = dir.appendingPathComponent("archive-retry.json")
+        let retry = FileManager.default.fileExists(atPath: retryFile.path) ? try JSONDecoder().decode(ArchiveBacklog.Retry.self, from: ArchiveBacklog.read(retryFile)) : nil
+        if let recovery = try NotesRecovery.active(dir, retry: retry, transcriptData: transcriptData) { meta["notes_recovery"] = recovery.json }
+        let data = try await transport(envelope(meta: meta, transcript: transcript, recordingID: meta["recording_id"] as? String ?? dir.lastPathComponent))
         guard var receipt = try JSONSerialization.jsonObject(with: data) as? [String: Any], receipt["saved"] as? Bool == true,
               let sessionID = receipt["sessionId"] as? String, sessionID.hasPrefix("teams-"),
               receipt["utteranceCount"] as? Int == (transcript["segments"] as? [Any])?.count else {

@@ -30,7 +30,7 @@ final class GatewayHTTPContractTests: XCTestCase, @unchecked Sendable {
         let origin = URL(string: "http://127.0.0.1:\(port)")!
         let session = URLSession(configuration: .ephemeral, delegate: NoGatewayRedirect(), delegateQueue: nil)
         defer { session.invalidateAndCancel() }
-        func post(_ body: Data) async throws -> (Data, Int) {
+        @Sendable func post(_ body: Data) async throws -> (Data, Int) {
             var request = URLRequest(url: origin.appendingPathComponent("plugins/teams-transcribe/ingest"))
             request.timeoutInterval = 20
             request.httpMethod = "POST"
@@ -87,7 +87,44 @@ final class GatewayHTTPContractTests: XCTestCase, @unchecked Sendable {
         let (invalid, invalidStatus) = try await post(Data(#"{"audio":"forbidden"}"#.utf8))
         XCTAssertEqual(invalidStatus, 422)
         XCTAssertEqual(DeliveryFailure.response(status: invalidStatus, data: invalid).code, "invalid_payload")
+        let local = root.appendingPathComponent("local-recovery"), notesRoot = root.appendingPathComponent("notes")
+        try FileManager.default.createDirectory(at: local, withIntermediateDirectories: true)
+        var recoveryMeta = meta
+        recoveryMeta["fixture"] = false; recoveryMeta["recording_id"] = "http-recovery"
+        recoveryMeta["note_template"] = ["id": "fixture", "name": "Fixture", "context": "fixture-invalid-output", "sections": [["title": "Summary", "instructions": "Summarize"]]]
+        try JSONSerialization.data(withJSONObject: recoveryMeta).write(to: local.appendingPathComponent("meta.json"))
+        let originalTranscript = try JSONSerialization.data(withJSONObject: transcript)
+        try originalTranscript.write(to: local.appendingPathComponent("transcript.json"))
+        let lease = root.appendingPathComponent("lifecycle.lock")
+        let delivery = MeetingDeliveryStage(activityLockPath: lease, saveArchive: { directory in
+            try await GatewayArchive.save(directory, transport: { body in
+                let (data, status) = try await post(body)
+                guard status == 200 else { throw DeliveryFailure.response(status: status, data: data) }
+                return data
+            }, exportRootOverride: notesRoot, activityLockPath: lease)
+        }, onSaved: { _ in })
+        if case .failed(let failure) = await delivery.deliver(local, now: 100) { XCTAssertEqual(failure.code, "ai_invalid_output") }
+        else { XCTFail("Synthetic invalid AI output must fail") }
+        XCTAssertEqual(ArchiveBacklog.inspect(local, notesRoot: notesRoot).retry?.completionAttempts, 1)
+        _ = try NotesRecovery.prepare(local, kind: .retryAI, now: 200, activityLockPath: lease)
+        if case .failed(let failure) = await delivery.deliver(local, now: 200) { XCTAssertEqual(failure.code, "ai_invalid_output") }
+        else { XCTFail("Explicit retry must preserve the model failure") }
+        XCTAssertEqual(ArchiveBacklog.inspect(local, notesRoot: notesRoot).retry?.completionAttempts, 2)
+        _ = try NotesRecovery.prepare(local, kind: .transcriptOnly, now: 300, activityLockPath: lease)
+        if case .saved = await delivery.deliver(local, now: 300) {} else { XCTFail("Transcript-only recovery must save") }
+        let recovered = try ArchiveBacklog.object(local.appendingPathComponent("archive-receipt.json"))
+        XCTAssertEqual((recovered["notes"] as? [String: Any])?["backend"] as? String, "transcript-only")
+        XCTAssertEqual(ArchiveBacklog.inspect(local, notesRoot: notesRoot).state, .needsReview, "Capture gaps still require review after recovery")
+        XCTAssertEqual(try ArchiveBacklog.read(local.appendingPathComponent("transcript.json")), originalTranscript)
+        XCTAssertEqual(try ArchiveBacklog.object(local.appendingPathComponent("meta.json"))["notes_mode"] as? String, "ai")
+        let regenerated = try MeetingRevisions.create(from: local, change: .template(NoteTemplate(id: "fixture", name: "Fixture", context: "Synthetic",
+            sections: [.init(title: "Summary", instructions: "Summarize")])), activityLockPath: lease)
+        if case .saved = await delivery.deliver(regenerated, now: 400) {} else { XCTFail("An explicit new version must regenerate notes after transcript-only recovery") }
+        let newReceipt = try ArchiveBacklog.object(regenerated.appendingPathComponent("archive-receipt.json"))
+        XCTAssertNotEqual(newReceipt["sessionId"] as? String, recovered["sessionId"] as? String)
+        XCTAssertEqual((newReceipt["notes"] as? [String: Any])?["backend"] as? String, "gateway-model")
+        XCTAssertEqual((try ArchiveBacklog.object(local.appendingPathComponent("archive-receipt.json"))["notes"] as? [String: Any])?["backend"] as? String, "transcript-only")
         let (counts, _) = try await session.data(from: origin.appendingPathComponent("statistics"))
-        XCTAssertEqual((try JSONSerialization.jsonObject(with: counts) as? [String: Int])?["completions"], 2)
+        XCTAssertEqual((try JSONSerialization.jsonObject(with: counts) as? [String: Int])?["completions"], 5)
     }
 }

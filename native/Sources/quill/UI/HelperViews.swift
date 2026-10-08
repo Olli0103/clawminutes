@@ -100,6 +100,7 @@ struct MeetingDetailView: View {
     let meetingID: String
     @State private var revisionMode: MeetingRevisionEditor.Mode?
     @State private var unidentifiedTurns: Int?
+    @State private var recoveryKind: NotesRecovery.Kind?
     var body: some View {
         ScrollView {
             if let meeting = controller.recentMeetings.first(where: { $0.id == meetingID }) {
@@ -129,12 +130,19 @@ struct MeetingDetailView: View {
                     else if meeting.issue?.code == "speech_credentials_missing" { Button("Add API key…", action: controller.editAPIKey) }
                     else if meeting.issue?.code == "sign_in_required" { Button("Sign in", action: controller.connectGateway) }
                     else if meeting.issue?.retryable == true && meeting.transcript != nil { Button("Retry sending", action: controller.retrySaving) }
+                    if meeting.canSaveTranscriptOnly {
+                        Button("Save transcript-only notes…") { recoveryKind = .transcriptOnly }
+                    }
+                    if meeting.canRetryAINotes {
+                        Button("Try AI notes again…") { recoveryKind = .retryAI }
+                    }
                     Button("Show files in Finder") { controller.openDocument(meeting.directory) }.buttonStyle(.link)
                     DisclosureGroup("Technical details") {
                         Text(meeting.issue?.code ?? meeting.stage.rawValue).font(.caption.monospaced()).textSelection(.enabled)
                     }
                 }.padding(24).frame(maxWidth: .infinity, alignment: .leading)
                     .sheet(item: $revisionMode) { mode in MeetingRevisionEditor(controller: controller, meeting: meeting, mode: mode) }
+                    .sheet(item: $recoveryKind) { kind in NotesRecoveryEditor(controller: controller, meeting: meeting, kind: kind) }
             } else { Text("This meeting is no longer in the current list.").padding(24) }
         }.frame(minWidth: 430, minHeight: 320)
             .task(id: meetingID) {

@@ -7,8 +7,12 @@ actor MeetingDeliveryStage {
     private var busy = false
     private let activityLockPath: URL
     private let saveArchive: @Sendable (URL) async throws -> Void
-    init(activityLockPath: URL, saveArchive: @escaping @Sendable (URL) async throws -> Void) {
-        self.activityLockPath = activityLockPath; self.saveArchive = saveArchive
+    private let onSaved: @Sendable (RecentMeeting) -> Void
+    init(activityLockPath: URL, saveArchive: @escaping @Sendable (URL) async throws -> Void,
+         onSaved: @escaping @Sendable (RecentMeeting) -> Void = { meeting in
+             notifyUser(title: "Notes ready", body: meeting.title, category: .notesReady, context: ["meetingID": meeting.id])
+         }) {
+        self.activityLockPath = activityLockPath; self.saveArchive = saveArchive; self.onSaved = onSaved
     }
     func deliver(_ dir: URL, now: TimeInterval) async -> Result {
         guard !busy, ArchiveBacklog.isFinished(dir) else { return .skipped }
@@ -27,7 +31,7 @@ actor MeetingDeliveryStage {
             let saved = ArchiveBacklog.inspect(dir)
             if saved.state == .saved || (saved.state == .needsReview && saved.reason.hasPrefix("Notes and transcript saved")) {
                 let meeting = RecentMeeting.make(saved)
-                notifyUser(title: "Notes ready", body: meeting.title, category: .notesReady, context: ["meetingID": dir.path])
+                onSaved(meeting)
             }
             MeetingRetention.apply(dir)
             return .saved

@@ -112,7 +112,7 @@ import SwiftUI
             defer { saving = false }
             do {
                 created = try await Task.detached { try MeetingRevisions.create(from: meeting.directory, change: change) }.value
-                await controller.queueNewVersion()
+                await controller.queuePreparedText()
             } catch { self.error = String(describing: error) }
         }
     }

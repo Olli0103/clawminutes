@@ -18,7 +18,7 @@ enum PipelineEvents {
         "pipeline_state_invalid", "sign_in_required", "network_unavailable", "plugin_unavailable",
         "gateway_unavailable", "plugin_update_needed", "local_save_failed", "revision_conflict", "revision_parent_unavailable",
         "ai_retry_limit", "ai_invalid_output", "ai_completion_failed", "ai_input_too_large", "ai_tool_attempt",
-        "notes_model_unavailable", "notes_owner_required", "notes_cache_failed", "notes_state_conflict",
+        "notes_model_unavailable", "notes_owner_required", "notes_cache_failed", "notes_state_conflict", "notes_recovery_unavailable", "notes_retry_consumed",
         "archive_integrity", "content_type_required", "invalid_payload", "method_not_allowed",
         "payload_too_large", "save_in_progress"
     ]

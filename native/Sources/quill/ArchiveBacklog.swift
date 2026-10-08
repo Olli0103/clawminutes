@@ -18,6 +18,7 @@ enum ArchiveBacklog {
         var transcriptSHA256: String
         var completionAttempts: Int? = nil
         var lastError: DeliveryFailure? = nil
+        var recoveryID: String? = nil
         static func delay(attempt: Int) -> TimeInterval {
             [30.0, 120, 600, 1800][max(0, min(attempt - 1, 3))]
         }
@@ -85,7 +86,8 @@ enum ArchiveBacklog {
                 guard saved.attempts > 0, saved.nextAttemptAt.isFinite else { return item(.needsReview, "Retry metadata is invalid") }
                 if saved.transcriptSHA256 == AudioRetention.digest(data) {
                     retry = saved
-                    if saved.lastError?.retryable == false || (saved.completionAttempts ?? 0) >= 3 {
+                    let recovery = try NotesRecovery.active(dir, retry: saved, transcriptData: data)
+                    if saved.lastError?.retryable == false || ((saved.completionAttempts ?? 0) >= 3 && recovery?.kind != .transcriptOnly) {
                         return Item(directory: dir, state: .needsReview, reason: saved.lastError?.detail ?? "AI notes stopped after three attempts", retry: retry)
                     }
                 }
@@ -133,17 +135,20 @@ enum ArchiveBacklog {
         let data = try read(item.directory.appendingPathComponent("transcript.json"))
         let attempts = min((item.retry?.attempts ?? 0) + 1, 1000)
         let retry = Retry(attempts: attempts, nextAttemptAt: now + Retry.delay(attempt: attempts), transcriptSHA256: AudioRetention.digest(data),
-                          completionAttempts: item.retry?.completionAttempts, lastError: item.retry?.lastError)
+                          completionAttempts: item.retry?.completionAttempts, lastError: item.retry?.lastError, recoveryID: item.retry?.recoveryID)
         let path = item.directory.appendingPathComponent("archive-retry.json")
         try JSONEncoder().encode(retry).write(to: path, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
     }
 
     /// Reconnection or an explicit Retry permits one new authenticated send.
-    /// Invalid output, conflicts and paid-attempt limits remain blocked.
+    /// This never grants an AI attempt. Text-only recovery can sign in at the AI cap.
     static func rearmSignIn(_ item: Item, now: TimeInterval) throws {
-        guard item.retry?.lastError?.code == "sign_in_required", (item.retry?.completionAttempts ?? 0) < 3 else { return }
+        guard item.retry?.lastError?.code == "sign_in_required" else { return }
         let file = item.directory.appendingPathComponent("archive-retry.json")
+        let transcriptOnly = try NotesRecovery.active(item.directory, retry: item.retry,
+            transcriptData: read(item.directory.appendingPathComponent("transcript.json")))?.kind == .transcriptOnly
+        guard (item.retry?.completionAttempts ?? 0) < 3 || transcriptOnly else { return }
         var retry = try JSONDecoder().decode(Retry.self, from: read(file))
         guard retry.lastError?.code == "sign_in_required", retry.transcriptSHA256 == item.retry?.transcriptSHA256 else { return }
         retry.lastError = nil
@@ -157,7 +162,8 @@ enum ArchiveBacklog {
         var retry = try JSONDecoder().decode(Retry.self, from: read(path))
         var failure = DeliveryFailure.classify(error)
         if failure.completionAttempted { retry.completionAttempts = min((retry.completionAttempts ?? 0) + 1, 3) }
-        if (retry.completionAttempts ?? 0) >= 3 {
+        let transcriptOnly = try NotesRecovery.active(directory, retry: retry, transcriptData: read(directory.appendingPathComponent("transcript.json")))?.kind == .transcriptOnly
+        if (retry.completionAttempts ?? 0) >= 3 && !transcriptOnly {
             failure = DeliveryFailure(code: "ai_retry_limit", detail: "AI notes stopped after three attempts. Review this meeting or save transcript-only notes.", retryable: false, completionAttempted: failure.completionAttempted)
         }
         retry.lastError = failure

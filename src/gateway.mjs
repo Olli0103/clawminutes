@@ -7,14 +7,14 @@ import {isDeepStrictEqual} from 'node:util';
 import {archiveAdapter,meetingRecord,assertArchiveReadback,assertUtteranceCompatibility} from './archive.mjs';
 import {validateTemplate,validateContext,validateParticipants,generateNotes,documents,restoreGeneratedNotes} from './notes.mjs';
 import {DeliveryError,deliveryError,safeErrorDiagnostic} from './delivery-errors.mjs';
-import {withNotesAttempt} from './notes-attempts.mjs';
+import {withNotesAttempt,validateNotesRecovery,authorizeTranscriptRecovery} from './notes-attempts.mjs';
 import {archiveIdentity,validateRevision,verifyRevisionParent} from './revisions.mjs';
 export function validateEnvelope(value){
   if(!value || typeof value!=='object' || Array.isArray(value) || Object.keys(value).some(k=>!['meta','transcript','recordingId'].includes(k)))throw Error('Only transcript metadata is accepted. Raw audio is forbidden.');
   if(typeof value.recordingId!=='string'||!/^[-\w.]{1,128}$/.test(value.recordingId))throw Error('Invalid recording identity');
   const t=value.transcript,m=value.meta;
   if(!m || !t || typeof m!=='object'||typeof t!=='object'||Array.isArray(m)||Array.isArray(t))throw Error('Invalid transcript metadata');
-  if(Object.keys(m).some(k=>!['started','ended','audio_started_at','status','fixture','notes_mode','note_template','meeting_context','participants','revision'].includes(k))||Object.keys(t).some(k=>!['engine','model','created_at','execution_machine','execution_location','segments','capture_gaps'].includes(k)))throw Error('Unexpected metadata field. Raw audio is forbidden.');
+  if(Object.keys(m).some(k=>!['started','ended','audio_started_at','status','fixture','notes_mode','note_template','meeting_context','participants','revision','notes_recovery'].includes(k))||Object.keys(t).some(k=>!['engine','model','created_at','execution_machine','execution_location','segments','capture_gaps'].includes(k)))throw Error('Unexpected metadata field. Raw audio is forbidden.');
   if(!m || !t || !['parakeet','elevenlabs'].includes(t.engine) || !['parakeet-tdt-0.6b-v3-coreml','scribe_v2'].includes(t.model))throw Error('Invalid STT provenance');
   if(!Number.isFinite(m.audio_started_at)||typeof m.started!=='string'||!Number.isFinite(Date.parse(m.started)))throw Error('Invalid recording clock');
   for(const key of ['ended'])if(m[key]!==undefined && (typeof m[key]!=='string'||!Number.isFinite(Date.parse(m[key]))))throw Error('Invalid recording end clock');
@@ -47,7 +47,8 @@ export function validateEnvelope(value){
   if(m.meeting_context!==undefined)validateContext(m.meeting_context);
   if(m.participants!==undefined)validateParticipants(m.participants);
   const revision=validateRevision(m.revision,{started:m.started,recordingId:value.recordingId});
-  return {recordingId:value.recordingId,meta:{started:m.started,ended:m.ended,audio_started_at:m.audio_started_at,status:m.status,fixture:m.fixture===true,notes_mode:m.notes_mode||'simple',note_template:m.note_template,meeting_context:m.meeting_context,participants:m.participants,revision},transcript:{engine:t.engine,model:t.model,created_at:t.created_at,execution_machine:t.execution_machine,execution_location:t.execution_location,segments:t.segments,capture_gaps:t.capture_gaps}};
+  const notes_recovery=validateNotesRecovery(m.notes_recovery,m.notes_mode);
+  return {recordingId:value.recordingId,meta:{started:m.started,ended:m.ended,audio_started_at:m.audio_started_at,status:m.status,fixture:m.fixture===true,notes_mode:m.notes_mode||'simple',note_template:m.note_template,meeting_context:m.meeting_context,participants:m.participants,revision,notes_recovery},transcript:{engine:t.engine,model:t.model,created_at:t.created_at,execution_machine:t.execution_machine,execution_location:t.execution_location,segments:t.segments,capture_gaps:t.capture_gaps}};
 }
 // Share in-flight ownership across module reloads in the same Gateway process.
 const savesKey=Symbol.for('clawminutes.teams-transcribe.pending-saves.v1');
@@ -67,7 +68,7 @@ export async function saveEnvelope(envelope,options={}){
 }
 async function persistEnvelope(envelope,{openclawDir,stateDir,complete}={}){
   const e=envelope;const id=archiveIdentity(e.meta.started,e.recordingId);
-  const record=meetingRecord(e.meta,e.transcript,id);record.session.metadata.fixture=e.meta.fixture===true;
+  let record=meetingRecord(e.meta,e.transcript,id);record.session.metadata.fixture=e.meta.fixture===true;
   const Store=await archiveAdapter(openclawDir);const store=new Store(path.join(stateDir,'transcripts'),{env:{...process.env,OPENCLAW_STATE_DIR:stateDir}});
   await verifyRevisionParent(store,record,e.meta.revision);
   const existing=await store.readSession(id);
@@ -82,7 +83,9 @@ async function persistEnvelope(envelope,{openclawDir,stateDir,complete}={}){
       const same=(a,b)=>isDeepStrictEqual(JSON.parse(JSON.stringify(a??null)),JSON.parse(JSON.stringify(b??null)));
       const summary=snapshot.summary;
       if(summary.sessionId!==id||summary.utteranceCount!==rows.length||!same(summary.transcript,record.summary.transcript))throw new DeliveryError('archive_integrity','Canonical archive readback mismatch',{status:409});
-      const notesBackend=e.meta.notes_mode==='ai'?'gateway-model':record.session.metadata.notes.backend;
+      const fallback=existing.metadata?.notesRecovery;
+      if(fallback&&!same(fallback,e.meta.notes_recovery))throw new DeliveryError('revision_conflict','This meeting was explicitly saved as transcript-only notes. Existing notes are preserved.',{status:409});
+      const notesBackend=fallback?.kind==='transcript_only'?'transcript-only':e.meta.notes_mode==='ai'?'gateway-model':record.session.metadata.notes.backend;
       if(['title','startedAt','stoppedAt','source'].some(k=>!same(existing[k],record.session[k]))||
          ['stt','meetingContext','participants','captureStatus','captureGaps','fixture','revision'].some(k=>!same(existing.metadata?.[k],record.session.metadata[k]))||
          existing.metadata?.notes?.backend!==notesBackend||!same(summary.template,e.meta.note_template))throw new DeliveryError('revision_conflict','Archived meeting metadata differs. Save changes as a new revision; saved notes are preserved.',{status:409});
@@ -91,11 +94,17 @@ async function persistEnvelope(envelope,{openclawDir,stateDir,complete}={}){
       return archiveReceipt(saved,rows);
     }
   }
-  if(e.meta.notes_mode==='ai'){
+  if(e.meta.notes_recovery?.kind==='transcript_only'){
+    await authorizeTranscriptRecovery(stateDir,id,e);
+    record=meetingRecord({...e.meta,notes_mode:'transcript'},e.transcript,id);
+    record.session.metadata.notesRecovery=e.meta.notes_recovery;
+    await generateNotes(record,{...e.meta,notes_mode:'transcript'},complete);
+  }
+  else if(e.meta.notes_mode==='ai'){
     const generated=await withNotesAttempt(stateDir,id,e,async()=>{
       await generateNotes(record,e.meta,complete);
       return {notes:record.session.metadata.notes,sections:record.summary.sections,template:record.summary.template};
-    },{cacheResult:true});
+    },{cacheResult:true,recoveryId:e.meta.notes_recovery?.id});
     try{
       if(!isDeepStrictEqual(generated.template,e.meta.note_template))throw Error('Cached template differs');
       restoreGeneratedNotes(record,generated);
@@ -124,7 +133,7 @@ export function gatewayHandler(options){
       // Diagnostics must never turn a completed HTTP response into a rejected handler.
       try { options?.onFailure?.({requestId,...(recordingRef?{recordingRef}:{}),code:failure.code,retryable:failure.retryable,completionAttempted:failure.completionAttempted,...safeErrorDiagnostic(failure)}); } catch { /* best effort */ }
     };
-    if(req.method==='GET'){res.writeHead(200);res.end(JSON.stringify({plugin:'teams-transcribe',gatewayMachine:os.hostname(),rawAudioAccepted:false,notesModelConfigured:options?.notesModel||null,capabilities:{structuredErrors:1,idempotentCompletedSave:true,cappedNotesAttempts:3,revisions:1}}));return true;}
+    if(req.method==='GET'){res.writeHead(200);res.end(JSON.stringify({plugin:'teams-transcribe',gatewayMachine:os.hostname(),rawAudioAccepted:false,notesModelConfigured:options?.notesModel||null,capabilities:{structuredErrors:1,idempotentCompletedSave:true,cappedNotesAttempts:3,revisions:1,notesRecovery:1}}));return true;}
     if(req.method!=='POST'){fail(new DeliveryError('method_not_allowed','POST required',{status:405}));return true;}
     if(!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type']||'')){fail(new DeliveryError('content_type_required','JSON transcript metadata only',{status:415}));return true;}
     let size=0;const chunks=[];

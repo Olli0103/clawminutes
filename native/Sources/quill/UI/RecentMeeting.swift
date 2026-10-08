@@ -12,6 +12,9 @@ struct RecentMeeting: Identifiable, Sendable {
     let notes: URL?
     let transcript: URL?
     var revision: Int = 1
+    var completionAttempts: Int = 0
+    var canRetryAINotes: Bool { needsAttention && NotesRecovery.permits(.retryAI, failure: issue, completions: completionAttempts) }
+    var canSaveTranscriptOnly: Bool { needsAttention && NotesRecovery.permits(.transcriptOnly, failure: issue, completions: completionAttempts) }
     var id: String { directory.path }
     var ready: Bool { notes != nil }
     var needsAttention: Bool { stage == .needsAttention || stage == .waitingForModel }
@@ -52,7 +55,7 @@ struct RecentMeeting: Identifiable, Sendable {
             stage: state?.stage ?? .needsAttention, issue: issue,
             detail: issue?.detail ?? item.reason, notes: notes,
             transcript: readableDocument(transcript) ? transcript : nil,
-            revision: state?.revision ?? 1)
+            revision: state?.revision ?? 1, completionAttempts: item.retry?.completionAttempts ?? 0)
     }
     static func readableDocument(_ file: URL) -> Bool {
         guard let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),

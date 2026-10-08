@@ -48,6 +48,16 @@ final class HelperPopoverTests: XCTestCase {
         let transcript = Transcript(engine: "parakeet", model: "fixture", created_at: "2026-10-08T08:00:00Z", segments: [
             .init(speaker: "system_unknown", start_ms: 125000, end_ms: 130000, text: "Let's confirm who will prepare the proposal before assigning an owner.", source: "system"),
             .init(speaker: "system_unknown", start_ms: 131000, end_ms: 133000, text: "The decision is still open.", source: "system")])
+        for kind in [NotesRecovery.Kind.retryAI, .transcriptOnly] {
+            let view = NSHostingView(rootView: NotesRecoveryEditor(controller: controller, meeting: sample[2], kind: kind)
+                .environment(\.colorScheme, .light))
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 340), styleMask: [.titled], backing: .buffered, defer: false)
+            window.contentView = view; view.layoutSubtreeIfNeeded()
+            let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds)); view.cacheDisplay(in: view.bounds, to: bitmap)
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                .write(to: URL(fileURLWithPath: preview).appendingPathComponent("notes-recovery-" + kind.rawValue + ".png"))
+            XCTAssertFalse(window.isVisible)
+        }
         for dark in [false, true] {
             NSApp.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
             for mode in [MeetingRevisionEditor.Mode.speakers, .template] {

@@ -102,6 +102,8 @@ For a personal microphone, set **Your voice → Your name**. Use Shared micropho
 
 Saved meeting details offer **Identify speakers…** and **Regenerate notes…**. Both create separate versions and preserve the original notes. Select exact turns when confirming a speaker; local audio previews are available while audio is retained. See [meeting versions](docs/revisions.md) for the UI, identity contract and re-transcription commands. This source candidate has not been activated on a live helper or Gateway.
 
+Failed AI notes offer transcript-only recovery or an explicit additional attempt when the existing budget permits it. Recovery preserves the original transcript and earlier failures; it cannot reset paid-attempt limits. See [notes recovery](docs/notes-recovery.md) for replay behavior and legacy-ledger limits.
+
 ## Data flow and audio retention
 
 Parakeet keeps audio and speech recognition on the recording Mac. The Gateway receives transcript text and approved metadata, including captured meeting and participant observations. Its selected AI provider receives that text for note generation. The plugin's ingestion endpoint rejects raw audio.

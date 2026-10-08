@@ -246,7 +246,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             let report = try await transcription.retryArchiveBacklog(root: root, force: true)
             return report.busy ? "A backlog check is already running" : "Checked pending saves: \(report.attempted) attempted, \(report.pending) waiting"
         }
-        menuBar.onVersionCreated = { [transcription, root] in
+        menuBar.onTextPrepared = { [transcription, root] in
             _ = try await transcription.retryArchiveBacklog(root: root)
         }
         menuBar.onSpeechCredentialsInstalled = { [transcription, root] in
