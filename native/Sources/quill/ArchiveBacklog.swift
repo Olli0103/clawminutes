@@ -63,7 +63,18 @@ enum ArchiveBacklog {
             if meta["fixture"] as? Bool == true { return item(.fixture, "Synthetic capture excluded from automatic delivery") }
             guard isFinished(dir) else { return item(.needsReview, "Recording is not confirmed finished") }
             let transcriptURL = dir.appendingPathComponent("transcript.json")
-            guard FileManager.default.fileExists(atPath: transcriptURL.path) else { return item(.transcriptionPending, "Finished recording has no transcript") }
+            guard FileManager.default.fileExists(atPath: transcriptURL.path) else {
+                let pending = item(.transcriptionPending, "Waiting to transcribe")
+                let stateFile = dir.appendingPathComponent("state.json")
+                if FileManager.default.fileExists(atPath: stateFile.path) {
+                    let state = try MeetingPipelineState.load(dir, inspected: pending)
+                    if let failure = state.transcription.lastError {
+                        return item(!failure.retryable || state.transcription.count >= 3 ? .needsReview : .transcriptionPending, failure.detail)
+                    }
+                    if state.transcription.count >= 3 { return item(.needsReview, "Speech recognition stopped after three attempts. Audio is retained.") }
+                }
+                return pending
+            }
             let data = try read(transcriptURL)
             guard let transcript = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                   transcript["segments"] is [[String: Any]] else { return item(.needsReview, "Transcript is invalid") }

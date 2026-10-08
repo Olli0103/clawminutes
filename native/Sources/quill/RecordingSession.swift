@@ -17,7 +17,13 @@ final class RecordingSession {
     private var hasStarted = false
     private let workLease: HelperWorkLease
     private var requestedEnd: Date?
+    private var recoveryNotified: Set<String> = []
     private(set) var captureWarning: String?
+    var healthText: String {
+        let now = Date()
+        return "Microphone " + (mic.progress.snapshot.recentlyWriting(at: now) ? "✓" : "…")
+            + " · Teams audio " + (system.progress.snapshot.recentlyWriting(at: now) ? "✓" : "…")
+    }
     private let localSpeakerName = Config.localSpeakerName()
     private let sharedMicrophone = Config.sharedMicrophone()
     private let selectedBackend = Config.transcriptionEngine()
@@ -93,6 +99,7 @@ final class RecordingSession {
     /// collision) without starting capture yet.
     init(root: URL, context: MeetingContext? = nil, activityLockPath: URL = HelperWorkLease.path) throws {
         workLease = try HelperWorkLease.acquire(at: activityLockPath)
+        try RecordingStorage.checkStart(freeBytes: RecordingStorage.available(at: root))
         meetingContext = context?.isCurrent(at: startedAt.timeIntervalSince1970) == true ? context : nil
         let cleanSubject = meetingContext.flatMap { TeamsMeetingTitle.clean($0.title) }.map(MeetingDocuments.component) ?? "Meeting"
         let subject = cleanSubject.isEmpty ? "Meeting" : cleanSubject
@@ -112,6 +119,8 @@ final class RecordingSession {
         var initial: [String: Any] = ["started": ISO8601DateFormatter().string(from: startedAt), "audio_started_at": startedAt.timeIntervalSince1970, "backend": selectedBackend, "notes_mode": notesMode, "status": "recording", "files": ["mic": "mic.caf", "system": "system.caf"], "start_offset_ms": ["mic": 0, "system": 0]]
         addMeetingMetadata(&initial)
         try JSONSerialization.data(withJSONObject: initial).write(to: dir.appendingPathComponent("meta.json"), options: .atomic)
+        let state = try MeetingPipelineState.load(dir)
+        try state.write(dir)
         roster = ParticipantRoster(audio_started_at: startedAt.timeIntervalSince1970)
         if let roster { try JSONEncoder().encode(roster).write(to: dir.appendingPathComponent("participants.json"), options: .atomic) }
     }
@@ -191,6 +200,9 @@ final class RecordingSession {
             captureWarning = "\(source == "mic" ? "Microphone" : "Teams audio") interrupted. Captured audio is preserved; checking recovery."
             guard let filename = capture.rotate(source: source, progress: progress, at: Date()) else {
                 captureWarning = "\(source == "mic" ? "Microphone" : "Teams audio") is incomplete. Audio is kept for review."
+                if capture.recoveryLimited(source: source, at: Date()), recoveryNotified.insert(source).inserted {
+                    notifyUser(title: "ClawMinutes: Check your audio device", body: "\(source == "mic" ? "Microphone" : "Teams audio") recovery paused after repeated route failures. Check Sound settings. The other track continues and captured audio is kept.", category: .audioWarning)
+                }
                 continue
             }
             // Persist the old segment before awaiting any capture operation.
@@ -202,6 +214,7 @@ final class RecordingSession {
             do {
                 if source == "mic" { try mic.start(writingTo: dir.appendingPathComponent(filename)) }
                 else { try await system.start(writingTo: dir.appendingPathComponent(filename)) }
+                recoveryNotified.remove(source)
                 captureWarning = "Audio capture restarted. A gap is marked in the transcript; audio is kept for review."
             } catch {
                 if source == "mic" { mic.progress.failed("restart_failed") }
@@ -266,6 +279,9 @@ final class RecordingSession {
             options: [.prettyPrinted, .sortedKeys]
         ) {
             try? data.write(to: dir.appendingPathComponent("meta.json"), options: .atomic)
+        }
+        if var state = try? MeetingPipelineState.load(dir) {
+            state.stage = .recorded; state.updatedAt = Date().timeIntervalSince1970; try? state.write(dir)
         }
         do { dir = try RecordingFolders.renameFinished(dir) }
         catch { FileHandle.standardError.write(Data("Could not add meeting title to recording folder: \(error)\n".utf8)) }

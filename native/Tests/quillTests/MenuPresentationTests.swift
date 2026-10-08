@@ -47,11 +47,11 @@ final class MenuPresentationTests: XCTestCase {
         let status = TranscriptionCoordinator.Status.archivePending(session: "AI weekly")
         let activity = MenuPresentation.activity(recording: false, elapsed: "0:00", status: status)
         XCTAssertEqual(activity, .archivePending)
-        XCTAssertEqual(activity.title, "Transcript ready")
+        XCTAssertEqual(activity.title, "Waiting to send")
         XCTAssertFalse(activity.isWorking)
         let detail = try XCTUnwrap(MenuPresentation.pipelineDetail(status))
         XCTAssertTrue(detail.contains("Transcript ready on this Mac"))
-        XCTAssertTrue(detail.contains("retry pending saves"))
+        XCTAssertTrue(detail.contains("recovery options"))
         XCTAssertFalse(detail.contains("Transcription did not finish"))
     }
     func testRecordingTakesPriorityWhilePreviousMeetingTranscribes() {

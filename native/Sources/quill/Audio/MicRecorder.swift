@@ -28,6 +28,9 @@ final class MicRecorder: @unchecked Sendable {
     }
 
     private var engine = AVAudioEngine()
+    private var configurationObserver: NSObjectProtocol?
+    private var preferRaw = false
+    private var generation = 0
     private var file: AVAudioFile?
     private var url: URL?
     private(set) var isRecording = false
@@ -47,9 +50,10 @@ final class MicRecorder: @unchecked Sendable {
     /// — PCM CAF needs no packet-table finalization, so a crash loses nothing written).
     func start(writingTo url: URL) throws {
         guard !isRecording else { return }
+        generation += 1
         progress.reset()
         self.url = url
-        try attach(voiceProcessing: Config.micVoiceProcessing())
+        try attach(voiceProcessing: !preferRaw && Config.micVoiceProcessing())
         isRecording = true
     }
 
@@ -57,6 +61,8 @@ final class MicRecorder: @unchecked Sendable {
     func stop() {
         guard isRecording else { return }
         isRecording = false
+        generation += 1
+        removeConfigurationObserver()
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
         file = nil
@@ -144,6 +150,12 @@ final class MicRecorder: @unchecked Sendable {
             throw RecorderError.engineStartFailed(error)
         }
 
+        // A route change is observed immediately and picked up by the next
+        // one-second health tick, instead of waiting for ten seconds of silence.
+        removeConfigurationObserver()
+        let epoch = progress.currentEpoch
+        configurationObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange,
+            object: engine, queue: nil) { [weak self] _ in self?.progress.deviceChanged(epoch: epoch) }
         let report = "mic: voiceProcessing=\(input.isVoiceProcessingEnabled) "
             + "input=\(input.outputFormat(forBus: 0)) tap=\(monoFormat)\n"
         FileHandle.standardError.write(Data(report.utf8))
@@ -156,6 +168,7 @@ final class MicRecorder: @unchecked Sendable {
     /// the only recovery is restarting raw.
     private func installVoiceTap(on input: AVAudioInputNode, format: AVAudioFormat) {
         let checkFrames = Int(format.sampleRate)
+        let generation = self.generation
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
             guard let self, let file = self.file else { return }
 
@@ -170,7 +183,10 @@ final class MicRecorder: @unchecked Sendable {
                 if self.livenessFrames >= checkFrames {
                     self.livenessSettled = true
                     if self.livenessPeak == 0 {
-                        DispatchQueue.main.async { self.fallBackToRaw() }
+                        DispatchQueue.main.async {
+                            guard self.generation == generation else { return }
+                            self.fallBackToRaw()
+                        }
                         return
                     }
                 }
@@ -213,29 +229,17 @@ final class MicRecorder: @unchecked Sendable {
         }
     }
 
-    /// The voice-processing route delivered a full second of digital silence:
-    /// tear the engine down and restart raw, discarding the silent prefix so
-    /// the track's timestamps start at real audio.
+    private func removeConfigurationObserver() {
+        if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) }
+        configurationObserver = nil
+    }
+    deinit { removeConfigurationObserver() }
+
+    /// Request a raw segment through the session's normal recovery path. Even
+    /// the silent prefix is preserved; this recorder never deletes captured audio.
     private func fallBackToRaw() {
         guard isRecording else { return }
-        FileHandle.standardError.write(Data(
-            "warning: voice processing delivered silence — restarting mic raw\n".utf8
-        ))
-        engine.stop()
-        engine.inputNode.removeTap(onBus: 0)
-        file = nil
-        progress.reset()
-        if let url {
-            try? FileManager.default.removeItem(at: url)
-        }
-        do {
-            try attach(voiceProcessing: false)
-        } catch {
-            progress.failed("raw_fallback_failed")
-            FileHandle.standardError.write(Data(
-                "mic raw fallback failed: \(error) — session continues without mic track\n".utf8
-            ))
-            file = nil
-        }
+        preferRaw = true
+        progress.failed("voice_processing_silent")
     }
 }

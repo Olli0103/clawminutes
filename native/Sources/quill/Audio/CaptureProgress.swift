@@ -9,11 +9,18 @@ final class CaptureProgress: @unchecked Sendable {
         var frames: Int64 = 0
         var duration: Double = 0
         var failure: String?
+        var configurationChanged = false
+        func recentlyWriting(at date: Date) -> Bool {
+            frames > 0 && failure == nil && !configurationChanged
+                && lastWrite.map { date.timeIntervalSince($0) >= 0 && date.timeIntervalSince($0) < 3 } == true
+        }
     }
     private let lock = NSLock()
     private var value = Snapshot()
+    private var epoch: UInt64 = 0
+    var currentEpoch: UInt64 { lock.withLock { epoch } }
     var snapshot: Snapshot { lock.withLock { value } }
-    func reset() { lock.withLock { value = Snapshot() } }
+    func reset() { lock.withLock { epoch &+= 1; value = Snapshot() } }
     func wrote(frames: Int64, sampleRate: Double, at date: Date = Date()) {
         guard frames > 0, sampleRate > 0 else { return }
         lock.withLock {
@@ -21,6 +28,12 @@ final class CaptureProgress: @unchecked Sendable {
             value.lastWrite = date
             value.frames += frames
             value.duration += Double(frames) / sampleRate
+        }
+    }
+    func deviceChanged(epoch expected: UInt64? = nil) {
+        lock.withLock {
+            guard expected == nil || expected == epoch else { return }
+            value.configurationChanged = true
         }
     }
     func failed(_ reason: String) { lock.withLock { value.failure = reason } }
@@ -50,6 +63,7 @@ struct CaptureRecovery {
     private(set) var gaps: [CaptureGap] = []
     private var active: [String: Int] = [:]
     private var attempts: [String: Int] = [:]
+    private var attemptTimes: [String: [Double]] = [:]
     private var nextAttempt: [String: Double] = [:]
     private var pendingGap: [String: Int] = [:]
     let origin: Double
@@ -74,6 +88,7 @@ struct CaptureRecovery {
     }
     func problem(source: String, progress: CaptureProgress.Snapshot, at date: Date) -> String? {
         guard let index = active[source] else { return nil }
+        if progress.configurationChanged { return "device_changed" }
         if progress.failure != nil { return "capture_failed" }
         let time = date.timeIntervalSince1970
         let last = progress.lastWrite?.timeIntervalSince1970 ?? segments[index].started_at
@@ -83,11 +98,14 @@ struct CaptureRecovery {
         }
         return nil
     }
+    func recoveryLimited(source: String, at date: Date) -> Bool {
+        (attemptTimes[source] ?? []).filter { date.timeIntervalSince1970 - $0 < 600 }.count >= 3
+    }
     /// Called before stopping an affected stream. The unaffected stream keeps running.
     mutating func rotate(source: String, progress: CaptureProgress.Snapshot, at date: Date) -> String? {
         observe(source: source, progress: progress)
         guard let reason = problem(source: source, progress: progress, at: date),
-              (attempts[source] ?? 0) < 3, date.timeIntervalSince1970 >= (nextAttempt[source] ?? 0),
+              !recoveryLimited(source: source, at: date), date.timeIntervalSince1970 >= (nextAttempt[source] ?? 0),
               let index = active[source] else { return nil }
         let boundary = date.timeIntervalSince1970
         segments[index].ended_at = boundary
@@ -101,6 +119,7 @@ struct CaptureRecovery {
         }
         let count = (attempts[source] ?? 0) + 1
         attempts[source] = count
+        attemptTimes[source] = (attemptTimes[source] ?? []).filter { boundary - $0 < 600 } + [boundary]
         nextAttempt[source] = boundary + 15
         active.removeValue(forKey: source)
         return "\(source)-\(count + 1).caf"

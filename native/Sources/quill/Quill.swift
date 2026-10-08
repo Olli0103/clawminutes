@@ -226,6 +226,15 @@ final class AppController: NSObject, NSApplicationDelegate {
         self.showMenuOnLaunch = showMenuOnLaunch
         self.promptFixture = promptFixture
         super.init()
+        NativeNotifications.shared.onAction = { [weak self] action, context in
+            guard let self else { return }
+            switch action {
+            case .openNotes: self.menuBar.openNotes(notificationMeetingID: context["meetingID"])
+            case .keepRecording: self.meetings.keepRecording(notificationToken: context["recordingToken"])
+            case .openSound:
+                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.sound") { NSWorkspace.shared.open(url) }
+            }
+        }
         menuBar.onToggle = { [weak self] in self?.toggle() }
         menuBar.onOpenFolder = { [weak self] in self?.openFolder() }
         menuBar.onQuit = { [weak self] in self?.shutdown() }
@@ -236,6 +245,12 @@ final class AppController: NSObject, NSApplicationDelegate {
         menuBar.onRetryArchive = { [transcription, root] in
             let report = try await transcription.retryArchiveBacklog(root: root, force: true)
             return report.busy ? "A backlog check is already running" : "Checked pending saves: \(report.attempted) attempted, \(report.pending) waiting"
+        }
+        menuBar.onSpeechCredentialsInstalled = { [transcription, root] in
+            _ = try await transcription.retryPendingTranscriptions(root: root, credentialsInstalled: true)
+        }
+        menuBar.onLocalModelInstalled = { [transcription, root] in
+            _ = try await transcription.retryPendingTranscriptions(root: root, modelInstalled: true)
         }
         meetings.onStart = { [weak self] in
             guard let self, self.session == nil else { return false }
@@ -248,6 +263,9 @@ final class AppController: NSObject, NSApplicationDelegate {
         meetings.onSpeakers = { [weak self] observation in self?.session?.recordSpeakers(observation) }
 
         backlogTask = Task { [weak self, transcription, root] in
+            await transcription.setMeetingsHandler { [weak self] meetings in
+                Task { @MainActor [weak self] in self?.menuBar.updateRecentMeetings(meetings) }
+            }
             await transcription.setBacklogHandler { [weak self] count in
                 Task { @MainActor [weak self] in self?.menuBar.pendingArchiveCount = count }
             }
@@ -266,8 +284,10 @@ final class AppController: NSObject, NSApplicationDelegate {
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(60)) }
                 catch { break }
-                do { _ = try await transcription.retryArchiveBacklog(root: root) }
-                catch { FileHandle.standardError.write(Data("Archive backlog check unavailable. Recordings preserved.\n".utf8)) }
+                do {
+                    _ = try await transcription.retryPendingTranscriptions(root: root)
+                    _ = try await transcription.retryArchiveBacklog(root: root)
+                } catch { FileHandle.standardError.write(Data("Meeting backlog check unavailable. Recordings preserved.\n".utf8)) }
             }
         }
     }
@@ -328,6 +348,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             return false
         }
 
+        menuBar.captureHealth = session?.healthText ?? "Checking microphone and Teams audio…"
         menuBar.update(recording: true, elapsed: "0:00")
         ticker = HousekeepingTimer.schedule(every: 1) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
@@ -365,6 +386,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func tick() {
         guard let session else { return }
         session.checkpoint()
+        menuBar.captureHealth = session.healthText
         menuBar.updateCaptureWarning(session.captureWarning)
         menuBar.update(
             recording: true,

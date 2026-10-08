@@ -14,6 +14,12 @@ final class MeetingAssistant {
     private var samplingSpeakers = false
     private var tracking = SpeakerTrackingState()
     private var recordingGeneration = 0
+    private var stopAction = RecordingActionToken()
+    private var countdownAnnounced = false
+    func keepRecording(notificationToken: String?) {
+        guard policy.recording, stopAction.accepts(notificationToken) else { return }
+        keepRecording()
+    }
     private var recordingSpeakerMeetingID: String?
     private var scanning = false
     private let recordingNotification: (String, String) -> Void
@@ -25,7 +31,7 @@ final class MeetingAssistant {
     private var consent = ConsentPromptState(saved: UserDefaults.standard.data(forKey: "teamsPromptedCallsV2"))
     private var needsZoomScreenPermission = false
 
-    init(recordingNotification: @escaping (String, String) -> Void = notifyUser) {
+    init(recordingNotification: @escaping (String, String) -> Void = { notifyUser(title: $0, body: $1) }) {
         self.recordingNotification = recordingNotification
     }
 
@@ -81,6 +87,7 @@ final class MeetingAssistant {
     }
 
     func recordingStarted() {
+        stopAction.begin(); countdownAnnounced = false
         recordingContextID = contextForStart?.meeting_id
         if let id = recordingContextID {
             _ = consent.observe(availableMeetings[id] ?? DetectedMeeting(id: id, app: "Teams", service: "Microsoft Teams"))
@@ -96,6 +103,7 @@ final class MeetingAssistant {
     }
 
     func recordingStopped() {
+        stopAction.finish(); countdownAnnounced = false
         recordingGeneration += 1
         recordingContextID = nil
         policy.recordingStopped()
@@ -194,6 +202,11 @@ final class MeetingAssistant {
                 self.policy.startFailed(for: meeting)
                 if shouldPrompt { await self.requestConsent(for: meeting) }
             case .countdown(let seconds):
+                if !self.countdownAnnounced {
+                    self.countdownAnnounced = true
+                    notifyUser(title: "Call ended?", body: "Stopping in \(seconds) seconds. Choose Keep recording to continue.",
+                        category: .callEnd, context: ["recordingToken": self.stopAction.value ?? ""])
+                }
                 self.report("Meeting ended; stopping automatically in \(seconds)s", true)
             case .stop:
                 self.onStop?()

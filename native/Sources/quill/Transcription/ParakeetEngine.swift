@@ -27,12 +27,14 @@ actor ParakeetEngine: TranscriptionEngine {
 
     private var manager: AsrManager?
 
+    nonisolated static var modelsAvailable: Bool { AsrModels.modelsExist(at: AsrModels.defaultCacheDirectory(for: modelVersion), version: modelVersion) }
+
     func prepare() async throws {
         guard manager == nil else { return }
         ModelHub.offlineMode = true
         let cache = AsrModels.defaultCacheDirectory(for: Self.modelVersion)
         guard AsrModels.modelsExist(at: cache, version: Self.modelVersion) else {
-            throw TranscriptionFailure("Local only requires Parakeet v3 models on this Mac. Choose Download local model in ocmh. No cloud fallback.")
+            throw SpeechRecognitionIssue.localModelMissing
         }
         let models = try await AsrModels.load(from: cache, version: Self.modelVersion)
         let manager = AsrManager()

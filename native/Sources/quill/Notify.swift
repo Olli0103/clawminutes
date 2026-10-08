@@ -4,6 +4,9 @@ import Foundation
 @MainActor
 final class NativeNotifications: NSObject, UNUserNotificationCenterDelegate {
     static let shared = NativeNotifications()
+    enum Action: String { case openNotes = "open_notes", keepRecording = "keep_recording", openSound = "open_sound" }
+    enum Category: String { case notesReady = "notes_ready", callEnd = "call_end", audioWarning = "audio_warning" }
+    var onAction: ((Action, [String: String]) -> Void)?
 
     enum NotificationError: Error, CustomStringConvertible {
         case appRequired, denied, deliveryUnconfirmed
@@ -21,6 +24,11 @@ final class NativeNotifications: NSObject, UNUserNotificationCenterDelegate {
               Bundle.main.bundleURL.pathExtension == "app" else { throw NotificationError.appRequired }
         let center = UNUserNotificationCenter.current()
         center.delegate = self
+        center.setNotificationCategories([
+            UNNotificationCategory(identifier: Category.notesReady.rawValue, actions: [UNNotificationAction(identifier: Action.openNotes.rawValue, title: "Open notes", options: [.foreground])], intentIdentifiers: []),
+            UNNotificationCategory(identifier: Category.callEnd.rawValue, actions: [UNNotificationAction(identifier: Action.keepRecording.rawValue, title: "Keep recording", options: [])], intentIdentifiers: []),
+            UNNotificationCategory(identifier: Category.audioWarning.rawValue, actions: [UNNotificationAction(identifier: Action.openSound.rawValue, title: "Open Sound settings", options: [.foreground])], intentIdentifiers: [])
+        ])
         return center
     }
 
@@ -52,25 +60,41 @@ final class NativeNotifications: NSObject, UNUserNotificationCenterDelegate {
                 "bundle_id": Bundle.main.bundleIdentifier ?? ""]
     }
 
-    static func content(title: String, body: String) -> UNMutableNotificationContent {
+    static func content(title: String, body: String, category: Category? = nil, context: [String: String] = [:]) -> UNMutableNotificationContent {
         let content = UNMutableNotificationContent()
         let prefix = "ocmh: "
         content.title = title.hasPrefix(prefix) ? String(title.dropFirst(prefix.count)) : title
         content.body = body
+        content.categoryIdentifier = category?.rawValue ?? ""
+        content.userInfo = context
         return content
     }
 
-    func send(title: String, body: String) async throws -> String {
+    func send(title: String, body: String, category: Category? = nil, context: [String: String] = [:]) async throws -> String {
         try await authorize()
         let center = try center()
         let identifier = UUID().uuidString
-        try await center.add(UNNotificationRequest(identifier: identifier, content: Self.content(title: title, body: body), trigger: nil))
+        try await center.add(UNNotificationRequest(identifier: identifier, content: Self.content(title: title, body: body, category: category, context: context), trigger: nil))
         for _ in 0..<10 {
             try await Task.sleep(for: .milliseconds(300))
             let delivered = await center.deliveredNotifications()
             if delivered.contains(where: { $0.request.identifier == identifier }) { return identifier }
         }
         throw NotificationError.deliveryUnconfirmed
+    }
+
+    nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping @Sendable () -> Void) {
+        let identifier = response.actionIdentifier
+        let category = response.notification.request.content.categoryIdentifier
+        let context = response.notification.request.content.userInfo as? [String: String] ?? [:]
+        let action = Action(rawValue: identifier)
+            ?? (identifier == UNNotificationDefaultActionIdentifier && category == Category.notesReady.rawValue ? .openNotes : nil)
+        Task { @MainActor [weak self] in
+            if let action { self?.onAction?(action, context) }
+            completionHandler()
+        }
     }
 
     nonisolated func userNotificationCenter(
@@ -82,10 +106,10 @@ final class NativeNotifications: NSObject, UNUserNotificationCenterDelegate {
     }
 }
 
-func notifyUser(title: String, body: String) {
+func notifyUser(title: String, body: String, category: NativeNotifications.Category? = nil, context: [String: String] = [:]) {
     Task { @MainActor in
         do {
-            let id = try await NativeNotifications.shared.send(title: title, body: body)
+            let id = try await NativeNotifications.shared.send(title: title, body: body, category: category, context: context)
             FileHandle.standardError.write(Data("ocmh notification delivered: \(id)\n".utf8))
         } catch {
             FileHandle.standardError.write(Data("ocmh notification failed: \(error)\n".utf8))

@@ -199,3 +199,22 @@ extension ArchiveBacklogTests {
         XCTAssertEqual(after, 2, "Successful sign-in invokes this explicit retry path")
     }
 }
+
+extension ArchiveBacklogTests {
+    func testMalformedPipelineStateBlocksDeliveryOnceAndPreservesItsBytes() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dir = try session(root)
+        let bad = Data("{invalid".utf8)
+        try bad.write(to: dir.appendingPathComponent("state.json"))
+        let saves = SaveCounter()
+        let coordinator = TranscriptionCoordinator(activityLockPath: root.appendingPathComponent("lease"), saveArchive: { await saves.save($0) })
+        _ = try await coordinator.retryArchiveBacklog(root: root, now: 100)
+        let second = try await coordinator.retryArchiveBacklog(root: root, force: true, now: 10_000)
+        let count = await saves.count
+        XCTAssertEqual(count, 0)
+        XCTAssertEqual(second.attempted, 0)
+        XCTAssertEqual(second.needsReview, 1)
+        XCTAssertEqual(try Data(contentsOf: dir.appendingPathComponent("state.json")), bad)
+    }
+}

@@ -143,3 +143,9 @@ Local full-suite evidence is 278 native tests, 12 opt-in skips, and no failures.
 The complete review is still open. Durable transcription retry, process-incarnation consent, versioned per-meeting state, revision workflows, the broader pop-up/settings redesign, diagnostics, device recovery and incremental transcription are not yet complete. Developer ID notarization and all live activation/acceptance remain separate gates.
 
 Consent persistence now uses the Teams process launch time, a title hash and previously observed WindowServer IDs. The full isolated native run after this change executed 278 tests with 12 opt-in tests skipped and zero failures. All 31 Gateway tests pass on each supported SDK. Light/dark offscreen consent renders were inspected. Same-title, same-window reuse while the helper is absent cannot establish call identity and remains an acceptance limitation. No live processes were restarted or activated.
+
+## Review recovery and UX checkpoint, 8 October 2026
+
+Source-only candidate, not installed or activated. Full native suite: 293 tests, 281 passed, 12 opt-in tests skipped. JavaScript: 34 passed on each real SDK 2026.9.7 and 2026.9.8. Installer code is unchanged from the preceding 10-test verification.
+
+New regressions cover durable transcription caps over three coordinator relaunches, missing-model requeue, credential replacement, malformed pipeline-state preservation, device-change epochs and rolling recovery budgets, notification action tokens and recording storage checks. Offscreen popover light/dark and all seven light Settings pages were inspected. These checks do not prove notification delivery, live device recovery, focus behavior or Gateway performance. See `review-plan.md` for the remaining scope.

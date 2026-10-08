@@ -1,12 +1,12 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import {createHash} from 'node:crypto';
+import {createHash,randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {isDeepStrictEqual} from 'node:util';
 import {archiveAdapter,meetingRecord,assertArchiveReadback,assertUtteranceCompatibility} from './archive.mjs';
 import {validateTemplate,validateContext,validateParticipants,generateNotes,documents,restoreGeneratedNotes} from './notes.mjs';
-import {DeliveryError,deliveryError} from './delivery-errors.mjs';
+import {DeliveryError,deliveryError,safeErrorDiagnostic} from './delivery-errors.mjs';
 import {withNotesAttempt} from './notes-attempts.mjs';
 export function validateEnvelope(value){
   if(!value || typeof value!=='object' || Array.isArray(value) || Object.keys(value).some(k=>!['meta','transcript','recordingId'].includes(k)))throw Error('Only transcript metadata is accepted. Raw audio is forbidden.');
@@ -32,7 +32,7 @@ export function validateEnvelope(value){
     if(!Array.isArray(t.capture_gaps)||t.capture_gaps.length>32)throw Error('Invalid capture gaps');
     for(const gap of t.capture_gaps){
       if(!gap||typeof gap!=='object'||Array.isArray(gap)||Object.keys(gap).some(k=>!['source','start_ms','end_ms','reason'].includes(k))||
-         !['mic','system'].includes(gap.source)||!['capture_failed','buffers_stalled','frame_coverage_shortfall','incomplete_at_stop','helper_interrupted','track_unavailable'].includes(gap.reason)||
+         !['mic','system'].includes(gap.source)||!['capture_failed','buffers_stalled','frame_coverage_shortfall','incomplete_at_stop','helper_interrupted','track_unavailable','device_changed'].includes(gap.reason)||
          !Number.isSafeInteger(gap.start_ms)||!Number.isSafeInteger(gap.end_ms)||gap.start_ms<0||gap.end_ms<gap.start_ms||gap.end_ms>7*24*3600*1000)throw Error('Invalid capture gap evidence');
     }
   }
@@ -112,20 +112,28 @@ function archiveReceipt(record,rows){
 export function gatewayHandler(options){
   return async(req,res)=>{
     res.setHeader('Content-Type','application/json');
+    const requestId=randomUUID();
+    res.setHeader('X-ClawMinutes-Request-ID',requestId);
+    let recordingRef;
+    const fail=error=>{
+      const failure=deliveryError(error);
+      res.writeHead(failure.status);res.end(JSON.stringify({saved:false,code:failure.code,retryable:failure.retryable,completionAttempted:failure.completionAttempted,detail:failure.message,error:failure.message,recordingPreserved:true,requestId}));
+      // Diagnostics must never turn a completed HTTP response into a rejected handler.
+      try { options?.onFailure?.({requestId,...(recordingRef?{recordingRef}:{}),code:failure.code,retryable:failure.retryable,completionAttempted:failure.completionAttempted,...safeErrorDiagnostic(failure)}); } catch { /* best effort */ }
+    };
     if(req.method==='GET'){res.writeHead(200);res.end(JSON.stringify({plugin:'teams-transcribe',gatewayMachine:os.hostname(),rawAudioAccepted:false,notesModelConfigured:options?.notesModel||null,capabilities:{structuredErrors:1,idempotentCompletedSave:true,cappedNotesAttempts:3,revisions:false}}));return true;}
-    if(req.method!=='POST'){res.writeHead(405);res.end(JSON.stringify({error:'POST required'}));return true;}
-    if(!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type']||'')){res.writeHead(415);res.end(JSON.stringify({error:'JSON transcript metadata only'}));return true;}
+    if(req.method!=='POST'){fail(new DeliveryError('method_not_allowed','POST required',{status:405}));return true;}
+    if(!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type']||'')){fail(new DeliveryError('content_type_required','JSON transcript metadata only',{status:415}));return true;}
     let size=0;const chunks=[];
     try{
       for await(const chunk of req){size+=chunk.length;if(size>16*1024*1024)throw new DeliveryError('payload_too_large','Transcript package too large',{status:413});chunks.push(chunk);}
       let envelope;
       try{envelope=JSON.parse(Buffer.concat(chunks).toString('utf8'));}catch{throw new DeliveryError('invalid_payload','The meeting package is not valid JSON.');}
+      if(typeof envelope?.recordingId==='string'&&envelope.recordingId.length<=128)recordingRef=createHash('sha256').update(envelope.recordingId).digest('hex').slice(0,24);
       const receipt=await saveEnvelope(envelope,options);
       res.writeHead(200);res.end(JSON.stringify(receipt));
     }catch(error){
-      const failure=deliveryError(error);
-      res.writeHead(failure.status);res.end(JSON.stringify({saved:false,code:failure.code,retryable:failure.retryable,completionAttempted:failure.completionAttempted,detail:failure.message,error:failure.message,recordingPreserved:true}));
-      options?.onFailure?.({code:failure.code,retryable:failure.retryable,completionAttempted:failure.completionAttempted});
+      fail(error);
     }
     return true;
   };

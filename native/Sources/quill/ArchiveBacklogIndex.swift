@@ -23,7 +23,7 @@ struct ArchiveBacklogIndex {
     mutating func item(_ directory: URL, notesRoot: URL = MeetingNotesSettings.folder) -> ArchiveBacklog.Item {
         var ancestors: [URL] = []
         var files = ["meta.json", "transcript.json", "archive-receipt.json", "archive-retry.json",
-                     "notes-export-path.txt", "notes-export-location.json"].map { directory.appendingPathComponent($0) }
+                     "notes-export-path.txt", "notes-export-location.json", "state.json"].map { directory.appendingPathComponent($0) }
         if let data = try? ArchiveBacklog.read(directory.appendingPathComponent("notes-export-path.txt")), data.count <= 4096,
            let text = String(data: data, encoding: .utf8), text.hasPrefix("/") {
             let destination = URL(fileURLWithPath: text.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -33,7 +33,7 @@ struct ArchiveBacklogIndex {
             var parent = destination.deletingLastPathComponent()
             while parent.path != "/" { ancestors.append(parent); parent.deleteLastPathComponent() }
         }
-        let signature = ([notesRoot.path, stamp(directory)] + files.map(stamp) + ancestors.map(directoryIdentity)).joined(separator: "\n")
+        let signature = ([notesRoot.path, directoryIdentity(directory)] + files.map(stamp) + ancestors.map(directoryIdentity)).joined(separator: "\n")
         if let cached = entries[directory.path], cached.stamp == signature { return cached.item }
         let result = inspect(directory, notesRoot)
         entries[directory.path] = Cached(stamp: signature, item: result)

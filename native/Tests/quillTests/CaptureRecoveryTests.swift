@@ -49,6 +49,44 @@ final class CaptureRecoveryTests: XCTestCase {
         XCTAssertEqual(capture.gaps.count, 1)
         XCTAssertEqual(capture.gaps[0].end_ms, 100000)
     }
+    func testHealthRequiresRecentSuccessfulWritesAndDoesNotTreatSilenceAsFailure() {
+        let progress = CaptureProgress()
+        XCTAssertFalse(progress.snapshot.recentlyWriting(at: time(1000)))
+        progress.wrote(frames: 48000, sampleRate: 48000, at: time(1000))
+        XCTAssertTrue(progress.snapshot.recentlyWriting(at: time(1001)))
+        XCTAssertFalse(progress.snapshot.recentlyWriting(at: time(1004)))
+        progress.failed("write_failed")
+        XCTAssertFalse(progress.snapshot.recentlyWriting(at: time(1001)))
+    }
+    func testRetiredEngineEventsCannotMarkTheNewSegmentAsChanged() {
+        let progress = CaptureProgress()
+        let retired = progress.currentEpoch
+        progress.reset()
+        progress.deviceChanged(epoch: retired)
+        XCTAssertFalse(progress.snapshot.configurationChanged)
+        progress.deviceChanged(epoch: progress.currentEpoch)
+        XCTAssertTrue(progress.snapshot.configurationChanged)
+    }
+    func testDeviceChangeRotatesBeforeStallAndBudgetRenewsWithoutReusingFiles() {
+        let progress = CaptureProgress()
+        var capture = CaptureRecovery(origin: 1000)
+        capture.begin(source: "mic", file: "mic.caf", at: time(1000))
+        progress.wrote(frames: 48000, sampleRate: 48000, at: time(1000))
+        progress.deviceChanged()
+        XCTAssertEqual(capture.problem(source: "mic", progress: progress.snapshot, at: time(1001)), "device_changed")
+        for index in 1...3 {
+            let now = time(1001 + Double((index - 1) * 20))
+            let filename = capture.rotate(source: "mic", progress: progress.snapshot, at: now)
+            XCTAssertEqual(filename, "mic-\(index + 1).caf")
+            capture.begin(source: "mic", file: filename!, at: now)
+        }
+        XCTAssertTrue(capture.recoveryLimited(source: "mic", at: time(1100)))
+        XCTAssertNil(capture.rotate(source: "mic", progress: progress.snapshot, at: time(1100)))
+        XCTAssertFalse(capture.recoveryLimited(source: "mic", at: time(1700)))
+        XCTAssertEqual(capture.rotate(source: "mic", progress: progress.snapshot, at: time(1700)), "mic-5.caf")
+        XCTAssertEqual(Set(capture.segments.map(\.file)).count, capture.segments.count)
+        XCTAssertEqual(capture.gaps.first?.reason, "device_changed")
+    }
     func testIndependentDiarizationNumbersCannotMergePeopleAcrossSegments() {
         var first = SpeakerAnalysis(turns: [SpeakerTurn(speaker_id: "system_1", start: 0, end: 1)], names: [:])
         var second = first

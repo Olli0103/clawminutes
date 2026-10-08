@@ -32,3 +32,21 @@ test('Gateway errors have a machine-readable permanent validation outcome',async
  assert.equal(response.code,422);assert.equal(response.body.code,'invalid_payload');
  assert.equal(response.body.retryable,false);assert.equal(response.body.completionAttempted,false);
 });
+
+test('unsupported requests have structured outcomes and redacted correlation events',async()=>{
+ for(const [method,contentType,status,code] of [['PUT','application/json',405,'method_not_allowed'],['POST','audio/wav',415,'content_type_required']]){
+  const events=[];
+  const response={headers:{},setHeader(k,v){this.headers[k]=v;},writeHead(code){this.code=code;},end(body){this.body=JSON.parse(body);}};
+  await gatewayHandler({onFailure:e=>events.push(e)})({method,headers:{'content-type':contentType}},response);
+  assert.equal(response.code,status);assert.equal(response.body.code,code);
+  assert.equal(response.body.retryable,false);
+  assert.equal(events[0].requestId,response.headers['X-ClawMinutes-Request-ID']);
+ }
+});
+
+test('a failing diagnostic sink cannot reject a completed error response',async()=>{
+ const response={setHeader(){},writeHead(code){this.code=code;},end(body){this.body=JSON.parse(body);}};
+ assert.equal(await gatewayHandler({onFailure(){throw Error('diagnostic sink unavailable');}})({method:'PUT'},response),true);
+ assert.equal(response.code,405);
+ assert.equal(response.body.code,'method_not_allowed');
+});
