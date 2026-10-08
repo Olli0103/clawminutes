@@ -76,6 +76,43 @@ final class HelperWorkLeaseTests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(FileManager.default.fileExists(atPath: path.path))
     }
 
+    func testInterruptedInstallerMarkerBlocksRecordingAfterOSLockReleases() throws {
+        let root = try folder(), path = root.appendingPathComponent("lifecycle.lock")
+        let recordings = root.appendingPathComponent("recordings")
+        let pending = root.appendingPathComponent("installation-pending.json")
+        let (task, input) = try installer(path)
+        defer { try? input.fileHandleForWriting.close(); if task.isRunning { task.terminate(); task.waitUntilExit() } }
+        try Data("{interrupted".utf8).write(to: pending)
+        task.terminate(); task.waitUntilExit()
+        XCTAssertEqual(try pythonLockProbe(path), 0, "The installer OS lock must be released")
+        XCTAssertThrowsError(try RecordingSession(root: recordings, activityLockPath: path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: recordings.path))
+        XCTAssertEqual(try pythonLockProbe(path), 0, "A refused work lease must close its descriptor")
+        try FileManager.default.removeItem(at: pending)
+        XCTAssertNotNil(try HelperWorkLease.acquire(at: path))
+    }
+
+    func testDanglingInstallationMarkerAlsoBlocksWork() throws {
+        let root = try folder(), path = root.appendingPathComponent("lifecycle.lock")
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("installation-pending.json"), withDestinationURL: root.appendingPathComponent("absent"))
+        XCTAssertThrowsError(try HelperWorkLease.acquire(at: path))
+        XCTAssertEqual(try pythonLockProbe(path), 0)
+    }
+
+    func testPendingInstallationDoesNotPrepareInference() async throws {
+        let root = try folder(), path = root.appendingPathComponent("lifecycle.lock"), dir = try session(root)
+        try Data("{}".utf8).write(to: root.appendingPathComponent("installation-pending.json"))
+        let engine = LeaseProbeEngine(path: path)
+        let coordinator = TranscriptionCoordinator(activityLockPath: path, audioDuration: { _ in 1 }, makeEngine: { _, _ in engine })
+        do {
+            try await coordinator.transcribe(dir, detectSpeakers: false, engineOverride: .parakeet)
+            XCTFail("Inference started during an unresolved update")
+        } catch { XCTAssertTrue(String(describing: error).contains("interrupted ClawMinutes update")) }
+        let prepares = await engine.prepares
+        XCTAssertEqual(prepares, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("transcript.json").path))
+    }
+
     func testRecordingCannotCreateAnAttemptWhileInstallerOwnsLease() throws {
         let root = try folder(), path = root.appendingPathComponent("lifecycle.lock")
         let recordings = root.appendingPathComponent("recordings")

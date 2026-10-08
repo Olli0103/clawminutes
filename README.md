@@ -134,7 +134,7 @@ Healthy local capture now closes a file every five minutes at a PCM buffer bound
 
 ## Update and remove
 
-Use a newly built helper archive signed with the same identity. The installer refuses to replace an active recorder.
+Use a newly built helper archive signed with the same identity. All lifecycle actions share the recording/processing lock. Updates preserve the previous app, configuration, LaunchAgent and receipt until publication succeeds. Ordinary failure restores their exact prior state. Uncertain rollback or an interrupted installation keeps private backups and blocks later lifecycle actions for review. See [installer recovery](docs/installer-recovery.md).
 
 ```sh
 python3 scripts/helper.py update
