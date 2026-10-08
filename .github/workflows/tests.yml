@@ -17,6 +17,8 @@ jobs:
           node-version: '24'
       - run: npm install --ignore-scripts --package-lock=false --no-audit --no-fund openclaw@${{ matrix.sdk }}
       - run: npm test
+      - name: Production archive smoke with synthetic text
+        run: OPENCLAW_TEAMS_OPENCLAW_DIR="$PWD/node_modules/openclaw" node scripts/archive-smoke.mjs
       - run: python3 -m unittest discover -s test -p 'test_helper_*.py'
   native-core:
     runs-on: xcode-27

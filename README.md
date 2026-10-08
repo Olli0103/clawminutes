@@ -155,6 +155,12 @@ npm install --ignore-scripts --package-lock=false
 npm test
 ```
 
+The storage smoke command uses the production save interface and a temporary SDK archive. It checks repeated saves, completed-speech rejection, folder-independent identity and speaker evidence, then removes its scratch files. It performs no speech recognition or model completion. The SDK path below is the development dependency:
+
+```sh
+OPENCLAW_TEAMS_OPENCLAW_DIR="$PWD/node_modules/openclaw" node scripts/archive-smoke.mjs
+```
+
 The macOS unit tests use Swift Package Manager:
 
 ```sh

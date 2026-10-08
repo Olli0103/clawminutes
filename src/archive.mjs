@@ -2,7 +2,6 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import {pathToFileURL} from 'node:url';
-import {createHash} from 'node:crypto';
 import {DeliveryError} from './delivery-errors.mjs';
 import {verifyArchiveStore} from './archive-contract.mjs';
 // Verified SDK releases expose no public completed-record import.
@@ -97,21 +96,4 @@ export function assertUtteranceCompatibility(record,rows) {
     if(!u||seen.has(row.id)||row.text!==u.text||row.startedAt!==u.startedAt||row.endedAt!==u.endedAt||row.speaker?.label!==u.speaker?.label||['source','start_ms','end_ms','attribution','rawSpeaker','nameEvidence'].some(k=>row.metadata?.[k]!==u.metadata?.[k]))throw new DeliveryError('revision_conflict','Archived transcript differs. Save the correction as a new revision; the original archive is preserved.',{status:409});
     seen.add(row.id);
   }
-}
-export async function saveMeeting(dir,{openclawDir=process.env.OPENCLAW_TEAMS_OPENCLAW_DIR,stateDir=process.env.OPENCLAW_STATE_DIR||path.join(os.homedir(),'.openclaw')}={}) {
-  const [meta,transcript]=await Promise.all(['meta.json','transcript.json'].map(async f=>JSON.parse(await fs.readFile(path.join(dir,f),'utf8'))));
-  const id='teams-'+createHash('sha256').update(meta.started+'\n'+path.basename(dir)).digest('hex').slice(0,24);
-  const record=meetingRecord(meta,transcript,id);
-  const Store=await archiveAdapter(openclawDir);
-  const store=new Store(path.join(stateDir,'transcripts'),{env:{...process.env,OPENCLAW_STATE_DIR:stateDir}});
-  await store.writeSession(record.session);
-  for(const utterance of record.utterances)await store.appendUtteranceForSession(record.session,utterance);
-  await store.writeSummary(record.summary,record.session);
-  const readback=await store.readUtterancesForSession(record.session);
-  const savedSummary=await store.readSummary(record.session);
-  assertArchiveReadback(record,readback,savedSummary);
-  const receipt={saved:true,sessionId:id,stateDir,utteranceCount:readback.length,stt:record.session.metadata.stt,notes:record.session.metadata.notes,savedAt:new Date().toISOString()};
-  await fs.writeFile(path.join(dir,'archive-receipt.json.next'),JSON.stringify(receipt,null,2),{mode:0o600});
-  await fs.rename(path.join(dir,'archive-receipt.json.next'),path.join(dir,'archive-receipt.json'));
-  return receipt;
 }
