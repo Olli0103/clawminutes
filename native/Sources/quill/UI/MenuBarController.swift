@@ -34,9 +34,44 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
         NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
     }
     func windowWillClose(_ notification: Notification) {
-        guard let window = notification.object as? NSWindow, window === libraryWindow else { return }
-        window.contentViewController = nil
-        libraryWindow = nil // Releases the search view and its memory-only text cache.
+        guard let window = notification.object as? NSWindow else { return }
+        if window === libraryWindow {
+            window.contentViewController = nil
+            libraryWindow = nil // Releases the search view and its memory-only text cache.
+        } else if window === migrationWindow {
+            window.contentViewController = nil; migrationWindow = nil; copyingNotes = false
+        }
+    }
+    private var migrationWindow: NSWindow?
+    private var copyingNotes = false
+    func windowShouldClose(_ sender: NSWindow) -> Bool { sender !== migrationWindow || !copyingNotes }
+    func copyExistingNotes(_ selection: [RecentMeeting]? = nil) {
+        if let migrationWindow { migrationWindow.makeKeyAndOrderFront(nil); return }
+        let meetings = selection ?? recentMeetings.filter { $0.ready }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.allowsMultipleSelection = false
+        panel.message = "Choose a destination for copies of existing notes. You will review the meetings before copying. Originals stay in place."
+        panel.prompt = "Review destination"
+        panel.begin { [weak self] response in
+            guard response == .OK, let destination = panel.url, let self else { return }
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 650, height: 560),
+                styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            window.title = "Copy existing notes"; window.isReleasedWhenClosed = false; window.delegate = self
+            window.contentViewController = NSHostingController(rootView: NotesMigrationView(controller: self, meetings: meetings, destination: destination,
+                onClose: { [weak window] in window?.close() }, onBusyChange: { [weak self, weak window] active in
+                    self?.copyingNotes = active
+                    window?.standardWindowButton(.closeButton)?.isEnabled = !active
+                }))
+            self.migrationWindow = window
+            window.center(); NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
+        }
+    }
+    func refreshLocalMeetings() async {
+        let root = Config.resolveRoot(cliOverride: nil), notesRoot = MeetingNotesSettings.folder
+        let snapshot = try? await Task.detached {
+            try ArchiveBacklog.scan(root: root, notesRoot: notesRoot).reversed().filter { $0.state != .fixture }.map { RecentMeeting.make($0) }
+        }.value
+        if let snapshot { updateRecentMeetings(snapshot) }
     }
     func copyNotes(_ meeting: RecentMeeting) {
         guard let file = meeting.notes, let data = try? ArchiveBacklog.read(file),

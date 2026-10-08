@@ -148,8 +148,8 @@ enum MeetingDocuments {
         try Data(destination.path.utf8).write(to: marker, options: .atomic)
         for file in [location, marker] { try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path) }
     }
-    /// Explicit copy preserves the user's edited files and retains the original.
-    static func migrateExport(recording: URL, to root: URL) throws -> URL {
+    struct MigrationPaths: Sendable { let source: URL; let destination: URL; let sessionID: String }
+    static func migrationPaths(recording: URL, to root: URL) throws -> MigrationPaths {
         guard ArchiveBacklog.isFinished(recording) else { throw TranscriptionFailure("Finish the recording before moving notes.") }
         let receipt = try ArchiveBacklog.object(recording.appendingPathComponent("archive-receipt.json"))
         guard let id = receipt["sessionId"] as? String, receipt["saved"] as? Bool == true,
@@ -162,20 +162,38 @@ enum MeetingDocuments {
         let relative = old.standardizedFileURL.path.dropFirst(sourceRoot.standardizedFileURL.path.count + 1)
         let target = root.appendingPathComponent(String(relative), isDirectory: true)
         try checkPath(target, root: root)
-        if target.standardizedFileURL == old.standardizedFileURL { return old }
-        let fm = FileManager.default
-        guard !fm.fileExists(atPath: target.path) else { throw TranscriptionFailure("The destination already exists. Existing notes were left untouched.") }
-        if let files = fm.enumerator(at: old, includingPropertiesForKeys: [.isSymbolicLinkKey]) {
-            for case let file as URL in files where try file.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink == true {
-                throw TranscriptionFailure("Linked files need manual migration. Existing notes preserved.")
-            }
+        guard !target.standardizedFileURL.path.hasPrefix(old.standardizedFileURL.path + "/") else {
+            throw TranscriptionFailure("Choose a destination outside these existing notes. Originals are preserved.")
         }
+        if target.standardizedFileURL != old.standardizedFileURL, FileManager.default.fileExists(atPath: target.path) {
+            throw TranscriptionFailure("The destination already exists. Existing notes were left untouched.")
+        }
+        return MigrationPaths(source: old, destination: target, sessionID: id)
+    }
+    /// Explicit copy preserves edited files and the original. Reviewed content
+    /// must still match before staging and before publishing the new location.
+    static func migrateExport(recording: URL, to root: URL, expectedSource: NotesFolderSnapshot? = nil, expectedRootIdentity: String? = nil) throws -> URL {
+        let paths = try migrationPaths(recording: recording, to: root)
+        if let expectedRootIdentity {
+            guard try NotesMigration.destinationIdentity(root) == expectedRootIdentity else { throw NotesMigration.changed }
+        }
+        let old = paths.source, target = paths.destination
+        if target.standardizedFileURL == old.standardizedFileURL { return old }
+        let snapshot = try NotesFolderSnapshot.capture(old)
+        guard expectedSource == nil || snapshot == expectedSource else { throw NotesMigration.changed }
+        let fm = FileManager.default
         try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
         let staging = target.deletingLastPathComponent().appendingPathComponent(".ocmh-migrate-" + UUID().uuidString)
         defer { try? fm.removeItem(at: staging) }
         try fm.copyItem(at: old, to: staging)
+        guard try NotesFolderSnapshot.capture(staging) == snapshot,
+              try NotesFolderSnapshot.capture(old) == snapshot else { throw NotesMigration.changed }
+        try checkPath(target, root: root)
+        if let expectedRootIdentity {
+            guard try NotesMigration.destinationIdentity(root) == expectedRootIdentity else { throw NotesMigration.changed }
+        }
         try fm.moveItem(at: staging, to: target)
-        try rememberExport(target, root: root, recording: recording, sessionID: id)
+        try rememberExport(target, root: root, recording: recording, sessionID: paths.sessionID)
         return target
     }
     static func component(_ text: String) -> String {

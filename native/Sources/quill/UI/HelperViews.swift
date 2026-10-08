@@ -120,6 +120,9 @@ struct MeetingDetailView: View {
                         }
                         if let transcript = meeting.transcript { Button("Open transcript") { controller.openDocument(transcript) } }
                     }
+                    if meeting.notes != nil {
+                        Button("Copy notes to another folder…") { controller.copyExistingNotes([meeting]) }
+                    }
                     if meeting.ready && meeting.transcript != nil {
                         HStack {
                             Button("Identify speakers…") { revisionMode = .speakers }
@@ -235,6 +238,8 @@ struct HelperSettings: View {
                     Section("Notes folder") {
                         Text(controller.notesFolder).font(.caption).textSelection(.enabled)
                         Button("Choose folder for future meetings…", action: controller.chooseNotesFolder)
+                        Button("Copy existing notes…") { controller.copyExistingNotes() }
+                            .disabled(controller.recentMeetings.allSatisfy { !$0.ready })
                         Button("Open notes folder", action: controller.openNotesFolder)
                         Text("Year / month / timestamp and meeting title. Existing notes stay in their original folder, including your edits.")
                             .font(.caption).foregroundStyle(.secondary)
