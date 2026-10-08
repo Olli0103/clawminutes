@@ -41,7 +41,7 @@ enum ClosedChunkRecognition {
         guard lstat(receipt.path, &receiptInfo) != 0, errno == ENOENT else { throw DraftSourceOwnership.revisionRequired }
         let metadata = try ArchiveBacklog.object(dir.appendingPathComponent("meta.json"))
         guard metadata["backend"] as? String == TranscriptionEngineKind.parakeet.rawValue,
-              let manifests = metadata["capture_segments"] as? [[String: Any]], manifests.count <= 256,
+              let manifests = metadata["capture_segments"] as? [[String: Any]], manifests.count <= CaptureManifest.maximumSegments,
               manifests.filter({ $0["file"] as? String == file }).count == 1,
               let item = manifests.first(where: { $0["file"] as? String == file }),
               item["closed"] as? Bool == true,

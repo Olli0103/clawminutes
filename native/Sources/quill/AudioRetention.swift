@@ -118,7 +118,7 @@ enum AudioRetention {
         let names: [String]
         if let segments {
             let files = segments.compactMap { $0["file"] as? String }
-            guard !files.isEmpty, files.count == segments.count, files.count <= 16,
+            guard !files.isEmpty, files.count == segments.count, files.count <= CaptureManifest.maximumSegments,
                   Set(files).count == files.count, files.allSatisfy(SessionMeta.validTrackFile) else {
                 throw TranscriptionFailure("Invalid capture file manifest; audio kept")
             }
@@ -190,6 +190,36 @@ enum AudioRetention {
             }
         }
         let offsets = meta["start_offset_ms"] as? [String: Int] ?? [:]
+        var expectedDurations: [String: Double] = [:]
+        var internalParts = Set<String>()
+        if let segments {
+            var parts: [(file: String, source: String, offset: Int)] = []
+            for segment in segments {
+                guard let file = segment["file"] as? String,
+                      let source = segment["source"] as? String, ["mic", "system"].contains(source), file.hasPrefix(source),
+                      let offset = segment["offset_ms"] as? Int, (0...604_800_000).contains(offset),
+                      segment["rotation_pending"] as? Bool != true, segment["timing_uncertain"] as? Bool != true else {
+                    throw TranscriptionFailure("An audio handoff or capture manifest is unverified; audio kept")
+                }
+                parts.append((file, source, offset))
+            }
+            guard Set(parts.map(\.source)) == Set(["mic", "system"]) else {
+                throw TranscriptionFailure("A capture source is missing; audio kept")
+            }
+            for source in ["mic", "system"] {
+                let ordered = parts.filter { $0.source == source }.sorted { $0.offset < $1.offset }
+                guard Double(ordered[0].offset) / 1000 <= 5 else {
+                    throw TranscriptionFailure("Audio starts too late; audio kept")
+                }
+                for index in ordered.indices {
+                    let start = Double(ordered[index].offset) / 1000
+                    let end = index + 1 < ordered.count ? Double(ordered[index + 1].offset) / 1000 : elapsed
+                    guard end > start else { throw TranscriptionFailure("Invalid capture coverage; audio kept") }
+                    expectedDurations[ordered[index].file] = end - start
+                    if index + 1 < ordered.count { internalParts.insert(ordered[index].file) }
+                }
+            }
+        }
         var tracks: [Track] = []
         for name in names {
             try Task.checkCancellation()
@@ -200,10 +230,11 @@ enum AudioRetention {
             let signature = try FileIdentity.read(file)
             let offset = segments?.first(where: { $0["file"] as? String == name })?["offset_ms"] as? Int
                 ?? offsets[name == "mic.caf" ? "mic" : "system"] ?? 0
-            let expected = elapsed - Double(offset) / 1000
+            let expected = expectedDurations[name] ?? (elapsed - Double(offset) / 1000)
             let actual = try measure(file)
+            let tolerance = internalParts.contains(name) ? max(0.05, expected * 0.001) : max(5, expected * 0.01)
             guard offset >= 0, actual.isFinite, expected > 0, actual > 0,
-                  abs(actual - expected) <= max(5, expected * 0.01),
+                  abs(actual - expected) <= tolerance,
                   try FileIdentity.read(file) == signature else {
                 throw TranscriptionFailure("Incomplete or changed audio coverage in \(name); audio kept")
             }

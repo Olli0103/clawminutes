@@ -69,7 +69,11 @@ struct VerifyAudioRetention: ParsableCommand {
 struct NameRecordingFolder: ParsableCommand {
     static let configuration = CommandConfiguration(commandName: "name-recording-folder", abstract: "Add an evidenced meeting title to a finished recording folder, preserving its archive identity.")
     @Option var directory: String
-    mutating func run() throws { print(try RecordingFolders.renameFinished(URL(fileURLWithPath: directory)).path) }
+    mutating func run() throws {
+        let work = try HelperWorkLease.acquire()
+        defer { withExtendedLifetime(work) {} }
+        print(try RecordingFolders.renameFinished(URL(fileURLWithPath: directory)).path)
+    }
 }
 
 struct NameNotesFolder: ParsableCommand {

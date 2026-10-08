@@ -49,6 +49,24 @@ final class RecordingIdentityTests: XCTestCase {
         XCTAssertThrowsError(try RecordingFolders.renameFinished(dir))
         XCTAssertTrue(FileManager.default.fileExists(atPath: dir.path))
     }
+    func testRecognitionArchiveLockDefersRenameUntilItsOwnerFinishes() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let dir = root.appendingPathComponent("old")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let metadata = try JSONSerialization.data(withJSONObject: ["status": "stopped",
+            "started": "2026-10-02T11:32:42Z", "meeting_title_override": "Portfolio sync", "recording_id": "stable"])
+        try metadata.write(to: dir.appendingPathComponent("meta.json"))
+        let identity = try MeetingPipelineState.identity(dir)
+        var recognition: AppRunLock? = try XCTUnwrap(AppRunLock.acquire(at: dir.appendingPathComponent("archive.lock")))
+        XCTAssertNotNil(recognition)
+        XCTAssertThrowsError(try RecordingFolders.renameFinished(dir))
+        XCTAssertEqual(try Data(contentsOf: dir.appendingPathComponent("meta.json")), metadata)
+        recognition = nil
+        let renamed = try RecordingFolders.renameFinished(dir)
+        XCTAssertTrue(renamed.lastPathComponent.hasSuffix("_Portfolio-sync"))
+        XCTAssertEqual(try MeetingPipelineState.identity(renamed), identity)
+    }
     @MainActor func testDifferentLiveMeetingCannotInjectSpeakerEvidence() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

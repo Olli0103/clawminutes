@@ -342,3 +342,46 @@ extension AudioRetentionTests {
         assertKept(dir)
     }
 }
+
+extension AudioRetentionTests {
+    private func splitFixture(pending: Bool = false, uncertain: Bool = false) throws -> URL {
+        let dir = try fixture()
+        var meta = try ArchiveBacklog.object(dir.appendingPathComponent("meta.json"))
+        meta["files"] = ["mic": "mic.caf", "system": "system.caf"]
+        meta["capture_segments"] = [
+            ["source": "mic", "file": "mic.caf", "offset_ms": 0, "closed": true, "timing_uncertain": uncertain],
+            ["source": "system", "file": "system.caf", "offset_ms": 0, "closed": true],
+            ["source": "mic", "file": "mic-2.caf", "offset_ms": 30000, "closed": true, "rotation_pending": pending],
+            ["source": "system", "file": "system-2.caf", "offset_ms": 30000, "closed": true]]
+        try put(meta, "meta.json", dir)
+        for name in ["mic-2.caf", "system-2.caf"] { try Data([1, 2, 3]).write(to: dir.appendingPathComponent(name)) }
+        var receipt = try ArchiveBacklog.object(dir.appendingPathComponent("archive-receipt.json"))
+        receipt["localEnvelopeSHA256"] = try GatewayArchive.sourceFingerprint(dir, meta: meta,
+            transcriptData: Data(contentsOf: dir.appendingPathComponent("transcript.json")))
+        try put(receipt, "archive-receipt.json", dir)
+        return dir
+    }
+    func testContinuousChunksVerifyEachBoundaryAndDeleteOnlyAfterAllProofs() throws {
+        let dir = try splitFixture(); defer { try? FileManager.default.removeItem(at: dir) }
+        let plan = try XCTUnwrap(AudioRetention.review(dir, measure: { _ in 30 }))
+        XCTAssertEqual(plan.tracks.map(\.seconds), [30, 30, 30, 30])
+        XCTAssertEqual(try AudioRetention.deleteAfterVerification(dir, measure: { _ in 30 }), 4)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("transcript.json").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("mic-2.caf").path))
+    }
+    func testShortOrOverlappingInternalChunkCannotBeHiddenByALaterFile() throws {
+        for seconds in [27.0, 35.0] {
+            let dir = try splitFixture(); defer { try? FileManager.default.removeItem(at: dir) }
+            XCTAssertThrowsError(try AudioRetention.review(dir, measure: { $0.lastPathComponent == "mic.caf" ? seconds : 30 }))
+            assertKept(dir)
+        }
+    }
+    func testUncertainHandoffRejectsRemovalEvenWithMatchingTextReceipts() throws {
+        for pending in [true, false] {
+            let dir = try splitFixture(pending: pending, uncertain: !pending)
+            defer { try? FileManager.default.removeItem(at: dir) }
+            XCTAssertThrowsError(try AudioRetention.deleteAfterVerification(dir, measure: { _ in 30 }))
+            assertKept(dir)
+        }
+    }
+}

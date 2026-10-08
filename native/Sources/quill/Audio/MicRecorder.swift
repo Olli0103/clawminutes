@@ -31,12 +31,12 @@ final class MicRecorder: @unchecked Sendable {
     private var configurationObserver: NSObjectProtocol?
     private var preferRaw = false
     private var generation = 0
-    private var file: AVAudioFile?
+    private let writer = PCMChunkWriter()
     private var url: URL?
     private(set) var isRecording = false
     /// Wall-clock time of the first captured buffer — the track's true start,
     /// used to offset-align the two tracks' transcript timestamps.
-    let progress = CaptureProgress()
+    var progress: CaptureProgress { writer.progress }
     var firstBufferAt: Date? { progress.snapshot.firstWrite }
     var hasAudioFrames: Bool { progress.snapshot.frames > 0 }
 
@@ -51,7 +51,6 @@ final class MicRecorder: @unchecked Sendable {
     func start(writingTo url: URL) throws {
         guard !isRecording else { return }
         generation += 1
-        progress.reset()
         self.url = url
         try attach(voiceProcessing: !preferRaw && Config.micVoiceProcessing())
         isRecording = true
@@ -65,8 +64,11 @@ final class MicRecorder: @unchecked Sendable {
         removeConfigurationObserver()
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
-        file = nil
+        writer.stop()
     }
+
+    func prepareChunk(at url: URL) throws -> PCMChunkWriter.Prepared { try writer.prepare(next: url) }
+    func commitChunk(_ prepared: PCMChunkWriter.Prepared) throws -> CaptureProgress.Snapshot { try writer.commit(prepared) }
 
     // MARK: -
 
@@ -109,23 +111,8 @@ final class MicRecorder: @unchecked Sendable {
             throw RecorderError.formatUnsupported(inputFormat)
         }
 
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatLinearPCM,
-            AVLinearPCMBitDepthKey: 32,
-            AVLinearPCMIsFloatKey: true,
-            AVSampleRateKey: monoFormat.sampleRate,
-            AVNumberOfChannelsKey: 1,
-        ]
-        do {
-            file = try AVAudioFile(
-                forWriting: url!,
-                settings: settings,
-                commonFormat: monoFormat.commonFormat,
-                interleaved: monoFormat.isInterleaved
-            )
-        } catch {
-            throw RecorderError.fileCreationFailed(error)
-        }
+        do { try writer.start(writingTo: url!, format: monoFormat) }
+        catch { throw RecorderError.fileCreationFailed(error) }
 
         if voice {
             // Complete the duplex graph: VoiceProcessingIO must render to an
@@ -146,7 +133,7 @@ final class MicRecorder: @unchecked Sendable {
             try engine.start()
         } catch {
             input.removeTap(onBus: 0)
-            file = nil
+            writer.stop()
             throw RecorderError.engineStartFailed(error)
         }
 
@@ -169,8 +156,9 @@ final class MicRecorder: @unchecked Sendable {
     private func installVoiceTap(on input: AVAudioInputNode, format: AVAudioFormat) {
         let checkFrames = Int(format.sampleRate)
         let generation = self.generation
+        let epoch = progress.currentEpoch
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
-            guard let self, let file = self.file else { return }
+            guard let self else { return }
 
             if !self.livenessSettled {
                 let frames = Int(buffer.frameLength)
@@ -193,8 +181,7 @@ final class MicRecorder: @unchecked Sendable {
             }
 
             do {
-                try file.write(from: buffer)
-                self.progress.wrote(frames: Int64(buffer.frameLength), sampleRate: format.sampleRate)
+                try self.writer.write(buffer, epoch: epoch)
             } catch {
                 self.progress.failed("write_failed")
                 FileHandle.standardError.write(Data("mic track write failed: \(error)\n".utf8))
@@ -212,16 +199,16 @@ final class MicRecorder: @unchecked Sendable {
         guard let converter = AVAudioConverter(from: inputFormat, to: monoFormat) else {
             throw RecorderError.formatUnsupported(inputFormat)
         }
+        let epoch = progress.currentEpoch
         input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
-            guard let self, let file = self.file else { return }
+            guard let self else { return }
             guard let mono = AVAudioPCMBuffer(
                 pcmFormat: monoFormat,
                 frameCapacity: buffer.frameCapacity
             ) else { return }
             do {
                 try converter.convert(to: mono, from: buffer)
-                try file.write(from: mono)
-                self.progress.wrote(frames: Int64(mono.frameLength), sampleRate: monoFormat.sampleRate)
+                try self.writer.write(mono, epoch: epoch)
             } catch {
                 self.progress.failed("write_failed")
                 FileHandle.standardError.write(Data("mic track write failed: \(error)\n".utf8))

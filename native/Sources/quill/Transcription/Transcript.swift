@@ -7,6 +7,7 @@ struct SessionMeta {
         let file: String
         let speaker: String
         let offsetMs: Int
+        var timingUncertain = false
         var source: String { speaker == "me" ? "mic" : "system" }
     }
 
@@ -41,7 +42,7 @@ struct SessionMeta {
         let offsets = json["start_offset_ms"] as? [String: Int] ?? [:]
         var tracks: [Track] = []
         if let segments = json["capture_segments"] as? [[String: Any]] {
-            guard !segments.isEmpty, segments.count <= 16 else { throw MetaError.unreadable(url) }
+            guard !segments.isEmpty, segments.count <= CaptureManifest.maximumSegments else { throw MetaError.unreadable(url) }
             var names = Set<String>()
             for segment in segments {
                 guard let source = segment["source"] as? String, ["mic", "system"].contains(source),
@@ -49,7 +50,8 @@ struct SessionMeta {
                       let offset = segment["offset_ms"] as? Int, offset >= 0 else { throw MetaError.unreadable(url) }
                 // Inspect actual PCM, including zero-frame checkpoints. They may
                 // be stale after a crash, and missing tracks must become explicit gaps.
-                tracks.append(Track(file: file, speaker: source == "mic" ? "me" : "them", offsetMs: offset))
+                tracks.append(Track(file: file, speaker: source == "mic" ? "me" : "them", offsetMs: offset,
+                    timingUncertain: segment["rotation_pending"] as? Bool == true || segment["timing_uncertain"] as? Bool == true))
             }
         } else {
             for source in ["mic", "system"] {

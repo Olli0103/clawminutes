@@ -219,6 +219,36 @@ final class ClosedChunkRecognitionTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(calls, ["first/mic.caf", "final/mic.caf", "final/system.caf", "second/mic.caf"])
         XCTAssertEqual(try MeetingPipelineState.load(first).transcription.count, 0)
     }
+    func testFinalQueueRetriesTitleRenameAfterActiveRecognitionReleasesArchive() async throws {
+        let dir = try fixture(name: "untitled"), root = dir.deletingLastPathComponent()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let identity = try MeetingPipelineState.identity(dir)
+        let engine = ChunkEngine(paused: true)
+        let coordinator = TranscriptionCoordinator(activityLockPath: root.appendingPathComponent("lease"),
+            localModelAvailable: { true }, detectSpeakers: { false }, audioDuration: { _ in 1 },
+            saveArchive: { _ in throw URLError(.notConnectedToInternet) }, makeEngine: { _, _ in engine })
+        await coordinator.enqueueClosedChunk(dir, file: "mic.caf")
+        try await waitForCalls(1, engine: engine)
+        try finish(dir)
+        var metadata = try ArchiveBacklog.object(dir.appendingPathComponent("meta.json"))
+        metadata["meeting_title_override"] = "Portfolio sync"
+        try JSONSerialization.data(withJSONObject: metadata).write(to: dir.appendingPathComponent("meta.json"))
+        XCTAssertThrowsError(try RecordingFolders.renameFinished(dir))
+        let done = expectation(description: "Finished meeting processed at renamed path")
+        done.assertForOverFulfill = false
+        await coordinator.setStatusHandler { if case .archivePending = $0 { done.fulfill() } }
+        await coordinator.enqueue(dir, transcriptionEnabled: true)
+        await engine.resume()
+        await fulfillment(of: [done], timeout: 10)
+        let renamed = try XCTUnwrap(FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+            .first { $0.lastPathComponent.hasSuffix("_Portfolio-sync") })
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dir.path))
+        XCTAssertEqual(try MeetingPipelineState.identity(renamed), identity)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: renamed.appendingPathComponent("transcript.json").path))
+        let calls = await engine.calls
+        XCTAssertEqual(calls.count, 2, "The checkpoint moves with the folder and final recognition reuses it")
+        XCTAssertTrue(calls[1].hasSuffix("_Portfolio-sync/system.caf"))
+    }
     func testQueueBackpressureKeepsAllFinalAudioAndSkipsOnlySpeculativeWork() async throws {
         let first = try fixture(name: "first"), root = first.deletingLastPathComponent()
         defer { try? FileManager.default.removeItem(at: root) }

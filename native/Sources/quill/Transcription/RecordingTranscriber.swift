@@ -90,6 +90,11 @@ actor RecordingTranscriber {
                 MeetingLog.append(dir, "Track unavailable [\(track.source)]: \(track.file). Its speech is missing; remaining tracks will be recovered.")
                 continue
             }
+            if track.timingUncertain {
+                captureGaps.append(CaptureGap(source: track.source, start_ms: track.offsetMs,
+                    end_ms: track.offsetMs + Int(duration * 1000), reason: "capture_timing_uncertain"))
+                speakerStatus[track.source] = "timing_uncertain"
+            }
             if !linkAllowed { sourceSignatures.append((audio, try AudioRetention.FileIdentity.read(audio))) }
             MeetingLog.append(dir, "transcribing \(track.file) (\(engine.name))")
             // One bad track (empty, truncated) shouldn't cost us the other's
@@ -110,7 +115,7 @@ actor RecordingTranscriber {
                 throw error
             }
             let offset = TimeInterval(track.offsetMs) / 1000
-            if detectSpeakers && (track.speaker == "them" || meta.sharedMicrophone) && !segments.isEmpty {
+            if !track.timingUncertain && detectSpeakers && (track.speaker == "them" || meta.sharedMicrophone) && !segments.isEmpty {
                 do {
                     MeetingLog.append(dir, "separating speakers in \(track.file)")
                     var trackAnalysis = try await SpeakerDiarizer.analyze(audio, source: track.source,

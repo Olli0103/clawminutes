@@ -282,10 +282,14 @@ actor TranscriptionCoordinator {
                 continue
             }
             processedFinished = true
-            let dir = queue.removeFirst()
+            var dir = queue.removeFirst()
             activeTranscription = dir
             var state: MeetingPipelineState?
             do {
+                // Stop may have deferred the title rename while speculative
+                // recognition held archive.lock. The engine is idle here.
+                dir = try RecordingFolders.renameFinished(dir)
+                activeTranscription = dir
                 var current = try MeetingPipelineState.load(dir, now: clock())
                 guard current.mayTranscribe(at: clock()) else {
                     lastIssue = .needsReview(session: dir.lastPathComponent, reason: current.transcription.lastError?.detail ?? "Speech recognition stopped after three attempts. Audio is retained.")

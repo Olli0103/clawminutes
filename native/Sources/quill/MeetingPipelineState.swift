@@ -3,6 +3,7 @@ import Foundation
 /// Durable stage and recovery instructions. Artifacts and verified receipts
 /// remain the evidence for successful delivery and irreversible audio removal.
 struct MeetingPipelineState: Codable, Sendable {
+    static let maximumBytes = 131_072
     enum Stage: String, Codable, Sendable {
         case capturing, recorded, interrupted, waitingForModel, transcribing, transcribed
         case delivering, delivered, exported, audioRemoved, needsAttention
@@ -134,7 +135,7 @@ struct MeetingPipelineState: Codable, Sendable {
         if FileManager.default.fileExists(atPath: file.path)
             || (try? FileManager.default.destinationOfSymbolicLink(atPath: file.path)) != nil {
             let data = try ArchiveBacklog.read(file)
-            guard data.count <= 32_768 else { throw invalidState }
+            guard data.count <= Self.maximumBytes else { throw invalidState }
             value = try JSONDecoder().decode(Self.self, from: data)
             guard [1, 2].contains(value.schemaVersion), value.recordingIdentity == identity, value.revision == revision else { throw invalidState }
             value.loadedStateSHA256 = AudioRetention.digest(data)
@@ -198,7 +199,7 @@ struct MeetingPipelineState: Codable, Sendable {
         var committed = self
         committed.generation = (generation ?? 0) + 1
         let data = try encoder.encode(committed)
-        guard data.count <= 32_768 else { throw Self.invalidState }
+        guard data.count <= Self.maximumBytes else { throw Self.invalidState }
         try data.write(to: file, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
         committed.loadedStateSHA256 = AudioRetention.digest(data)

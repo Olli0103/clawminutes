@@ -13,6 +13,7 @@ final class RecordingSession {
     private let system = SystemAudioRecorder()
     private lazy var capture = CaptureRecovery(origin: startedAt.timeIntervalSince1970)
     var onClosedChunk: (@Sendable (URL, String) -> Void)?
+    private var nextChunkAttempt: [String: Date] = [:]
     private var healthTask: Task<Void, Never>?
     private var closing = false
     private var hasStarted = false
@@ -37,7 +38,8 @@ final class RecordingSession {
         guard meetingContext == nil || meetingContext?.meeting_id == context.meeting_id else { return }
         meetingContext = context
     }
-    private func addMeetingMetadata(_ meta: inout [String: Any]) {
+    private func addMeetingMetadata(_ meta: inout [String: Any], captureSnapshot: CaptureRecovery? = nil) {
+        let capture = captureSnapshot ?? self.capture
         meta["note_template"] = noteTemplate.json
         meta["recording_id"] = recordingID
         if let meetingContext { meta["meeting_context"] = meetingContext.json }
@@ -183,14 +185,16 @@ final class RecordingSession {
         }
     }
 
-    private func writeCheckpoint() {
+    private func writeCheckpoint() { try? persistCheckpoint() }
+
+    private func persistCheckpoint(captureSnapshot: CaptureRecovery? = nil) throws {
         let micStart = mic.firstBufferAt ?? startedAt
         let systemStart = system.firstBufferAt ?? startedAt
         let earliest = min(micStart, systemStart)
         var meta: [String: Any] = ["started": ISO8601DateFormatter().string(from: startedAt), "audio_started_at": earliest.timeIntervalSince1970, "backend": selectedBackend, "notes_mode": notesMode, "status": "recording", "checkpoint_at": Date().timeIntervalSince1970, "files": ["mic": "mic.caf", "system": "system.caf"], "start_offset_ms": ["mic": Int(micStart.timeIntervalSince(startedAt)*1000), "system": Int(systemStart.timeIntervalSince(startedAt)*1000)], "shared_microphone": sharedMicrophone]
-        addMeetingMetadata(&meta)
+        addMeetingMetadata(&meta, captureSnapshot: captureSnapshot)
         if fixture { meta["fixture"] = true; meta["capture_scope"] = "global_system_fixture" }
-        if let data = try? JSONSerialization.data(withJSONObject: meta) { try? data.write(to: dir.appendingPathComponent("meta.json"), options: .atomic) }
+        try JSONSerialization.data(withJSONObject: meta).write(to: dir.appendingPathComponent("meta.json"), options: .atomic)
     }
 
     @MainActor private func checkCaptureHealth() async {
@@ -228,7 +232,39 @@ final class RecordingSession {
                 captureWarning = "Audio recovery failed. Captured audio is kept; check the input device and permissions."
             }
         }
+        rotateHealthyChunks()
         writeCheckpoint()
+    }
+
+    /// Five-minute segments for local recognition. This swaps only the PCM
+    /// writer, never the input engine, voice processor or ScreenCaptureKit tap.
+    @MainActor private func rotateHealthyChunks() {
+        guard !closing, !Task.isCancelled, selectedBackend == TranscriptionEngineKind.parakeet.rawValue,
+              Config.transcriptionEnabled() else { return }
+        if capture.segments.count >= CaptureManifest.healthyRotationLimit {
+            captureWarning = "Automatic audio segmenting reached its limit. Recording continues; final transcription will process the remaining audio."
+            return
+        }
+        for source in ["mic", "system"] {
+            let progress = source == "mic" ? mic.progress.snapshot : system.progress.snapshot
+            let now = Date()
+            guard progress.duration >= 300, capture.problem(source: source, progress: progress, at: now) == nil,
+                  now >= (nextChunkAttempt[source] ?? .distantPast),
+                  capture.segments.count < CaptureManifest.healthyRotationLimit else { continue }
+            nextChunkAttempt[source] = now.addingTimeInterval(30)
+            let result = CaptureChunkHandoff.perform(source: source, capture: capture, progress: progress,
+                prepare: { file in
+                    try source == "mic" ? mic.prepareChunk(at: dir.appendingPathComponent(file))
+                        : system.prepareChunk(at: dir.appendingPathComponent(file))
+                }, persist: { proposed in try persistCheckpoint(captureSnapshot: proposed) },
+                commit: { prepared in try source == "mic" ? mic.commitChunk(prepared) : system.commitChunk(prepared) })
+            capture = result.capture
+            writeCheckpoint()
+            if let oldFile = result.closedFile { onClosedChunk?(dir, oldFile) }
+            if result.failed {
+                captureWarning = "Could not create the next audio segment. Recording continues in the current file; audio is kept for review."
+            }
+        }
     }
 
     @MainActor func stopAsync() async {
