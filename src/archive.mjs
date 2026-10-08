@@ -25,7 +25,11 @@ export function meetingRecord(meta,transcript,id) {
   if(!Array.isArray(transcript.segments) || !transcript.engine || !transcript.model) throw Error('Invalid transcript provenance');
   const origin=meta.audio_started_at*1000;
   if(!Number.isFinite(origin))throw Error('Missing recording clock');
-  const unknown=s=>s.speaker_name && ['meeting_tile','meeting_ui','accessibility_active_speaker','meeting_voice','meeting_tile_edge','local_microphone'].includes(s.attribution) ? s.speaker_name : 'Unknown speaker';
+  const unknown=s=> {
+    if(!s.speaker_name)return 'Unknown speaker';
+    if(s.attribution==='meeting_voice')return `${s.speaker_name} (voice match, uncertain)`;
+    return ['meeting_tile','meeting_ui','accessibility_active_speaker','meeting_tile_edge','local_microphone'].includes(s.attribution) ? s.speaker_name : 'Unknown speaker';
+  };
   const fixture=meta.fixture===true||meta.status==='fixture';
   // Older helpers saved this Teams window label in the observed title. Keep the
   // original evidence in metadata while using only the subject for documents.

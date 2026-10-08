@@ -145,6 +145,10 @@ swift test --package-path native -j 4
 
 Hardware, model, and credential-dependent tests require their explicit fixtures or setup. A unit-test pass does not verify a live call. Generated recordings, logs, signing material, and private runtime evidence are excluded from Git.
 
+## Diagnostics
+
+Settings → Advanced → Save diagnostic report creates a new report without speech, names, paths or credentials. `ocmh diagnose --output /path/to/new-report.json` provides the same read-only check. See [diagnostics and pipeline progress](docs/diagnostics.md) for included fields and limits.
+
 ## Credits and license
 
 MIT. The native helper builds on [Quill](https://github.com/humanitas-labs/quill) and [Andrew Jones's fork](https://github.com/bedeabza/quill). Original copyright notices and dependency licenses are retained in [notices](notices) and [reuse documentation](docs/reuse.md). Swift module names still use `quill` to preserve source provenance. Model weights download separately and have their own terms.

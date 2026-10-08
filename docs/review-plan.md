@@ -22,12 +22,12 @@ The goal covers the complete review and UX proposals. Teams remains the only ena
 ## Architecture and contracts
 
 - [ ] One versioned per-meeting pipeline record, migrated alongside existing artifacts. Irreversible deletion still verifies source artifacts and receipts.
-- [ ] Separate transcription, delivery and retention implementations behind a small pipeline interface.
+- [x] Separate transcription, delivery and retention implementations behind a small pipeline interface.
 - [ ] Explicit capability negotiation and an archive adapter contract, without admitting unverified host semantics merely because method names match.
 - [ ] Isolate Teams detection from dormant provider code; do not enable additional providers.
-- [ ] Structured event log and a redacted diagnostics command/bundle.
+- [x] Structured event log and a redacted diagnostics command/bundle.
 - [ ] Public distribution signing/notarization workflow and permission continuity verification. External signing credentials remain an explicit delivery gate.
-- [ ] Preserve uncertainty for voice-cluster-derived names in transcripts and AI prompts.
+- [x] Preserve uncertainty for voice-cluster-derived names in transcripts and AI prompts.
 - [ ] Storage usage/free-space checks, legacy receipt reconciliation and accurate reuse documentation.
 - [x] Full native suite configured in CI, with Swift-to-JavaScript HTTP tests against the real handler and SDK. A live CI run is still required for each pushed commit.
 
@@ -87,3 +87,13 @@ The full native suite now runs 293 tests, with 281 passing and 12 opt-in tests s
 - Gateway errors include a correlation ID and allowlisted error class and HTTP status for diagnostics. Raw exception messages never enter that diagnostic event. A failing diagnostic callback cannot reject an already completed error response.
 
 Still open: explicit capped-failure recovery and revisions, inferred-speaker uncertainty, diagnostic bundle and structured local events, capability negotiation, provider separation, onboarding, search and template exchange, historical-cleanup and migration UI, chunk transcription, packaging/signing, and controlled live acceptance.
+
+### Third implementation checkpoint
+
+Recognition engine ownership and track alignment now live in `RecordingTranscriber`. Text delivery has a separate serial stage and artifact-verifying retention remains separate. The coordinator schedules work and publishes progress. This separation does not finish the legacy retry-record migration.
+
+Native readable transcripts, Gateway archive labels and AI input retain `meeting_voice` uncertainty. Tests verify the label and evidence fields through native serialization and Gateway note generation. They do not verify a real model's semantic compliance. Existing completed archives remain immutable.
+
+`ocmh diagnose` and Advanced Settings create a new redacted JSON report without capture, provider calls or recording locks. Allowlisted fields exclude speech, names, paths, credentials and raw errors. Bounded structured events record progress writes. Four regressions verify redaction, malformed state, linked inputs, bounded rotation and non-overwrite behavior. Lock ownership is explicitly unverified.
+
+Local verification: 298 native tests, 286 passed and 12 opt-in tests skipped; 36 JavaScript tests on each supported SDK. Previous checkpoint `2de80a7` has a passing PR CI run. Its push CI failed before native tests because a runner lacked the hard-coded Xcode filename. The workflow now selects the installed Xcode 27+ toolchain, and that selection was checked locally. CI must verify the new commit.

@@ -50,3 +50,13 @@ test('AI notes and both exports explicitly retain missing capture intervals',asy
   assert.match(text,/## Capture gaps/);assert.match(text,/system: 10000 to 20000 ms/);
  }
 });
+
+test('notes model receives voice-match uncertainty and cannot treat it as confirmed ownership',async()=>{
+ const record=meetingRecord(meta,{...transcript,segments:[{...transcript.segments[0],speaker_name:'Alice',attribution:'meeting_voice'}]},'uncertain-voice');
+ let request;
+ await generateNotes(record,meta,async value=>{request=value;return {text:JSON.stringify({sections:[{title:'Decisions',body:'- needs_evidence'}]}),provider:'fixture',model:'test'};});
+ assert.match(request.system,/not confirmed identity/);
+ assert.match(request.system,/Do not use that label alone to assign owners/);
+ assert.match(JSON.parse(request.user).transcript[0],/voice match, uncertain/);
+ assert.match(documents(record).transcriptMarkdown,/voice match, uncertain/);
+});

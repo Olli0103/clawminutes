@@ -20,14 +20,14 @@ jobs:
       - run: python3 -m unittest discover -s test -p 'test_helper_lifecycle.py'
   native-core:
     runs-on: xcode-27
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_27.2_beta.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
       - run: npm install --ignore-scripts --package-lock=false --no-audit --no-fund
+      - name: Select installed Xcode
+        run: python3 .github/scripts/select-xcode.py
       - run: swift --version
       - name: Full isolated native suite
         run: |

@@ -149,3 +149,9 @@ Consent persistence now uses the Teams process launch time, a title hash and pre
 Source-only candidate, not installed or activated. Full native suite: 293 tests, 281 passed, 12 opt-in tests skipped. JavaScript: 34 passed on each real SDK 2026.9.7 and 2026.9.8. Installer code is unchanged from the preceding 10-test verification.
 
 New regressions cover durable transcription caps over three coordinator relaunches, missing-model requeue, credential replacement, malformed pipeline-state preservation, device-change epochs and rolling recovery budgets, notification action tokens and recording storage checks. Offscreen popover light/dark and all seven light Settings pages were inspected. These checks do not prove notification delivery, live device recovery, focus behavior or Gateway performance. See `review-plan.md` for the remaining scope.
+
+## Diagnostics, speaker uncertainty and stage separation, 8 October 2026
+
+Source-only follow-up: 298 native tests, 286 passed and 12 opt-in tests skipped. Both real SDK suites pass 36 JavaScript tests. The stage extraction preserves the existing recovery, delivery and retention regressions. Privacy tests use synthetic secrets and local temporary files; no real configuration or recordings were exported. `docs/diagnostics.md` describes the exact report contents and remaining single-record migration.
+
+CI for `2de80a7` passed on the PR run. A separate push run failed before native execution on a missing hard-coded Xcode path. The workflow now discovers an installed compatible Xcode instead. No helper or Gateway was restarted or activated.

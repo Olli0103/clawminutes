@@ -60,6 +60,7 @@ struct MeetingPipelineState: Codable, Sendable {
         if (try? ArchiveBacklog.read(file)) == data { return }
         try data.write(to: file, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        PipelineEvents.record(self)
     }
     mutating func reconcile(_ item: ArchiveBacklog.Item, now: Double) {
         let previousStage = stage

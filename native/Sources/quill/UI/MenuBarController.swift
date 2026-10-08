@@ -20,6 +20,30 @@ final class MenuBarController: NSObject, ObservableObject {
         }
     }
     private var meetingWindow: NSWindow?
+    @Published private(set) var diagnosing = false
+    func saveDiagnostics() {
+        guard !diagnosing else { return }
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "ClawMinutes-diagnostics-\(Int(Date().timeIntervalSince1970)).json"
+        panel.message = "A redacted report excludes audio, speech, notes, names, paths and credentials. It does not contact your Gateway. Choose a new file."
+        panel.begin { [weak self] response in
+            guard response == .OK, let output = panel.url, let self else { return }
+            self.diagnosing = true
+            let permissions = HelperDiagnostics.Permissions.current()
+            let root = Config.resolveRoot(cliOverride: nil)
+            let ready = self.localModelReady
+            Task {
+                defer { self.diagnosing = false }
+                do {
+                    try await Task.detached {
+                        let report = try HelperDiagnostics.report(root: root, permissions: permissions, localModelAvailable: ready)
+                        try HelperDiagnostics.write(report, to: output)
+                    }.value
+                    NSWorkspace.shared.activateFileViewerSelecting([output])
+                } catch { self.showError("Could not create the diagnostic report. Choose a new file in a writable folder.") }
+            }
+        }
+    }
     @Published private(set) var recentMeetings: [RecentMeeting] = []
     private var pendingNotesOpen: String?
     func updateRecentMeetings(_ value: [RecentMeeting]) {

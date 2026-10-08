@@ -30,3 +30,10 @@ test('notes selection is separate from the recorded speech model', () => {
   assert.equal(simple.summary.highlights.length,1);
   assert.equal(only.summary.highlights,undefined);
 });
+
+test('voice cluster names remain uncertain in the archive and exports',()=>{
+ const record=meetingRecord(meta,{...transcript,segments:[{...transcript.segments[0],attribution:'meeting_voice'}]},'voice-fixture');
+ assert.equal(record.utterances[0].speaker.label,'Alice (voice match, uncertain)');
+ assert.equal(record.utterances[0].metadata.attribution,'meeting_voice');
+ assert.match(record.summary.transcript[0],/Alice \(voice match, uncertain\)/);
+});

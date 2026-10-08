@@ -254,6 +254,10 @@ struct HelperSettings: View {
                         Text("Speech model: " + controller.modelTitle).textSelection(.enabled)
                         Text("Recognition: " + (controller.displayedBackend == "parakeet" ? "this Mac" : "ElevenLabs cloud"))
                         Button("Open recording files and logs", action: controller.openRecordings)
+                        Button(controller.diagnosing ? "Creating report…" : "Save diagnostic report…", action: controller.saveDiagnostics)
+                            .disabled(controller.diagnosing)
+                        Text("Excludes speech, notes, names and credentials. No Gateway connection or recording changes.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 }
             }.formStyle(.grouped)
