@@ -20,7 +20,7 @@ final class SpeakerRefreshTests: XCTestCase, @unchecked Sendable {
         let analysis = SpeakerAnalysis(turns: [.init(speaker_id: "system_1", start: 0.25, end: 12.25),
                                                .init(speaker_id: "system_1", start: 20.25, end: 32.25)], names: [:])
         try JSONEncoder().encode(analysis).write(to: directory.appendingPathComponent("speaker-analysis.json"))
-        try Data(#"{"files":{"system":"system.caf"},"audio_started_at":1000,"start_offset_ms":{"system":250}}"#.utf8)
+        try Data(#"{"status":"stopped","started":"2026-10-08T10:00:00Z","ended":"2026-10-08T10:01:00Z","files":{"system":"system.caf"},"audio_started_at":1000,"start_offset_ms":{"system":250}}"#.utf8)
             .write(to: directory.appendingPathComponent("meta.json"))
         var observations: [SpeakerObservation] = []
         for base in [1.0, 21.0] {
@@ -39,7 +39,7 @@ final class SpeakerRefreshTests: XCTestCase, @unchecked Sendable {
         let url = directory.appendingPathComponent("transcript.json")
         let original = try Data(contentsOf: url)
         let command = try RefreshSpeakers.parse([directory.path])
-        try await command.refresh()
+        try await command.refresh(activityLockPath: directory.appendingPathComponent("test-lease"))
         let transcript = try JSONDecoder().decode(Transcript.self, from: Data(contentsOf: url))
         XCTAssertEqual(transcript.segments.map(\.text), ["Hello.", "Local words."])
         XCTAssertEqual(transcript.segments.map(\.start_ms), [9250, 20000])
@@ -56,7 +56,7 @@ final class SpeakerRefreshTests: XCTestCase, @unchecked Sendable {
         let directory = try fixture(), preview = directory.appendingPathComponent("preview")
         let original = try Data(contentsOf: directory.appendingPathComponent("transcript.json"))
         let command = try RefreshSpeakers.parse([directory.path, "--output", preview.path])
-        try await command.refresh()
+        try await command.refresh(activityLockPath: directory.appendingPathComponent("test-lease"))
         XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("transcript.json")), original)
         XCTAssertTrue(FileManager.default.fileExists(atPath: preview.appendingPathComponent("transcript.json").path))
     }
@@ -69,7 +69,7 @@ final class SpeakerRefreshTests: XCTestCase, @unchecked Sendable {
             else { transcript.segments[0].text = "Edited words." }
             try transcript.write(to: directory)
             let original = try Data(contentsOf: url)
-            do { try await RefreshSpeakers.parse([directory.path]).refresh(); XCTFail("Edited data should be protected") }
+            do { try await RefreshSpeakers.parse([directory.path]).refresh(activityLockPath: directory.appendingPathComponent("test-lease")); XCTFail("Edited data should be protected") }
             catch { XCTAssertTrue(error is ValidationError) }
             XCTAssertEqual(try Data(contentsOf: url), original)
         }
@@ -79,8 +79,25 @@ final class SpeakerRefreshTests: XCTestCase, @unchecked Sendable {
         let directory = try fixture(), url = directory.appendingPathComponent("transcript.json")
         let original = try Data(contentsOf: url)
         try Data("changed audio".utf8).write(to: directory.appendingPathComponent("system.caf"))
-        do { try await RefreshSpeakers.parse([directory.path]).refresh(); XCTFail("Mismatched audio should be rejected") }
+        do { try await RefreshSpeakers.parse([directory.path]).refresh(activityLockPath: directory.appendingPathComponent("test-lease")); XCTFail("Mismatched audio should be rejected") }
         catch { XCTAssertTrue(error is ValidationError) }
         XCTAssertEqual(try Data(contentsOf: url), original)
     }
+    func testInPlaceRefreshRefusesSavedOrPreviouslyAttemptedDelivery() async throws {
+        for saved in [true, false] {
+            let directory = try fixture()
+            let original = try Data(contentsOf: directory.appendingPathComponent("transcript.json"))
+            if saved {
+                try Data("{}".utf8).write(to: directory.appendingPathComponent("archive-receipt.json"))
+            } else {
+                var state = try MeetingPipelineState.load(directory)
+                state.delivery = .init(count: 1, transcriptSHA256: AudioRetention.digest(original), completionAttempts: 0)
+                try state.write(directory)
+            }
+            do { try await RefreshSpeakers.parse([directory.path]).refresh(activityLockPath: directory.appendingPathComponent("test-lease")); XCTFail("Delivered speech requires a revision") }
+            catch { XCTAssertEqual((error as? DeliveryFailure)?.code, "revision_conflict") }
+            XCTAssertEqual(try Data(contentsOf: directory.appendingPathComponent("transcript.json")), original)
+        }
+    }
+
 }

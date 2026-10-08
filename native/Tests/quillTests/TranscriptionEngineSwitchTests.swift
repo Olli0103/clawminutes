@@ -23,7 +23,7 @@ final class TranscriptionEngineSwitchTests: XCTestCase, @unchecked Sendable {
     private func session() throws -> URL {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("quill-engine-test-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: false)
-        try Data(#"{"files":{"mic":"mic.caf","system":"system.caf"},"start_offset_ms":{"mic":100,"system":200}}"#.utf8)
+        try Data(#"{"status":"stopped","started":"2026-10-08T10:00:00Z","ended":"2026-10-08T10:01:00Z","files":{"mic":"mic.caf","system":"system.caf"},"start_offset_ms":{"mic":100,"system":200}}"#.utf8)
             .write(to: dir.appendingPathComponent("meta.json"))
         for file in ["mic.caf", "system.caf"] { try Data().write(to: dir.appendingPathComponent(file)) }
         return dir
@@ -73,7 +73,7 @@ final class TranscriptionEngineSwitchTests: XCTestCase, @unchecked Sendable {
 
     func testRecoveredTrackKeepsWallClockOffsetAndEverySegment() async throws {
         let dir = try session(); defer { try? FileManager.default.removeItem(at: dir) }
-        let meta: [String: Any] = ["files": ["mic": "mic.caf", "system": "system.caf"],
+        let meta: [String: Any] = ["status": "interrupted", "started": "2026-10-08T10:00:00Z", "files": ["mic": "mic.caf", "system": "system.caf"],
             "capture_gaps": [["source": "mic", "start_ms": 20000, "end_ms": 30000, "reason": "buffers_stalled"]],
             "capture_segments": [
                 ["source": "mic", "file": "mic.caf", "offset_ms": 100],
@@ -157,4 +157,21 @@ extension TranscriptionEngineSwitchTests {
         XCTAssertEqual(transcript.segments.count, 2)
         XCTAssertEqual(try Data(contentsOf: source), Data("original".utf8))
     }
+    func testPreviouslyAttemptedMeetingCannotPrepareEngineOrRetranscribe() async throws {
+        let dir = try session(); defer { try? FileManager.default.removeItem(at: dir) }
+        let bytes = Data(#"{"segments":[]}"#.utf8)
+        try bytes.write(to: dir.appendingPathComponent("transcript.json"))
+        var state = try MeetingPipelineState.load(dir)
+        state.delivery = .init(count: 1, transcriptSHA256: AudioRetention.digest(bytes), completionAttempts: 0)
+        try state.write(dir)
+        let engine = StubTranscriptionEngine(.parakeet)
+        let coordinator = TranscriptionCoordinator(activityLockPath: dir.appendingPathComponent("lease"),
+            audioDuration: { _ in 1 }, makeEngine: { _, _ in engine })
+        do { try await coordinator.transcribe(dir, detectSpeakers: false); XCTFail("Attempted sources need a revision") }
+        catch { XCTAssertEqual((error as? DeliveryFailure)?.code, "revision_conflict") }
+        let prepares = await engine.prepares
+        XCTAssertEqual(prepares, 0)
+        XCTAssertEqual(try ArchiveBacklog.read(dir.appendingPathComponent("transcript.json")), bytes)
+    }
+
 }

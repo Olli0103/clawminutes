@@ -56,7 +56,7 @@ actor TranscriptionCoordinator {
         }
         let items = try backlogIndex.scan(root: root)
         for item in items where item.pending && report.attempted < 5 {
-            if !force, let retry = item.retry, retry.nextAttemptAt > now { continue }
+            if (item.verifiedText == .archive || !force), item.nextAttemptAt > now { continue }
             if await runHook(for: item.directory, now: now) { report.attempted += 1 }
         }
         let remaining = try backlogIndex.scan(root: root)

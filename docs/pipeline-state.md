@@ -1,6 +1,6 @@
 # Durable meeting state
 
-`state.json` schema 2 is the writable authority for a meeting's transcription and delivery attempts, retry times, last structured causes, cause observation times, notes recovery intent and authorization, revision and progress stage. Delivery's `Retry` value is a read-only view of this record. New work does not write or delete `archive-retry.json` or `notes-recovery.json`.
+`state.json` schema 2 is the writable authority for a meeting's transcription, delivery and local export attempts, retry times, last structured causes, cause observation times, notes recovery intent and authorization, revision and progress stage. Delivery's `Retry` value is a read-only view of this record. Optional `localExport` holds disk-only attempts and causes; old records without it retain zero local attempts. Disk retries have their own deadline and a three-attempt automatic limit. Explicit local retry preserves its count and all remote/paid budgets. New work does not write or delete `archive-retry.json` or `notes-recovery.json`.
 
 ## Migration
 

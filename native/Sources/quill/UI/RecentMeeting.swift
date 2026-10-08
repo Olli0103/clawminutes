@@ -14,6 +14,7 @@ struct RecentMeeting: Identifiable, Sendable {
     var revision: Int = 1
     var completionAttempts: Int = 0
     var canVerifyLegacyReceipt = false
+    var canRetryLocalExport = false
     var canRetryAINotes: Bool { needsAttention && NotesRecovery.permits(.retryAI, failure: issue, completions: completionAttempts) }
     var canSaveTranscriptOnly: Bool { needsAttention && NotesRecovery.permits(.transcriptOnly, failure: issue, completions: completionAttempts) }
     var id: String { directory.path }
@@ -45,7 +46,8 @@ struct RecentMeeting: Identifiable, Sendable {
         if !active { state?.reconcile(item, now: Date().timeIntervalSince1970) }
         let issue: DeliveryFailure?
         switch item.verifiedText {
-        case .archive, .exported: issue = nil
+        case .archive: issue = state?.localExport?.lastError
+        case .exported: issue = nil
         case .transcript: issue = item.retry?.lastError
         case nil: issue = state?.transcription.lastError ?? item.retry?.lastError
         }
@@ -62,7 +64,8 @@ struct RecentMeeting: Identifiable, Sendable {
             detail: issue?.detail ?? item.reason, notes: notes,
             transcript: readableDocument(transcript) ? transcript : nil,
             revision: state?.revision ?? 1, completionAttempts: item.retry?.completionAttempts ?? 0,
-            canVerifyLegacyReceipt: item.reason == LegacyReceiptReconciliation.reason)
+            canVerifyLegacyReceipt: item.reason == LegacyReceiptReconciliation.reason,
+            canRetryLocalExport: item.verifiedText == .archive)
     }
     static func readableDocument(_ file: URL) -> Bool {
         guard let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),

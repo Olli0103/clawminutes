@@ -129,4 +129,33 @@ extension HelperPopoverTests {
             XCTAssertFalse(window.isVisible)
         }
     }
+    @MainActor func testLocalExportFailureOffersOfflineRetryInBothAppearances() async throws {
+        let controller = MenuBarController(preview: true)
+        let meeting = RecentMeeting(directory: URL(fileURLWithPath: "/fixture/local-export"), title: "Weekly planning",
+            started: Date(timeIntervalSince1970: 1791446400), stage: .needsAttention,
+            issue: VerifiedLocalExport.failure(attempts: 3), detail: VerifiedLocalExport.failure(attempts: 3).detail,
+            notes: nil, transcript: nil, canRetryLocalExport: true)
+        controller.updateRecentMeetings([meeting])
+        XCTAssertTrue(meeting.canRetryLocalExport); XCTAssertFalse(meeting.canRetryAINotes)
+        XCTAssertFalse(meeting.canSaveTranscriptOnly)
+        guard let preview = ProcessInfo.processInfo.environment["CLAWMINUTES_UI_PREVIEW_DIR"] else { return }
+        let previous = NSApp.appearance
+        defer { NSApp.appearance = previous }
+        for (name, appearance, scheme) in [("light", NSAppearance.Name.aqua, ColorScheme.light),
+                                           ("dark", NSAppearance.Name.darkAqua, ColorScheme.dark)] {
+            NSApp.appearance = NSAppearance(named: appearance)
+            let view = NSHostingView(rootView: MeetingDetailView(controller: controller, meetingID: meeting.id)
+                .environment(\.colorScheme, scheme))
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 560), styleMask: [.titled], backing: .buffered, defer: false)
+            window.appearance = NSAppearance(named: appearance); window.contentView = view
+            try await Task.sleep(for: .milliseconds(500))
+            view.layoutSubtreeIfNeeded()
+            let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                .write(to: URL(fileURLWithPath: preview).appendingPathComponent("local-export-" + name + ".png"))
+            XCTAssertFalse(window.isVisible)
+        }
+    }
+
 }

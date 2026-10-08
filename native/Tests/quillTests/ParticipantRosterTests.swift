@@ -139,7 +139,7 @@ final class ParticipantRosterTests: XCTestCase {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("quill-roster-label-test-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: directory) }
-        try Data(#"{"files":{"system":"system.caf","mic":"mic.caf"},"audio_started_at":1000,"local_speaker_name":"Dragos"}"#.utf8)
+        try Data(#"{"status":"stopped","started":"2026-10-08T10:00:00Z","ended":"2026-10-08T10:01:00Z","files":{"system":"system.caf","mic":"mic.caf"},"audio_started_at":1000,"local_speaker_name":"Dragos"}"#.utf8)
             .write(to: directory.appendingPathComponent("meta.json"))
         let original = Transcript(engine: "fixture", model: "fixture", created_at: "now", segments: [
             .init(speaker: "system_unknown", start_ms: 0, end_ms: 1000, text: "Previously cleaned text.", source: "system"),
@@ -149,7 +149,7 @@ final class ParticipantRosterTests: XCTestCase {
         try original.write(to: directory)
         let bytes = try Data(contentsOf: directory.appendingPathComponent("transcript.json"))
         let command = try LabelSpeaker.parse([directory.path, "--sole-remote-speaker", "--name", "Mihai"])
-        try command.run()
+        try command.label(activityLockPath: directory.appendingPathComponent("test-lease"))
         let updated = try JSONDecoder().decode(Transcript.self, from: Data(contentsOf: directory.appendingPathComponent("transcript.json")))
         XCTAssertEqual(updated.segments.map(\.speaker_name), ["Mihai", "Mihai", "Dragos"])
         XCTAssertEqual(updated.segments.map(\.text), original.segments.map(\.text))
@@ -162,4 +162,22 @@ final class ParticipantRosterTests: XCTestCase {
         let markdown = try String(contentsOf: directory.appendingPathComponent("transcript.md"), encoding: .utf8)
         XCTAssertTrue(markdown.contains("## Participants\n\n- Dragos (you)\n- Mihai"))
     }
+    func testLabelRefusesPreviouslyAttemptedDelivery() throws {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try Data(#"{"status":"stopped","started":"2026-10-08T10:00:00Z","ended":"2026-10-08T10:01:00Z","audio_started_at":1000,"files":{"system":"system.caf"}}"#.utf8)
+            .write(to: dir.appendingPathComponent("meta.json"))
+        let transcript = Transcript(engine: "fixture", model: "fixture", created_at: "fixture", segments: [
+            .init(speaker: "system_1", start_ms: 0, end_ms: 1000, text: "Synthetic", source: "system")])
+        try transcript.write(to: dir)
+        let original = try ArchiveBacklog.read(dir.appendingPathComponent("transcript.json"))
+        var state = try MeetingPipelineState.load(dir)
+        state.delivery = .init(count: 1, transcriptSHA256: AudioRetention.digest(original), completionAttempts: 0)
+        try state.write(dir)
+        let command = try LabelSpeaker.parse([dir.path, "--speaker", "system_1", "--name", "Fixture Alice"])
+        XCTAssertThrowsError(try command.label(activityLockPath: dir.appendingPathComponent("test-lease"))) { XCTAssertEqual(($0 as? DeliveryFailure)?.code, "revision_conflict") }
+        XCTAssertEqual(try ArchiveBacklog.read(dir.appendingPathComponent("transcript.json")), original)
+    }
+
 }

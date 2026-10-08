@@ -40,7 +40,7 @@ final class HelperWorkLeaseTests: XCTestCase, @unchecked Sendable {
     private func session(_ root: URL) throws -> URL {
         let dir = root.appendingPathComponent("session")
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try Data(#"{"files":{"mic":"mic.caf"}}"#.utf8).write(to: dir.appendingPathComponent("meta.json"))
+        try Data(#"{"status":"stopped","started":"2026-10-08T10:00:00Z","ended":"2026-10-08T10:01:00Z","files":{"mic":"mic.caf"}}"#.utf8).write(to: dir.appendingPathComponent("meta.json"))
         try Data().write(to: dir.appendingPathComponent("mic.caf"))
         return dir
     }

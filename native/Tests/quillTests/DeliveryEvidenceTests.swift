@@ -125,4 +125,110 @@ final class DeliveryEvidenceTests: XCTestCase {
         let state = try MeetingPipelineState.load(f.directory)
         XCTAssertEqual(state.delivery.count, 1); XCTAssertEqual(state.delivery.completionAttempts, 0)
     }
+    func testVerifiedLocalExportIgnoresRemoteBackoffAndPreservesPaidBudget() async throws {
+        let f = try fixture()
+        let path = try String(contentsOf: f.directory.appendingPathComponent("notes-export-path.txt"), encoding: .utf8)
+        try FileManager.default.removeItem(atPath: path)
+        var state = try MeetingPipelineState.load(f.directory)
+        state.delivery = .init(count: 5, nextAttemptAt: 7000, transcriptSHA256: f.receipt["localTranscriptSHA256"] as? String, completionAttempts: 3)
+        try state.write(f.directory)
+        let coordinator = TranscriptionCoordinator(activityLockPath: f.lease, saveArchive: { _ in
+            XCTFail("A verified local export must not invoke Gateway delivery")
+        })
+        let report = try await coordinator.retryArchiveBacklog(root: f.directory.deletingLastPathComponent(), now: 100)
+        XCTAssertEqual(report.attempted, 1, "Local export must not inherit a Gateway retry deadline")
+        XCTAssertEqual(ArchiveBacklog.inspect(f.directory, notesRoot: f.notes).state, .saved)
+        state = try MeetingPipelineState.load(f.directory)
+        XCTAssertEqual(state.delivery.count, 5); XCTAssertEqual(state.delivery.completionAttempts, 3)
+        XCTAssertEqual(state.delivery.nextAttemptAt, 7000)
+    }
+    func testExportFailureAfterRemoteReceiptDoesNotBecomeAnAIFailure() async throws {
+        let f = try fixture(saved: false), directory = f.directory
+        var state = try MeetingPipelineState.load(directory)
+        state.delivery = .init(count: 2, nextAttemptAt: 0, transcriptSHA256: f.receipt["localTranscriptSHA256"] as? String, completionAttempts: 3)
+        // A completed receipt proves delivery even if an old paid cap remains.
+        let receipt = try JSONSerialization.data(withJSONObject: f.receipt)
+        try receipt.write(to: directory.appendingPathComponent("archive-receipt.json"))
+        try state.write(directory)
+        try MeetingDocuments.rememberExport(f.notes.appendingPathComponent("meeting"), root: f.notes,
+            recording: directory, sessionID: f.receipt["sessionId"] as! String)
+        try Data("destination is blocked".utf8).write(to: f.notes)
+        let stage = MeetingDeliveryStage(activityLockPath: f.lease, saveArchive: { _ in
+            XCTFail("Local export is already receipted")
+        }, onSaved: { _ in XCTFail("An obstructed destination is not saved") })
+        if case .failed(let issue) = await stage.deliver(directory, now: 100) {
+            XCTAssertEqual(issue.code, "local_export_failed")
+        } else { XCTFail("A blocked notes folder must report a local export failure") }
+        state = try MeetingPipelineState.load(directory)
+        XCTAssertEqual(state.delivery.count, 2); XCTAssertEqual(state.delivery.completionAttempts, 3)
+        XCTAssertNil(state.delivery.lastError, "Export failure cannot replace delivery with an AI cap")
+        let persisted = try ArchiveBacklog.object(directory.appendingPathComponent("state.json"))
+        XCTAssertEqual((persisted["localExport"] as? [String: Any])?["count"] as? Int, 1)
+    }
+    func testLocalExportBudgetSurvivesRelaunchAndExplicitRetryIsOffline() throws {
+        let f = try fixture()
+        let original = try String(contentsOf: f.directory.appendingPathComponent("notes-export-path.txt"), encoding: .utf8)
+        try FileManager.default.removeItem(at: f.notes)
+        try Data("blocked".utf8).write(to: f.notes)
+        for now in [100.0, 200, 400] {
+            XCTAssertThrowsError(try VerifiedLocalExport.perform(f.directory, activityLockPath: f.lease, now: now))
+        }
+        var state = try MeetingPipelineState.load(f.directory)
+        XCTAssertEqual(state.localExport?.count, 3)
+        XCTAssertEqual(state.localExport?.lastError?.code, "local_export_retry_limit")
+        XCTAssertEqual(ArchiveBacklog.inspect(f.directory, notesRoot: f.notes).state, .needsReview)
+        XCTAssertTrue(RecentMeeting.make(ArchiveBacklog.inspect(f.directory, notesRoot: f.notes)).canRetryLocalExport)
+        XCTAssertFalse(try VerifiedLocalExport.perform(f.directory, activityLockPath: f.lease, now: 10000))
+        try FileManager.default.removeItem(at: f.notes)
+        XCTAssertTrue(try VerifiedLocalExport.perform(f.directory, activityLockPath: f.lease, now: 10001, explicit: true))
+        state = try MeetingPipelineState.load(f.directory)
+        XCTAssertEqual(state.localExport?.count, 4); XCTAssertNil(state.localExport?.lastError)
+        XCTAssertEqual(state.delivery.count, 0)
+        XCTAssertEqual(try String(contentsOf: f.directory.appendingPathComponent("notes-export-path.txt"), encoding: .utf8), original)
+    }
+    func testLocalExportBackoffAndOwnershipDoNotReserveAnAttempt() throws {
+        let f = try fixture()
+        let original = try String(contentsOf: f.directory.appendingPathComponent("notes-export-path.txt"), encoding: .utf8)
+        try FileManager.default.removeItem(atPath: original)
+        var state = try MeetingPipelineState.load(f.directory)
+        state.localExport = .init(count: 1, nextAttemptAt: 500)
+        try state.write(f.directory)
+        XCTAssertFalse(try VerifiedLocalExport.perform(f.directory, activityLockPath: f.lease, now: 100))
+        let lock = try XCTUnwrap(AppRunLock.acquire(at: f.directory.appendingPathComponent("archive.lock")))
+        XCTAssertThrowsError(try VerifiedLocalExport.perform(f.directory, activityLockPath: f.lease, now: 100, explicit: true))
+        withExtendedLifetime(lock) {}
+        state = try MeetingPipelineState.load(f.directory)
+        XCTAssertEqual(state.localExport?.count, 1)
+    }
+    func testFirstRemoteSaveWithDiskFailureIsRecordedOnlyAsLocalExport() async throws {
+        let f = try fixture(saved: false), dir = f.directory, notes = f.notes, lease = f.lease
+        let reply = try JSONSerialization.data(withJSONObject: f.receipt)
+        let stage = MeetingDeliveryStage(activityLockPath: lease, saveArchive: { directory in
+            try await GatewayArchive.save(directory, transport: { _ in
+                // Simulate disk becoming unavailable only after the remote save.
+                try MeetingDocuments.rememberExport(notes.appendingPathComponent("meeting"), root: notes,
+                    recording: dir, sessionID: "teams-" + AudioRetention.digest(Data("2026-10-08T10:00:00Z\nmeeting".utf8)).prefix(24))
+                try Data("blocked".utf8).write(to: notes)
+                return reply
+            }, capabilityTransport: { try LegacyReceiptReconciliationTests.capabilities() },
+                exportRootOverride: notes, activityLockPath: lease)
+        }, onSaved: { _ in XCTFail("No exported notes yet") })
+        if case .failed(let issue) = await stage.deliver(dir, now: 100) {
+            XCTAssertEqual(issue.code, "local_export_failed")
+        } else { XCTFail("Disk failure must not claim completion") }
+        let state = try MeetingPipelineState.load(dir)
+        XCTAssertEqual(state.delivery.count, 1); XCTAssertNil(state.delivery.lastError)
+        XCTAssertEqual(state.localExport?.count, 1)
+        XCTAssertEqual(ArchiveBacklog.inspect(dir, notesRoot: notes).verifiedText, .archive)
+    }
+    func testMalformedLocalExportStateFailsClosed() throws {
+        let f = try fixture()
+        var state = try MeetingPipelineState.load(f.directory); try state.write(f.directory)
+        var json = try ArchiveBacklog.object(f.directory.appendingPathComponent("state.json"))
+        json["localExport"] = ["count": -1, "nextAttemptAt": 0]
+        try JSONSerialization.data(withJSONObject: json).write(to: f.directory.appendingPathComponent("state.json"))
+        XCTAssertThrowsError(try MeetingPipelineState.load(f.directory))
+        XCTAssertThrowsError(try VerifiedLocalExport.perform(f.directory, activityLockPath: f.lease, explicit: true))
+    }
+
 }

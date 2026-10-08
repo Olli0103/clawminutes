@@ -25,6 +25,8 @@ struct Transcribe: AsyncParsableCommand {
         if offline { ModelHub.offlineMode = true }
         let original = URL(fileURLWithPath: (recording as NSString).expandingTildeInPath).standardizedFileURL
         guard ArchiveBacklog.isFinished(original) else { throw ValidationError("Finish the recording before transcription. Active audio was left untouched.") }
+        let previewOwnership = try output.map { _ in try DraftSourceOwnership.acquire(original, editing: false) }
+        defer { withExtendedLifetime(previewOwnership) {} }
         let sessionMeta = try SessionMeta.read(from: original)
         let dir: URL
         let fm = FileManager.default
@@ -46,6 +48,7 @@ struct Transcribe: AsyncParsableCommand {
         }
         try await TranscriptionCoordinator().transcribe(dir, detectSpeakers: !noSpeakers, remoteSpeakerCount: remoteSpeakers,
                                                         engineOverride: engine, offline: offline, learnVoiceMemory: output == nil, allowAudioLinks: output != nil)
+        try previewOwnership?.validateUnchanged()
         print(dir.appendingPathComponent("transcript.md").path)
     }
 }
@@ -61,7 +64,9 @@ struct LabelSpeaker: ParsableCommand {
     @Flag(help: "Explicitly confirm that all remote speech in this recording belongs to this one person.") var soleRemoteSpeaker = false
     @Option(help: "Verified speaker name.") var name: String
 
-    func run() throws {
+    func run() throws { try label() }
+
+    func label(activityLockPath: URL = HelperWorkLease.path) throws {
         guard (speaker != nil) != soleRemoteSpeaker else {
             throw ValidationError("Choose either --speaker or --sole-remote-speaker.")
         }
@@ -69,13 +74,8 @@ struct LabelSpeaker: ParsableCommand {
         let dir = URL(fileURLWithPath: (recording as NSString).expandingTildeInPath)
         let url = dir.appendingPathComponent("transcript.json")
         let fm = FileManager.default
-        guard !fm.fileExists(atPath: dir.appendingPathComponent("archive-receipt.json").path) else {
-            throw ValidationError("This meeting was saved. Use revise-meeting with exact --turns and --name to preserve it.")
-        }
-        let lock = open(dir.appendingPathComponent(".postprocess.lock").path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
-        guard lock >= 0 else { throw ValidationError("Could not lock this transcript.") }
-        defer { flock(lock, LOCK_UN); close(lock) }
-        guard flock(lock, LOCK_EX | LOCK_NB) == 0 else { throw ValidationError("Transcript processing is already running.") }
+        let ownership = try DraftSourceOwnership.acquire(dir, activityLockPath: activityLockPath)
+        defer { withExtendedLifetime(ownership) {} }
         let original = try Data(contentsOf: url)
         var transcript = try JSONDecoder().decode(Transcript.self, from: original)
         func matches(_ segment: Transcript.Segment) -> Bool {
@@ -99,6 +99,7 @@ struct LabelSpeaker: ParsableCommand {
                                                  sources: ["local_microphone", "user_confirmation"]), at: 0)
             }
         }
+        try ownership.validateUnchanged()
         let backup = dir.appendingPathComponent("speaker-label-backup-\(UUID().uuidString)")
         try fm.createDirectory(at: backup, withIntermediateDirectories: false)
         let files = ["transcript.json", "transcript.md", "participants.json", "postprocess.json"]
@@ -114,6 +115,7 @@ struct LabelSpeaker: ParsableCommand {
         }
         transcript.schema_version = 2
         transcript.participant_roster = roster
+        try ownership.validateUnchanged()
         guard try Data(contentsOf: url) == original else { throw ValidationError("Transcript changed during labelling.") }
         do {
             try transcript.write(to: dir)

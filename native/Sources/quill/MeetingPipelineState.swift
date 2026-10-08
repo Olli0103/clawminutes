@@ -17,6 +17,13 @@ struct MeetingPipelineState: Codable, Sendable {
         var recoveryID: String? = nil
         var budgetUnverified: Bool? = nil
     }
+    struct ExportAttempt: Codable, Equatable, Sendable {
+        var count = 0
+        var nextAttemptAt: Double = 0
+        var lastError: DeliveryFailure?
+        var lastErrorAt: Double?
+        func mayAttempt(at now: Double) -> Bool { count < 3 && lastError?.retryable != false && nextAttemptAt <= now }
+    }
     struct LegacySnapshot: Codable, Equatable, Sendable {
         var retrySHA256: String?
         var recoverySHA256: String?
@@ -38,6 +45,7 @@ struct MeetingPipelineState: Codable, Sendable {
     var stage: Stage
     var transcription = Attempt()
     var delivery = Attempt()
+    var localExport: ExportAttempt? = nil
     var updatedAt: Double
     var generation: Int? = nil
     var legacySnapshot: LegacySnapshot? = nil
@@ -50,7 +58,7 @@ struct MeetingPipelineState: Codable, Sendable {
     }
     enum CodingKeys: String, CodingKey {
         case schemaVersion, recordingIdentity, revision, stage, transcription, delivery, updatedAt
-        case generation, legacySnapshot, notesRecovery
+        case generation, legacySnapshot, notesRecovery, localExport
     }
     var deliveryRetry: ArchiveBacklog.Retry? {
         guard delivery.count > 0, let hash = delivery.transcriptSHA256 else { return nil }
@@ -85,6 +93,11 @@ struct MeetingPipelineState: Codable, Sendable {
                   Self.validFailure(attempt.lastError), Self.validHash(attempt.transcriptSHA256),
                   attempt.completionAttempts.map({ (0...3).contains($0) }) ?? true,
                   attempt.recoveryID.map({ UUID(uuidString: $0) != nil }) ?? true else { throw Self.invalidState }
+        }
+        if let attempt = localExport {
+            guard (0...1000).contains(attempt.count), attempt.nextAttemptAt.isFinite,
+                  attempt.lastErrorAt.map({ $0.isFinite }) ?? true,
+                  Self.validFailure(attempt.lastError) else { throw Self.invalidState }
         }
         guard schemaVersion == 2, updatedAt.isFinite, (generation ?? 0) >= 0, (generation ?? 0) < Int.max,
               transcription.transcriptSHA256 == nil, transcription.completionAttempts == nil, transcription.recoveryID == nil,
@@ -181,11 +194,15 @@ struct MeetingPipelineState: Codable, Sendable {
     }
     mutating func reconcile(_ item: ArchiveBacklog.Item, now: Double) {
         let oldTranscriptionError = transcription.lastError, oldDeliveryError = delivery.lastError
+        let oldExportError = localExport?.lastError
         if item.verifiedText != nil {
             transcription.lastError = nil; transcription.lastErrorAt = nil
         }
         if item.verifiedText?.includesDelivery == true {
             delivery.lastError = nil; delivery.lastErrorAt = nil
+        }
+        if item.verifiedText == .exported {
+            localExport?.lastError = nil; localExport?.lastErrorAt = nil
         }
         let previousStage = stage
         switch item.state {
@@ -203,7 +220,7 @@ struct MeetingPipelineState: Codable, Sendable {
         case .needsReview, .fixture:
             stage = transcription.lastError?.code == "local_model_missing" ? .waitingForModel : .needsAttention
         }
-        if previousStage != stage || oldTranscriptionError != transcription.lastError || oldDeliveryError != delivery.lastError { updatedAt = now }
+        if previousStage != stage || oldTranscriptionError != transcription.lastError || oldDeliveryError != delivery.lastError || oldExportError != localExport?.lastError { updatedAt = now }
     }
     func mayTranscribe(at now: Double) -> Bool {
         transcription.count < 3 && transcription.lastError?.retryable != false && transcription.nextAttemptAt <= now

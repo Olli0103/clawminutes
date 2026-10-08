@@ -24,11 +24,8 @@ actor RecordingTranscriber {
         guard !busy else { throw TranscriptionFailure("Speech recognition is already processing another meeting. Audio is retained.") }
         busy = true
         defer { busy = false }
-        let workLease = try HelperWorkLease.acquire(at: activityLockPath)
-        defer { withExtendedLifetime(workLease) {} }
-        guard !FileManager.default.fileExists(atPath: dir.appendingPathComponent("archive-receipt.json").path) else {
-            throw DeliveryFailure(code: "revision_conflict", detail: "This meeting has an archive receipt. Use a new revision or a separate preview; saved transcripts are preserved.", retryable: false, completionAttempted: false)
-        }
+        let ownership = try DraftSourceOwnership.acquire(dir, activityLockPath: activityLockPath)
+        defer { withExtendedLifetime(ownership) {} }
         let meta = try SessionMeta.read(from: dir)
         // Snapshot the selection for both tracks. Menu changes affect the next job.
         let rawMeta = try JSONSerialization.jsonObject(with: Data(contentsOf: dir.appendingPathComponent("meta.json"))) as? [String: Any]
@@ -153,6 +150,7 @@ actor RecordingTranscriber {
         output.capture_gaps = captureGaps.isEmpty ? nil : captureGaps
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try ownership.validateUnchanged()
         try encoder.encode(analysis).write(to: dir.appendingPathComponent("speaker-analysis.json"), options: .atomic)
         try output.write(to: dir)
         MeetingLog.append(dir, "done — \(merged.count) segments")

@@ -169,6 +169,22 @@ enum GatewayArchive {
         try envelopeFingerprint(deliveryEnvelope(directory, meta: meta, transcriptData: transcriptData))
     }
 
+    /// Filesystem-only writer. Caller must own the lifecycle lease and archive.lock.
+    /// Both fingerprints and document validation are required before exporting.
+    static func exportVerifiedReceipt(_ dir: URL, fallbackRoot: URL = MeetingNotesSettings.folder) throws {
+        guard ArchiveBacklog.isFinished(dir) else { throw MeetingPipelineState.invalidState }
+        let receipt = try ArchiveBacklog.object(dir.appendingPathComponent("archive-receipt.json"))
+        let meta = try ArchiveBacklog.object(dir.appendingPathComponent("meta.json"))
+        let transcript = try ArchiveBacklog.read(dir.appendingPathComponent("transcript.json"))
+        guard ArchiveBacklog.receiptMatches(receipt, transcriptData: transcript, meta: meta, directory: dir) else {
+            throw MeetingPipelineState.invalidState
+        }
+        _ = try MeetingDocuments.validateDocuments(receipt)
+        let root = try MeetingDocuments.exportRoot(recording: dir, fallbackRoot: fallbackRoot)
+        let destination = try MeetingDocuments.export(receipt: receipt, root: root, recording: dir)
+        try MeetingDocuments.rememberExport(destination, root: root, recording: dir, sessionID: receipt["sessionId"] as! String)
+    }
+
     static func save(_ dir: URL,
                      transport: @Sendable (Data) async throws -> Data = { try await request(body: $0) },
                      capabilityTransport: @Sendable () async throws -> Data = { try await request() },
@@ -181,7 +197,7 @@ enum GatewayArchive {
         }
         defer { withExtendedLifetime(archiveLease) {} }
         guard ArchiveBacklog.isFinished(dir) else { throw TranscriptionFailure("Active or incomplete recording left untouched.") }
-        let exportRoot = try MeetingDocuments.exportRoot(recording: dir, fallbackRoot: exportRootOverride ?? MeetingNotesSettings.folder)
+        let exportRoot = exportRootOverride ?? MeetingNotesSettings.folder
         let meta = try ArchiveBacklog.object(dir.appendingPathComponent("meta.json"))
         let transcriptData = try ArchiveBacklog.read(dir.appendingPathComponent("transcript.json"))
         let transcript = try JSONSerialization.jsonObject(with: transcriptData) as? [String: Any] ?? [:]
@@ -189,8 +205,7 @@ enum GatewayArchive {
            let receipt = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], receipt["saved"] as? Bool == true,
            ArchiveBacklog.receiptMatches(receipt, transcriptData: transcriptData, meta: meta, directory: dir),
            receipt["documents"] != nil {
-            let destination = try MeetingDocuments.export(receipt: receipt, root: exportRoot, recording: dir)
-            try MeetingDocuments.rememberExport(destination, root: exportRoot, recording: dir, sessionID: receipt["sessionId"] as! String)
+            try exportVerifiedReceipt(dir, fallbackRoot: exportRoot)
             return
         }
         if let receipt = try? ArchiveBacklog.object(dir.appendingPathComponent("archive-receipt.json")), receipt["saved"] as? Bool == true,
@@ -241,8 +256,7 @@ enum GatewayArchive {
         try JSONSerialization.data(withJSONObject: receipt).write(to: dir.appendingPathComponent("archive-receipt.json"), options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dir.appendingPathComponent("archive-receipt.json").path)
         if receipt["documents"] != nil {
-            let destination = try MeetingDocuments.export(receipt: receipt, root: exportRoot, recording: dir)
-            try MeetingDocuments.rememberExport(destination, root: exportRoot, recording: dir, sessionID: receipt["sessionId"] as! String)
+            try exportVerifiedReceipt(dir, fallbackRoot: exportRoot)
         }
     }
 }

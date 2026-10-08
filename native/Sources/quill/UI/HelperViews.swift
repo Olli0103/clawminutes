@@ -102,6 +102,8 @@ struct MeetingDetailView: View {
     @State private var unidentifiedTurns: Int?
     @State private var recoveryKind: NotesRecovery.Kind?
     @State private var verifyingLegacyReceipt = false
+    @State private var savingLocalNotes = false
+    @State private var localSaveError: String?
     var body: some View {
         ScrollView {
             if let meeting = controller.recentMeetings.first(where: { $0.id == meetingID }) {
@@ -130,7 +132,22 @@ struct MeetingDetailView: View {
                             Button("Regenerate notes…") { revisionMode = .template }
                         }
                     }
-                    if meeting.issue?.code == "local_model_missing" { Button("Download local model…", action: controller.setupLocal) }
+                    if meeting.canRetryLocalExport {
+                        Button(savingLocalNotes ? "Saving notes…" : "Retry saving notes on this Mac") {
+                            savingLocalNotes = true; localSaveError = nil
+                            Task {
+                                do {
+                                    _ = try await Task.detached {
+                                        try VerifiedLocalExport.perform(meeting.directory, explicit: true)
+                                    }.value
+                                } catch { localSaveError = DeliveryFailure.classify(error).detail }
+                                savingLocalNotes = false
+                                await controller.refreshLocalMeetings()
+                            }
+                        }.disabled(savingLocalNotes)
+                        if let localSaveError { Text(localSaveError).font(.caption).foregroundStyle(.orange) }
+                    }
+                    else if meeting.issue?.code == "local_model_missing" { Button("Download local model…", action: controller.setupLocal) }
                     else if meeting.issue?.code == "speech_credentials_missing" { Button("Add API key…", action: controller.editAPIKey) }
                     else if meeting.issue?.code == "sign_in_required" { Button("Sign in", action: controller.connectGateway) }
                     else if meeting.issue?.retryable == true && meeting.transcript != nil { Button("Retry sending", action: controller.retrySaving) }
@@ -154,6 +171,7 @@ struct MeetingDetailView: View {
                     .sheet(item: $recoveryKind) { kind in NotesRecoveryEditor(controller: controller, meeting: meeting, kind: kind) }
             } else { Text("This meeting is no longer in the current list.").padding(24) }
         }.frame(minWidth: 430, minHeight: 320)
+            .background(Color(nsColor: .windowBackgroundColor))
             .task(id: meetingID) {
                 unidentifiedTurns = nil
                 guard let meeting = controller.recentMeetings.first(where: { $0.id == meetingID }) else { return }

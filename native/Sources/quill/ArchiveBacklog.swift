@@ -15,6 +15,8 @@ enum ArchiveBacklog {
         let reason: String
         var retry: Retry?
         var verifiedText: VerifiedText? = nil
+        var exportRetry: MeetingPipelineState.ExportAttempt? = nil
+        var nextAttemptAt: Double { verifiedText == .archive ? exportRetry?.nextAttemptAt ?? 0 : retry?.nextAttemptAt ?? 0 }
         var pending: Bool { state == .archivePending || state == .exportPending }
     }
     struct Retry: Codable, Equatable, Sendable {
@@ -63,8 +65,9 @@ enum ArchiveBacklog {
     }
     static func inspect(_ dir: URL, notesRoot: URL = MeetingNotesSettings.folder) -> Item {
         var verifiedText: VerifiedText?
+        var exportRetry: MeetingPipelineState.ExportAttempt?
         func item(_ state: State, _ reason: String, retry: Retry? = nil) -> Item {
-            Item(directory: dir, state: state, reason: reason, retry: retry, verifiedText: verifiedText)
+            Item(directory: dir, state: state, reason: reason, retry: retry, verifiedText: verifiedText, exportRetry: exportRetry)
         }
         do {
             let values = try dir.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
@@ -92,6 +95,7 @@ enum ArchiveBacklog {
             verifiedText = .transcript
             let state = try MeetingPipelineState.load(dir)
             let retry = state.deliveryRetry
+            exportRetry = state.localExport
             if let retry, retry.transcriptSHA256 != AudioRetention.digest(data) {
                 return item(.needsReview, "Transcript changed after a delivery attempt. Create a new revision before sending it again.")
             }
@@ -122,12 +126,18 @@ enum ArchiveBacklog {
                 return item(.needsReview, "Saved receipt has incomplete meeting documents. Review the Gateway archive before retrying.")
             }
             verifiedText = .archive
+            func pendingExport(_ reason: String) -> Item {
+                let blocked = exportRetry.map { $0.count >= 3 || $0.lastError?.retryable == false } ?? false
+                return item(blocked ? .needsReview : .exportPending, exportRetry?.lastError?.detail ?? reason, retry: retry)
+            }
             guard let text = try? String(data: read(dir.appendingPathComponent("notes-export-path.txt")), encoding: .utf8),
                   text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") else {
-                return item(.exportPending, "Meeting documents not exported", retry: retry)
+                return pendingExport("Meeting documents not exported")
             }
             let destination = URL(fileURLWithPath: text.trimmingCharacters(in: .whitespacesAndNewlines))
-            let notesRoot = try MeetingDocuments.exportRoot(recording: dir, fallbackRoot: notesRoot)
+            guard let notesRoot = try? MeetingDocuments.exportRoot(recording: dir, fallbackRoot: notesRoot) else {
+                return item(.needsReview, "Saved notes folder needs review. Gateway notes are preserved.", retry: retry)
+            }
             let base = notesRoot.standardizedFileURL.resolvingSymlinksInPath().path + "/"
             guard destination.standardizedFileURL.path.hasPrefix(notesRoot.standardizedFileURL.path + "/"),
                   destination.resolvingSymlinksInPath().path.hasPrefix(base),
@@ -135,7 +145,7 @@ enum ArchiveBacklog {
                   (try? read(destination.appendingPathComponent("transcript.md"))) != nil,
                   let metadata = try? object(destination.appendingPathComponent("metadata.json")),
                   metadata["sessionId"] as? String == receipt["sessionId"] as? String else {
-                return item(.exportPending, "Export files missing or do not match the saved meeting", retry: retry)
+                return pendingExport("Export files missing or do not match the saved meeting")
             }
             verifiedText = .exported
             if let gaps = transcript["capture_gaps"] as? [Any], !gaps.isEmpty {
@@ -151,7 +161,9 @@ enum ArchiveBacklog {
             .map { inspect($0, notesRoot: notesRoot) }
     }
     static func reserve(_ item: Item, now: TimeInterval) throws {
-        guard item.pending, inspect(item.directory).pending else { throw MeetingPipelineState.conflictingState }
+        guard let lock = try AppRunLock.acquire(at: item.directory.appendingPathComponent("archive.lock")) else { throw MeetingPipelineState.conflictingState }
+        defer { withExtendedLifetime(lock) {} }
+        guard item.state == .archivePending, inspect(item.directory).state == .archivePending else { throw MeetingPipelineState.conflictingState }
         var state = try MeetingPipelineState.load(item.directory)
         let data = try read(item.directory.appendingPathComponent("transcript.json"))
         guard state.deliveryRetry == item.retry,
@@ -168,6 +180,7 @@ enum ArchiveBacklog {
     /// Reconnection permits one authenticated send. Compatibility failures need
     /// a verified handshake. Model errors and paid limits remain blocked.
     static func rearmConnection(_ item: Item, now: TimeInterval, capabilities: GatewayCapabilities? = nil) throws {
+        guard item.verifiedText == .transcript else { return }
         let cause = item.retry?.lastError?.code
         guard cause == "sign_in_required" || (cause == "plugin_update_needed" && capabilities != nil) else { return }
         var state = try MeetingPipelineState.load(item.directory)

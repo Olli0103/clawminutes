@@ -23,20 +23,27 @@ actor MeetingDeliveryStage {
             defer { withExtendedLifetime(lease) {} }
             let item = ArchiveBacklog.inspect(dir)
             guard item.pending else { return .skipped }
+            if item.verifiedText == .archive {
+                guard try VerifiedLocalExport.perform(dir, activityLockPath: activityLockPath, now: now) else { return .skipped }
+                return try finish(dir, now: now)
+            }
             try ArchiveBacklog.reserve(item, now: now)
             reserved = true
             try await saveArchive(dir)
-            let saved = ArchiveBacklog.inspect(dir)
-            guard saved.verifiedText == .exported else {
-                throw DeliveryFailure(code: "local_save_unverified", detail: "The save finished without a verified receipt and local export. Local files are preserved. Review this meeting before retrying.", retryable: false, completionAttempted: false)
-            }
-            MeetingLog.append(dir, "Gateway Meetings archive and local export verified")
-            onSaved(RecentMeeting.make(saved))
-            var state = try MeetingPipelineState.load(dir)
-            state.reconcile(saved, now: now); try state.write(dir)
-            MeetingRetention.apply(dir)
-            return .saved
+            return try finish(dir, now: now)
         } catch {
+            // The Gateway receipt is durable before disk export. Once proven,
+            // a disk failure belongs to local export, never to paid AI retries.
+            if reserved, ArchiveBacklog.inspect(dir).verifiedText == .archive {
+                do {
+                    let failure = try VerifiedLocalExport.recordFailedAttempt(dir, activityLockPath: activityLockPath, now: now)
+                    return .failed(failure)
+                } catch { return .failed(DeliveryFailure.classify(error)) }
+            }
+            if ArchiveBacklog.inspect(dir).verifiedText == .exported {
+                MeetingLog.append(dir, "Saved documents verified, but progress could not be updated. Paid attempt history preserved.")
+                return .failed(DeliveryFailure.classify(error))
+            }
             do { if reserved { try ArchiveBacklog.recordFailure(error, directory: dir) } }
             catch { MeetingLog.append(dir, "Could not persist the save failure. Local files preserved.") }
             let failure = DeliveryFailure.classify(error)
@@ -44,6 +51,19 @@ actor MeetingDeliveryStage {
             return .failed(failure)
         }
     }
+    private func finish(_ dir: URL, now: Double) throws -> Result {
+        let saved = ArchiveBacklog.inspect(dir)
+        guard saved.verifiedText == .exported else {
+            throw DeliveryFailure(code: "local_save_unverified", detail: "The save finished without a verified receipt and local export. Local files are preserved. Review this meeting before retrying.", retryable: false, completionAttempted: false)
+        }
+        var state = try MeetingPipelineState.load(dir)
+        state.reconcile(saved, now: now); try state.write(dir)
+        MeetingLog.append(dir, "Gateway Meetings archive and local export verified")
+        onSaved(RecentMeeting.make(saved))
+        MeetingRetention.apply(dir)
+        return .saved
+    }
+
 }
 
 /// Retention remains independent and verifies source artifacts on every removal.
