@@ -90,3 +90,43 @@ final class HelperPopoverTests: XCTestCase {
         }
     }
 }
+
+extension HelperPopoverTests {
+    @MainActor func testFullTextResultsRenderInLightAndDarkWithoutOpeningAWindow() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let notes = root.appendingPathComponent("notes.md"), speech = root.appendingPathComponent("transcript.md")
+        try Data("Discussed the budget forecast. No approval was given; the decision remains open.".utf8).write(to: notes)
+        try Data("The budget needs review before the next planning meeting.".utf8).write(to: speech)
+        let meetings = [
+            RecentMeeting(directory: root.appendingPathComponent("ready"), title: "Weekly planning", started: Date(timeIntervalSince1970: 1791446400),
+                stage: .exported, issue: nil, detail: "", notes: notes, transcript: nil),
+            RecentMeeting(directory: root, title: "Design review", started: Date(timeIntervalSince1970: 1791442800),
+                stage: .needsAttention, issue: .signInRequired, detail: DeliveryFailure.signInRequired.detail, notes: nil, transcript: speech),
+            RecentMeeting(directory: root.appendingPathComponent("missing"), title: "Earlier meeting", started: nil,
+                stage: .needsAttention, issue: nil, detail: "", notes: nil, transcript: root.appendingPathComponent("missing/transcript.md"))
+        ]
+        let report = try await MeetingSearchIndex().search(meetings, query: "budget")
+        XCTAssertEqual(report.matches.count, 2); XCTAssertEqual(report.unavailableDocuments, 1)
+        let controller = MenuBarController(preview: true)
+        controller.updateRecentMeetings(meetings)
+        guard let destination = ProcessInfo.processInfo.environment["CLAWMINUTES_UI_PREVIEW_DIR"] else { return }
+        let previous = NSApp.appearance
+        defer { NSApp.appearance = previous }
+        for dark in [false, true] {
+            NSApp.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            let view = NSHostingView(rootView: MeetingLibraryView(controller: controller, initialQuery: "budget", initialReport: report)
+                .environment(\.colorScheme, dark ? .dark : .light))
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 680, height: 480), styleMask: [.titled], backing: .buffered, defer: false)
+            window.appearance = NSApp.appearance; window.contentView = view
+            try await Task.sleep(for: .milliseconds(600)) // Allow the view's real debounced query to finish.
+            view.layoutSubtreeIfNeeded()
+            let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                .write(to: URL(fileURLWithPath: destination).appendingPathComponent("fulltext-library-" + (dark ? "dark" : "light") + ".png"))
+            XCTAssertFalse(window.isVisible)
+        }
+    }
+}

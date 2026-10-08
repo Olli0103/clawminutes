@@ -102,6 +102,8 @@ For a personal microphone, set **Your voice → Your name**. Use Shared micropho
 
 Saved meeting details offer **Identify speakers…** and **Regenerate notes…**. Both create separate versions and preserve the original notes. Select exact turns when confirming a speaker; local audio previews are available while audio is retained. See [meeting versions](docs/revisions.md) for the UI, identity contract and re-transcription commands. This source candidate has not been activated on a live helper or Gateway.
 
+The meeting library searches local titles, notes and transcripts, with matching excerpts and an attention filter. Search stays on this Mac and reports documents it cannot read. See [meeting search](docs/meeting-search.md).
+
 Failed AI notes offer transcript-only recovery or an explicit additional attempt when the existing budget permits it. Recovery preserves the original transcript and earlier failures; it cannot reset paid-attempt limits. See [notes recovery](docs/notes-recovery.md) for replay behavior and legacy-ledger limits.
 
 Connection and delivery now require a [verified Gateway text/archive handshake](docs/gateway-capabilities.md). A successful HTTP response alone cannot send a meeting. The adapter checks its storage behavior with synthetic data in a temporary directory, while retaining the supported SDK version pins.

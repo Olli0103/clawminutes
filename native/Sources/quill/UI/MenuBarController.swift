@@ -5,7 +5,7 @@ import ApplicationServices
 import FluidAudio
 
 @MainActor
-final class MenuBarController: NSObject, ObservableObject {
+final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
     private let keychain: ElevenLabsKeychain
     private let statusItem: NSStatusItem?
     private var appearanceObserver: NSKeyValueObservation?
@@ -25,11 +25,18 @@ final class MenuBarController: NSObject, ObservableObject {
         popover.performClose(nil)
         let window = libraryWindow ?? NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 560),
             styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "ClawMinutes meetings"; window.isReleasedWhenClosed = false
-        window.contentViewController = NSHostingController(rootView: MeetingLibraryView(controller: self))
-        if libraryWindow == nil { window.center() }
+        window.title = "ClawMinutes meetings"; window.isReleasedWhenClosed = false; window.delegate = self
+        if libraryWindow == nil {
+            window.contentViewController = NSHostingController(rootView: MeetingLibraryView(controller: self))
+            window.center()
+        }
         libraryWindow = window
         NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
+    }
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow, window === libraryWindow else { return }
+        window.contentViewController = nil
+        libraryWindow = nil // Releases the search view and its memory-only text cache.
     }
     func copyNotes(_ meeting: RecentMeeting) {
         guard let file = meeting.notes, let data = try? ArchiveBacklog.read(file),
@@ -63,9 +70,11 @@ final class MenuBarController: NSObject, ObservableObject {
         }
     }
     @Published private(set) var recentMeetings: [RecentMeeting] = []
+    @Published private(set) var meetingSnapshotRevision: UInt64 = 0
     private var pendingNotesOpen: String?
     func updateRecentMeetings(_ value: [RecentMeeting]) {
         recentMeetings = value
+        meetingSnapshotRevision &+= 1
         if let pendingNotesOpen, let notes = value.first(where: { $0.id == pendingNotesOpen })?.notes {
             self.pendingNotesOpen = nil; NSWorkspace.shared.open(notes)
         }
