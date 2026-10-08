@@ -29,6 +29,119 @@ final class PCMChunkWriterTests: XCTestCase, @unchecked Sendable {
         }
         return result
     }
+    private func assertSamples(_ actual: [Float], equalTo expected: [Float], file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertEqual(actual.count, expected.count, file: file, line: line)
+        let mismatch = zip(actual, expected).enumerated().first { _, pair in
+            !pair.0.isFinite || abs(pair.0 - pair.1) > 1 / 32768
+        }
+        XCTAssertNil(mismatch, "Sample changed beyond one PCM16 step at \(mismatch?.offset ?? -1)", file: file, line: line)
+    }
+    func testCaptureStoresCompactPCMWithoutChangingChannelsRateOrFrameCount() throws {
+        for (channels, interleaved): (UInt32, Bool) in [(1, false), (2, false), (2, true)] {
+            let dir = try root(); defer { try? FileManager.default.removeItem(at: dir) }
+            let sourceFormat = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000, channels: channels, interleaved: interleaved)!
+            let input = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: 48000)!
+            input.frameLength = input.frameCapacity
+            for channel in 0..<Int(channels) {
+                for frame in 0..<Int(input.frameLength) {
+                    let value = Float(sin(Double(frame) * 0.057 + Double(channel))) * 0.75
+                    if interleaved { input.floatChannelData![0][frame * Int(channels) + channel] = value }
+                    else { input.floatChannelData![channel][frame] = value }
+                }
+            }
+            let writer = PCMChunkWriter(), url = dir.appendingPathComponent("capture.caf")
+            try writer.start(writingTo: url, format: interleaved ? nil : sourceFormat)
+            try writer.write(input)
+            let second = dir.appendingPathComponent("capture-2.caf")
+            let next = try writer.prepare(next: second)
+            let closed = try writer.commit(next)
+            XCTAssertEqual(closed.frames, 48000); XCTAssertEqual(closed.duration, 1)
+            try writer.write(input); writer.stop()
+            for url in [url, second] {
+                let recorded = try AVAudioFile(forReading: url, commonFormat: .pcmFormatFloat32, interleaved: false)
+                let header = recorded.fileFormat.streamDescription.pointee
+                XCTAssertEqual(header.mBitsPerChannel, 16)
+                XCTAssertEqual(header.mBytesPerFrame, channels * 2)
+                XCTAssertEqual(recorded.length, 48000); XCTAssertEqual(recorded.processingFormat.sampleRate, 48000)
+                XCTAssertEqual(recorded.processingFormat.channelCount, channels)
+                XCTAssertEqual(writer.progress.snapshot.frames, 48000); XCTAssertEqual(writer.progress.snapshot.duration, 1)
+                let bytes = try XCTUnwrap(FileManager.default.attributesOfItem(atPath: url.path)[.size] as? NSNumber).intValue
+                let payload = 48000 * Int(channels) * 2
+                print("Synthetic capture: \(channels) channel(s), interleaved=\(interleaved), \(bytes) bytes including header; \(payload) PCM bytes expected")
+                XCTAssertGreaterThanOrEqual(bytes, payload); XCTAssertLessThanOrEqual(bytes, payload + 8192)
+                let output = AVAudioPCMBuffer(pcmFormat: recorded.processingFormat, frameCapacity: 4096)!
+                var offset = 0
+                while recorded.framePosition < recorded.length {
+                    try recorded.read(into: output)
+                    XCTAssertGreaterThan(output.frameLength, 0)
+                    guard output.frameLength > 0 else { break }
+                    for channel in 0..<Int(channels) {
+                        for frame in 0..<Int(output.frameLength) {
+                            let expected = interleaved ? input.floatChannelData![0][(offset + frame) * Int(channels) + channel]
+                                : input.floatChannelData![channel][offset + frame]
+                            XCTAssertEqual(output.floatChannelData![channel][frame], expected, accuracy: 1 / 32768)
+                        }
+                    }
+                    offset += Int(output.frameLength)
+                }
+                XCTAssertEqual(offset, 48000)
+            }
+        }
+    }
+    func testCompactPCMQuantizesNormalizedSamplesAndClipsBeyondFullScale() throws {
+        let dir = try root(); defer { try? FileManager.default.removeItem(at: dir) }
+        let values: [Float] = [-1.5, -1, -0.75, -1 / 65536, 0, 1 / 65536, 0.75, 0.999999, 1, 1.5]
+        let input = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: UInt32(values.count))!
+        input.frameLength = input.frameCapacity
+        for (index, value) in values.enumerated() { input.floatChannelData![0][index] = value }
+        let writer = PCMChunkWriter(), file = dir.appendingPathComponent("mic.caf")
+        try writer.start(writingTo: file, format: format); try writer.write(input); writer.stop()
+        let decoded = try samples(file)
+        XCTAssertEqual(decoded.count, values.count)
+        XCTAssertEqual(decoded.first, -1); XCTAssertEqual(decoded.last, 1 - 1 / 32768)
+        XCTAssertTrue(decoded.allSatisfy { $0.isFinite && $0 >= -1 && $0 < 1 })
+        for index in 1..<(values.count - 1) {
+            XCTAssertEqual(decoded[index], values[index], accuracy: 1 / 32768)
+        }
+    }
+    func testCompactHandoffsAndHistoricalFloatAudioRemainReadableWithoutRewritingSources() throws {
+        let dir = try root(); defer { try? FileManager.default.removeItem(at: dir) }
+        let sourceFormat = AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1)!
+        func constant(_ value: Float) -> AVAudioPCMBuffer {
+            let data = AVAudioPCMBuffer(pcmFormat: sourceFormat, frameCapacity: 16000)!
+            data.frameLength = data.frameCapacity
+            data.floatChannelData![0].initialize(repeating: value, count: 16000)
+            return data
+        }
+        let old = dir.appendingPathComponent("historical.caf")
+        let historical = try AVAudioFile(forWriting: old, settings: sourceFormat.settings)
+        try historical.write(from: constant(0.25)); historical.close()
+        let original = try Data(contentsOf: old)
+        let first = dir.appendingPathComponent("mic.caf"), second = dir.appendingPathComponent("mic-2.caf")
+        let writer = PCMChunkWriter()
+        try writer.start(writingTo: first, format: sourceFormat)
+        try writer.write(constant(0.25))
+        let prepared = try writer.prepare(next: second)
+        let closed = try writer.commit(prepared)
+        XCTAssertEqual(closed.frames, 16000); XCTAssertEqual(closed.duration, 1)
+        try writer.write(constant(-0.5)); writer.stop()
+        for file in [first, second] {
+            let audio = try AVAudioFile(forReading: file), diskFormat = audio.fileFormat
+            XCTAssertEqual(diskFormat.streamDescription.pointee.mBitsPerChannel, 16)
+            XCTAssertEqual(try AudioRetention.duration(file), 1, accuracy: 0.000001)
+        }
+        let firstBytes = try Data(contentsOf: first), secondBytes = try Data(contentsOf: second)
+        for left in [old, first] {
+            let context = try BoundaryRecognition.makeClip(left: left, right: second)
+            XCTAssertEqual(context.samples.count, 32000)
+            XCTAssertEqual(context.leftDuration, 1); XCTAssertEqual(context.rightDuration, 1)
+            XCTAssertTrue(context.samples.prefix(16000).allSatisfy { $0 == 0.25 })
+            XCTAssertTrue(context.samples.suffix(16000).allSatisfy { $0 == -0.5 })
+        }
+        XCTAssertEqual(try Data(contentsOf: old), original)
+        XCTAssertEqual(try Data(contentsOf: first), firstBytes)
+        XCTAssertEqual(try Data(contentsOf: second), secondBytes)
+    }
     func testPreparedFileReceivesNoFramesUntilCommitAndAllBuffersSurvive() throws {
         let dir = try root(); defer { try? FileManager.default.removeItem(at: dir) }
         let writer = PCMChunkWriter(), first = dir.appendingPathComponent("mic.caf"), second = dir.appendingPathComponent("mic-2.caf")
@@ -42,10 +155,10 @@ final class PCMChunkWriterTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(closed.frames, 480); XCTAssertEqual(closed.duration, 0.02, accuracy: 0.00001)
         XCTAssertEqual(writer.progress.currentEpoch, epoch)
         XCTAssertEqual(writer.progress.snapshot.frames, 0)
-        XCTAssertEqual(try samples(first), Array(repeating: Float(0.1), count: 240) + Array(repeating: Float(0.2), count: 240))
+        assertSamples(try samples(first), equalTo: Array(repeating: Float(0.1), count: 240) + Array(repeating: Float(0.2), count: 240))
         try writer.write(buffer(0.3), at: Date(timeIntervalSince1970: 1000.02), epoch: epoch)
         writer.stop()
-        XCTAssertEqual(try samples(second), Array(repeating: Float(0.3), count: 240))
+        assertSamples(try samples(second), equalTo: Array(repeating: Float(0.3), count: 240))
         XCTAssertEqual(writer.progress.snapshot.frames, 240)
         XCTAssertThrowsError(try writer.commit(next))
     }
@@ -248,7 +361,7 @@ extension PCMChunkWriterTests {
         DispatchQueue.global().async {
             defer { group.leave() }
             for number in 0..<4000 {
-                do { try writer.write(self.buffer(Float(number), frames: 8), epoch: epoch) }
+                do { try writer.write(self.buffer(Float(number) / 8192, frames: 8), epoch: epoch) }
                 catch { errors.failed() }
             }
         }
@@ -264,7 +377,7 @@ extension PCMChunkWriterTests {
         writer.stop()
         XCTAssertEqual(errors.count, 0)
         let joined = try files.flatMap { try samples($0) }
-        let expected = Array(repeating: Float(-1), count: 8) + (0..<4000).flatMap { Array(repeating: Float($0), count: 8) }
+        let expected = Array(repeating: Float(-1), count: 8) + (0..<4000).flatMap { Array(repeating: Float($0) / 8192, count: 8) }
         let mismatch = zip(joined, expected).enumerated().first { $0.element.0 != $0.element.1 }?.offset
         XCTAssertTrue(joined == expected, "Expected \(expected.count) samples; read \(joined.count). First changed sample: \(mismatch.map(String.init) ?? "none; tail length differs").")
     }
@@ -293,7 +406,7 @@ extension PCMChunkWriterTests {
         let dir = try root(); defer { try? FileManager.default.removeItem(at: dir) }
         let writer = PCMChunkWriter(), file = dir.appendingPathComponent("mic.caf")
         try writer.start(writingTo: file, format: format)
-        for number in 0..<4000 { try writer.write(buffer(Float(number), frames: 8)) }
+        for number in 0..<4000 { try writer.write(buffer(Float(number) / 8192, frames: 8)) }
         XCTAssertEqual(writer.progress.snapshot.frames, 32000)
         writer.stop()
         XCTAssertEqual(try samples(file).count, 32000)

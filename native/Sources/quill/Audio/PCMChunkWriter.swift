@@ -71,9 +71,13 @@ final class PCMChunkWriter: @unchecked Sendable {
         }
     }
     func stop() { lock.withLock { file?.close(); file = nil; destination = nil; generation &+= 1 } }
+    /// Compact on-disk PCM retains source clocks/channels. AVAudioFile converts
+    /// from the capture buffer's processing format. Conversion stays inside
+    /// AVAudioFile; handoff still closes a plain PCM file.
     private static func open(_ url: URL, format: AVAudioFormat) throws -> AVAudioFile {
         try AVAudioFile(forWriting: url, settings: [AVFormatIDKey: kAudioFormatLinearPCM,
-            AVLinearPCMBitDepthKey: 32, AVLinearPCMIsFloatKey: true, AVSampleRateKey: format.sampleRate,
+            AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false, AVSampleRateKey: format.sampleRate,
             AVNumberOfChannelsKey: format.channelCount], commonFormat: format.commonFormat, interleaved: format.isInterleaved)
     }
 }
