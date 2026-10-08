@@ -22,7 +22,8 @@ final class MeetingRevisionTests: XCTestCase {
         let transcript = try ArchiveBacklog.read(directory.appendingPathComponent("transcript.json"))
         let started = meta["started"] as! String, id = meta["recording_id"] as! String
         try JSONSerialization.data(withJSONObject: ["saved": true, "sessionId": MeetingRevisions.Descriptor.archiveIdentity(started: started, recordingId: id), "utteranceCount": 2,
-            "documents": ["fixture": true], "localTranscriptSHA256": AudioRetention.digest(transcript)])
+            "documents": ["fixture": true], "localTranscriptSHA256": AudioRetention.digest(transcript),
+            "localEnvelopeSHA256": GatewayArchive.sourceFingerprint(directory, meta: meta, transcriptData: transcript)])
             .write(to: directory.appendingPathComponent("archive-receipt.json"))
     }
     func testSpeakerRevisionPreservesOriginalAndOnlyChangesSelectedTurnsWithoutCopyingAudio() throws {

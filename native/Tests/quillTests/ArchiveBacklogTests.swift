@@ -74,7 +74,9 @@ final class ArchiveBacklogTests: XCTestCase, @unchecked Sendable {
         let data = try Data(contentsOf: dir.appendingPathComponent("transcript.json"))
         let id = "teams-" + AudioRetention.digest(Data(("2026-10-07T09:00:00Z\n" + dir.lastPathComponent).utf8)).prefix(24)
         let receipt: [String: Any] = ["saved": true, "sessionId": id, "utteranceCount": 1,
-            "localTranscriptSHA256": AudioRetention.digest(data), "documents": ["title": "fixture"]]
+            "localTranscriptSHA256": AudioRetention.digest(data),
+            "localEnvelopeSHA256": try GatewayArchive.sourceFingerprint(dir, meta: ArchiveBacklog.object(dir.appendingPathComponent("meta.json")), transcriptData: data),
+            "documents": ["title": "fixture", "startedAt": "2026-10-07T09:00:00Z", "notesMarkdown": "Saved notes", "transcriptMarkdown": "Saved speech", "metadata": ["sessionId": id]]]
         var state = try MeetingPipelineState.load(dir)
         state.delivery = .init(count: 5, nextAttemptAt: 7000,
             lastError: DeliveryFailure(code: "ai_retry_limit", detail: "Synthetic capped attempt", retryable: false, completionAttempted: true),

@@ -43,9 +43,14 @@ struct RecentMeeting: Identifiable, Sendable {
         let started = (meta?["started"] as? String).flatMap { ISO8601DateFormatter().date(from: $0) }
         var state = try? MeetingPipelineState.load(item.directory, inspected: item)
         if !active { state?.reconcile(item, now: Date().timeIntervalSince1970) }
-        let issue = state?.transcription.lastError ?? item.retry?.lastError
+        let issue: DeliveryFailure?
+        switch item.verifiedText {
+        case .archive, .exported: issue = nil
+        case .transcript: issue = item.retry?.lastError
+        case nil: issue = state?.transcription.lastError ?? item.retry?.lastError
+        }
         var notes: URL?
-        if item.state == .saved || (item.state == .needsReview && item.reason.hasPrefix("Notes and transcript saved")) {
+        if item.verifiedText == .exported {
             if let data = try? ArchiveBacklog.read(item.directory.appendingPathComponent("notes-export-path.txt")),
                let path = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) {
                 notes = URL(fileURLWithPath: path).appendingPathComponent("notes.md")

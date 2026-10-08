@@ -26,12 +26,12 @@ actor MeetingDeliveryStage {
             try ArchiveBacklog.reserve(item, now: now)
             reserved = true
             try await saveArchive(dir)
-            MeetingLog.append(dir, "Gateway Meetings archive saved and read back")
             let saved = ArchiveBacklog.inspect(dir)
-            if saved.state == .saved || (saved.state == .needsReview && saved.reason.hasPrefix("Notes and transcript saved")) {
-                let meeting = RecentMeeting.make(saved)
-                onSaved(meeting)
+            guard saved.verifiedText == .exported else {
+                throw DeliveryFailure(code: "local_save_unverified", detail: "The save finished without a verified receipt and local export. Local files are preserved. Review this meeting before retrying.", retryable: false, completionAttempted: false)
             }
+            MeetingLog.append(dir, "Gateway Meetings archive and local export verified")
+            onSaved(RecentMeeting.make(saved))
             var state = try MeetingPipelineState.load(dir)
             state.reconcile(saved, now: now); try state.write(dir)
             MeetingRetention.apply(dir)

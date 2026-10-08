@@ -5,11 +5,11 @@ import AVFoundation
 @testable import quill
 
 final class AudioRetentionTests: XCTestCase {
-    private func fixture() throws -> URL {
+    private func fixture(ended: String = "2026-10-02T10:01:00Z") throws -> URL {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let meta: [String: Any] = ["status": "stopped", "audio_started_at": 1790935200.0,
-                                  "ended": "2026-10-02T10:01:00Z", "start_offset_ms": ["mic": 0, "system": 0]]
+        let meta: [String: Any] = ["status": "stopped", "started": "2026-10-02T10:00:00Z", "audio_started_at": 1790935200.0,
+                                  "ended": ended, "start_offset_ms": ["mic": 0, "system": 0]]
         try put(meta, "meta.json", dir)
         let transcript: [String: Any] = ["engine": "parakeet", "model": "fixture", "created_at": "2026-10-02T10:01:01Z",
                                         "segments": [["speaker": "me", "start_ms": 0, "end_ms": 1000, "text": "Fixture words"],
@@ -20,11 +20,12 @@ final class AudioRetentionTests: XCTestCase {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         try Data("Saved notes".utf8).write(to: folder.appendingPathComponent("notes.md"))
         try Data("Saved transcript".utf8).write(to: folder.appendingPathComponent("transcript.md"))
-        let id = "teams-" + String(repeating: "a", count: 24)
+        let id = "teams-" + AudioRetention.digest(Data(("2026-10-02T10:00:00Z\n" + dir.lastPathComponent).utf8)).prefix(24)
         try put(["sessionId": id], "metadata.json", folder)
         try Data(folder.path.utf8).write(to: dir.appendingPathComponent("notes-export-path.txt"))
         let receipt: [String: Any] = ["saved": true, "sessionId": id, "utteranceCount": 2,
                                      "localTranscriptSHA256": AudioRetention.digest(try Data(contentsOf: dir.appendingPathComponent("transcript.json"))),
+                                     "localEnvelopeSHA256": try GatewayArchive.sourceFingerprint(dir, meta: meta, transcriptData: Data(contentsOf: dir.appendingPathComponent("transcript.json"))),
                                      "documents": ["notesMarkdown": "Saved notes", "transcriptMarkdown": "Saved transcript", "metadata": ["sessionId": id]]]
         try put(receipt, "archive-receipt.json", dir)
         for name in ["mic.caf", "system.caf"] { try Data([1, 2, 3]).write(to: dir.appendingPathComponent(name)) }
@@ -53,9 +54,24 @@ final class AudioRetentionTests: XCTestCase {
         XCTAssertEqual(try AudioRetention.deleteAfterVerification(dir, measure: { _ in XCTFail("Already removed"); return 0 }), 0)
     }
     func testFractionalISOEndClockPassesTheSameVerification() throws {
-        let dir = try fixture(); defer { try? FileManager.default.removeItem(at: dir) }
-        try change(dir, file: "meta.json", key: "ended", value: "2026-10-02T10:01:00.000Z")
+        let dir = try fixture(ended: "2026-10-02T10:01:00.000Z"); defer { try? FileManager.default.removeItem(at: dir) }
         XCTAssertEqual(try AudioRetention.deleteAfterVerification(dir, measure: { _ in 60 }), 2)
+    }
+    func testMissingSourceProofAndChangedMeetingDetailsKeepAudio() throws {
+        for legacy in [false, true] {
+            let dir = try fixture(); defer { try? FileManager.default.removeItem(at: dir) }
+            if legacy {
+                var receipt = try ArchiveBacklog.object(dir.appendingPathComponent("archive-receipt.json"))
+                receipt.removeValue(forKey: "localEnvelopeSHA256")
+                try put(receipt, "archive-receipt.json", dir)
+            } else {
+                try change(dir, file: "meta.json", key: "meeting_context", value: ["title": "Changed after saving"])
+            }
+            XCTAssertThrowsError(try AudioRetention.deleteAfterVerification(dir, measure: { _ in 60 })) {
+                XCTAssertTrue(String(describing: $0).contains("Matching Gateway readback missing"))
+            }
+            assertKept(dir)
+        }
     }
     func testActiveRecordingIsNeverDeleted() throws {
         let dir = try fixture(); defer { try? FileManager.default.removeItem(at: dir) }

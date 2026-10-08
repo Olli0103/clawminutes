@@ -158,8 +158,7 @@ enum AudioRetention {
             throw TranscriptionFailure("No Teams speech was transcribed. This may be a silent call or missing remote audio; review before deleting audio.")
         }
         let receipt = try checkedObject(dir.appendingPathComponent("archive-receipt.json"))
-        guard receipt["saved"] as? Bool == true, receipt["utteranceCount"] as? Int == transcript.segments.count,
-              receipt["localTranscriptSHA256"] as? String == digest(transcriptData),
+        guard ArchiveBacklog.receiptMatches(receipt, transcriptData: transcriptData, meta: meta, directory: dir),
               let id = receipt["sessionId"] as? String,
               let docs = receipt["documents"] as? [String: Any],
               let notes = docs["notesMarkdown"] as? String, !notes.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,

@@ -2,6 +2,10 @@ import Foundation
 
 /// Files remain the delivery queue. Receipts must describe this exact transcript.
 enum ArchiveBacklog {
+    enum VerifiedText: String, Codable, Sendable {
+        case transcript, archive, exported
+        var includesDelivery: Bool { self == .archive || self == .exported }
+    }
     enum State: String, Codable, Sendable {
         case recording, transcriptionPending, archivePending, exportPending, saved, needsReview, fixture
     }
@@ -10,6 +14,7 @@ enum ArchiveBacklog {
         let state: State
         let reason: String
         var retry: Retry?
+        var verifiedText: VerifiedText? = nil
         var pending: Bool { state == .archivePending || state == .exportPending }
     }
     struct Retry: Codable, Equatable, Sendable {
@@ -51,11 +56,16 @@ enum ArchiveBacklog {
             && receipt["utteranceCount"] as? Int == segments.count
     }
     static func receiptMatches(_ receipt: [String: Any], transcriptData: Data, meta: [String: Any], directory: URL) -> Bool {
-        receiptIdentityMatches(receipt, transcriptData: transcriptData, meta: meta, directory: directory)
+        guard let sourceHash = receipt["localEnvelopeSHA256"] as? String else { return false }
+        return receiptIdentityMatches(receipt, transcriptData: transcriptData, meta: meta, directory: directory)
             && receipt["localTranscriptSHA256"] as? String == AudioRetention.digest(transcriptData)
+            && sourceHash == (try? GatewayArchive.sourceFingerprint(directory, meta: meta, transcriptData: transcriptData))
     }
     static func inspect(_ dir: URL, notesRoot: URL = MeetingNotesSettings.folder) -> Item {
-        func item(_ state: State, _ reason: String) -> Item { Item(directory: dir, state: state, reason: reason) }
+        var verifiedText: VerifiedText?
+        func item(_ state: State, _ reason: String, retry: Retry? = nil) -> Item {
+            Item(directory: dir, state: state, reason: reason, retry: retry, verifiedText: verifiedText)
+        }
         do {
             let values = try dir.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
             guard values.isDirectory == true, values.isSymbolicLink != true else { return item(.needsReview, "Linked or invalid recording folder") }
@@ -79,6 +89,7 @@ enum ArchiveBacklog {
             let data = try read(transcriptURL)
             guard let transcript = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                   transcript["segments"] is [[String: Any]] else { return item(.needsReview, "Transcript is invalid") }
+            verifiedText = .transcript
             let state = try MeetingPipelineState.load(dir)
             let retry = state.deliveryRetry
             if let retry, retry.transcriptSHA256 != AudioRetention.digest(data) {
@@ -87,25 +98,33 @@ enum ArchiveBacklog {
             func pendingDelivery(_ reason: String) throws -> Item {
                 let recovery = try NotesRecovery.active(dir, retry: retry, transcriptData: data)
                 if retry?.lastError?.retryable == false || ((retry?.completionAttempts ?? 0) >= 3 && recovery?.kind != .transcriptOnly) {
-                    return Item(directory: dir, state: .needsReview, reason: retry?.lastError?.detail ?? "AI notes stopped after three attempts", retry: retry)
+                    return item(.needsReview, retry?.lastError?.detail ?? "AI notes stopped after three attempts", retry: retry)
                 }
-                return Item(directory: dir, state: .archivePending, reason: reason, retry: retry)
+                return item(.archivePending, reason, retry: retry)
             }
             let savedReceipt = try? object(dir.appendingPathComponent("archive-receipt.json"))
-            if let receipt = savedReceipt, receipt["localTranscriptSHA256"] == nil,
+            if let receipt = savedReceipt, receipt["saved"] as? Bool == true,
+               !LegacyReceiptReconciliation.declaredFingerprintsMatch(receipt, directory: dir, meta: meta, transcriptData: data) {
+                return item(.needsReview, "This meeting differs from its saved receipt. Review it and create a new revision before sending changes.")
+            }
+            if let receipt = savedReceipt, LegacyReceiptReconciliation.needsVerification(receipt),
                receiptIdentityMatches(receipt, transcriptData: data, meta: meta, directory: dir) {
                 return item(.needsReview, LegacyReceiptReconciliation.reason)
             }
             guard let receipt = savedReceipt,
                   receiptMatches(receipt, transcriptData: data, meta: meta, directory: dir) else {
+                if savedReceipt?["saved"] as? Bool == true {
+                    return item(.needsReview, "This meeting differs from its saved receipt. Review it and create a new revision before sending changes.")
+                }
                 return try pendingDelivery("No verified receipt for this transcript")
             }
-            guard receipt["documents"] is [String: Any] else {
-                return try pendingDelivery("Gateway receipt has no meeting documents")
+            guard (try? MeetingDocuments.validateDocuments(receipt)) != nil else {
+                return item(.needsReview, "Saved receipt has incomplete meeting documents. Review the Gateway archive before retrying.")
             }
+            verifiedText = .archive
             guard let text = try? String(data: read(dir.appendingPathComponent("notes-export-path.txt")), encoding: .utf8),
                   text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") else {
-                return Item(directory: dir, state: .exportPending, reason: "Meeting documents not exported", retry: retry)
+                return item(.exportPending, "Meeting documents not exported", retry: retry)
             }
             let destination = URL(fileURLWithPath: text.trimmingCharacters(in: .whitespacesAndNewlines))
             let notesRoot = try MeetingDocuments.exportRoot(recording: dir, fallbackRoot: notesRoot)
@@ -116,8 +135,9 @@ enum ArchiveBacklog {
                   (try? read(destination.appendingPathComponent("transcript.md"))) != nil,
                   let metadata = try? object(destination.appendingPathComponent("metadata.json")),
                   metadata["sessionId"] as? String == receipt["sessionId"] as? String else {
-                return Item(directory: dir, state: .exportPending, reason: "Export files missing or do not match the saved meeting", retry: retry)
+                return item(.exportPending, "Export files missing or do not match the saved meeting", retry: retry)
             }
+            verifiedText = .exported
             if let gaps = transcript["capture_gaps"] as? [Any], !gaps.isEmpty {
                 return item(.needsReview, "Notes and transcript saved with capture gaps. Review missing speech; audio is retained.")
             }

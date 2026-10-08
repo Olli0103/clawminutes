@@ -151,6 +151,24 @@ enum GatewayArchive {
         return meta
     }
 
+    static func deliveryEnvelope(_ directory: URL, meta: [String: Any], transcriptData: Data) throws -> Data {
+        var metadata = deliveryMetadata(meta, directory: directory)
+        let state = try MeetingPipelineState.load(directory)
+        if let recovery = try NotesRecovery.active(directory, retry: state.deliveryRetry, transcriptData: transcriptData) {
+            metadata["notes_recovery"] = recovery.json
+        }
+        let transcript = try JSONSerialization.jsonObject(with: transcriptData) as? [String: Any] ?? [:]
+        return try envelope(meta: metadata, transcript: transcript,
+            recordingID: meta["recording_id"] as? String ?? directory.lastPathComponent)
+    }
+    /// Object key ordering is not a source change. Array order remains significant.
+    static func envelopeFingerprint(_ body: Data) throws -> String {
+        AudioRetention.digest(try JSONSerialization.data(withJSONObject: JSONSerialization.jsonObject(with: body), options: [.sortedKeys]))
+    }
+    static func sourceFingerprint(_ directory: URL, meta: [String: Any], transcriptData: Data) throws -> String {
+        try envelopeFingerprint(deliveryEnvelope(directory, meta: meta, transcriptData: transcriptData))
+    }
+
     static func save(_ dir: URL,
                      transport: @Sendable (Data) async throws -> Data = { try await request(body: $0) },
                      capabilityTransport: @Sendable () async throws -> Data = { try await request() },
@@ -164,7 +182,7 @@ enum GatewayArchive {
         defer { withExtendedLifetime(archiveLease) {} }
         guard ArchiveBacklog.isFinished(dir) else { throw TranscriptionFailure("Active or incomplete recording left untouched.") }
         let exportRoot = try MeetingDocuments.exportRoot(recording: dir, fallbackRoot: exportRootOverride ?? MeetingNotesSettings.folder)
-        var meta = try ArchiveBacklog.object(dir.appendingPathComponent("meta.json"))
+        let meta = try ArchiveBacklog.object(dir.appendingPathComponent("meta.json"))
         let transcriptData = try ArchiveBacklog.read(dir.appendingPathComponent("transcript.json"))
         let transcript = try JSONSerialization.jsonObject(with: transcriptData) as? [String: Any] ?? [:]
         if let data = try? ArchiveBacklog.read(dir.appendingPathComponent("archive-receipt.json")),
@@ -175,33 +193,53 @@ enum GatewayArchive {
             try MeetingDocuments.rememberExport(destination, root: exportRoot, recording: dir, sessionID: receipt["sessionId"] as! String)
             return
         }
+        if let receipt = try? ArchiveBacklog.object(dir.appendingPathComponent("archive-receipt.json")), receipt["saved"] as? Bool == true,
+           !LegacyReceiptReconciliation.declaredFingerprintsMatch(receipt, directory: dir, meta: meta, transcriptData: transcriptData) {
+            throw TranscriptionFailure("This meeting differs from its saved receipt. Review it and create a new revision before sending changes.")
+        }
         if let receipt = try? ArchiveBacklog.object(dir.appendingPathComponent("archive-receipt.json")),
-           receipt["localTranscriptSHA256"] == nil,
+           LegacyReceiptReconciliation.needsVerification(receipt),
            ArchiveBacklog.receiptIdentityMatches(receipt, transcriptData: transcriptData, meta: meta, directory: dir) {
             throw TranscriptionFailure(LegacyReceiptReconciliation.reason)
         }
-        meta = deliveryMetadata(meta, directory: dir)
+        if let receipt = try? ArchiveBacklog.object(dir.appendingPathComponent("archive-receipt.json")), receipt["saved"] as? Bool == true {
+            throw TranscriptionFailure("This meeting differs from its saved receipt. Review it and create a new revision before sending changes.")
+        }
         let retry = try MeetingPipelineState.load(dir).deliveryRetry
         guard retry == nil || retry?.transcriptSHA256 == AudioRetention.digest(transcriptData) else { throw MeetingPipelineState.invalidState }
-        if let recovery = try NotesRecovery.active(dir, retry: retry, transcriptData: transcriptData) { meta["notes_recovery"] = recovery.json }
+        let body = try deliveryEnvelope(dir, meta: meta, transcriptData: transcriptData)
+        let sourceHash = try envelopeFingerprint(body)
         // Verify before transmitting speech. Receipted local-export recovery
         // above remains usable offline and does not need this request.
         _ = try GatewayCapabilities.verify(await capabilityTransport())
-        let data = try await transport(envelope(meta: meta, transcript: transcript, recordingID: meta["recording_id"] as? String ?? dir.lastPathComponent))
+        let data = try await transport(body)
         guard var receipt = try JSONSerialization.jsonObject(with: data) as? [String: Any], receipt["saved"] as? Bool == true,
               let sessionID = receipt["sessionId"] as? String, sessionID.hasPrefix("teams-"),
               receipt["utteranceCount"] as? Int == (transcript["segments"] as? [Any])?.count else {
             throw TranscriptionFailure("Gateway archive readback receipt missing. Recording preserved.")
         }
         // Keep the receipt before exporting. A failed local export can be retried without losing the archive result.
-        guard try Data(contentsOf: dir.appendingPathComponent("transcript.json")) == transcriptData else {
-            throw TranscriptionFailure("Transcript changed during Gateway save. Audio kept.")
+        _ = try MeetingDocuments.validateDocuments(receipt)
+        guard ArchiveBacklog.receiptIdentityMatches(receipt, transcriptData: transcriptData, meta: meta, directory: dir) else {
+            throw TranscriptionFailure("Gateway returned a different meeting identity. Local files are preserved.")
+        }
+        guard (try? ArchiveBacklog.read(dir.appendingPathComponent("transcript.json"))) == transcriptData,
+              (try? sourceFingerprint(dir, meta: ArchiveBacklog.object(dir.appendingPathComponent("meta.json")), transcriptData: transcriptData)) == sourceHash else {
+            let evidence = dir.appendingPathComponent("delivery-conflict." + sourceHash + ".json")
+            if !FileManager.default.fileExists(atPath: evidence.path) {
+                let conflict: [String: Any] = ["request": try JSONSerialization.jsonObject(with: body), "receipt": receipt, "sourceSHA256": sourceHash]
+                try JSONSerialization.data(withJSONObject: conflict, options: [.sortedKeys]).write(to: evidence, options: .atomic)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: evidence.path)
+            }
+            throw DeliveryFailure(code: "saved_source_changed", detail: "Transcript or meeting details changed during delivery. The original request and Gateway response are kept for review. They do not verify the current version.", retryable: false, completionAttempted: false)
         }
         receipt["localTranscriptSHA256"] = AudioRetention.digest(transcriptData)
+        receipt["localEnvelopeSHA256"] = sourceHash
         guard ArchiveBacklog.receiptMatches(receipt, transcriptData: transcriptData, meta: meta, directory: dir) else {
             throw TranscriptionFailure("Gateway receipt does not match this recording. Audio kept.")
         }
         try JSONSerialization.data(withJSONObject: receipt).write(to: dir.appendingPathComponent("archive-receipt.json"), options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: dir.appendingPathComponent("archive-receipt.json").path)
         if receipt["documents"] != nil {
             let destination = try MeetingDocuments.export(receipt: receipt, root: exportRoot, recording: dir)
             try MeetingDocuments.rememberExport(destination, root: exportRoot, recording: dir, sessionID: receipt["sessionId"] as! String)

@@ -250,7 +250,7 @@ actor TranscriptionCoordinator {
                 state = current
                 publish(.transcribing(session: dir.lastPathComponent, queued: queue.count))
                 try await transcribe(dir)
-                state?.stage = .transcribed; state?.transcription.lastError = nil; state?.updatedAt = clock()
+                state?.stage = .transcribed; state?.transcription.lastError = nil; state?.transcription.lastErrorAt = nil; state?.updatedAt = clock()
                 try state?.write(dir)
                 let cleanupOptions = PostProcessingOptions(json: ["mode": "off"])
                 if cleanupOptions.mode != .off { publish(.postprocessing(session: dir.lastPathComponent, queued: queue.count)) }

@@ -1,0 +1,128 @@
+import Foundation
+import XCTest
+@testable import quill
+
+final class DeliveryEvidenceTests: XCTestCase {
+    struct Fixture {
+        let directory: URL, notes: URL, lease: URL
+        let receipt: [String: Any]
+    }
+    private func fixture(saved: Bool = true, gaps: Bool = false) throws -> Fixture {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        addTeardownBlock { try? FileManager.default.removeItem(at: root) }
+        let directory = root.appendingPathComponent("meeting"), notes = root.appendingPathComponent("notes")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let meta: [String: Any] = ["status": "stopped", "recording_id": "meeting", "started": "2026-10-08T10:00:00Z",
+            "ended": "2026-10-08T10:01:00Z", "audio_started_at": 1791453600, "notes_mode": "transcript",
+            "meeting_context": ["title": "Original title"]]
+        try JSONSerialization.data(withJSONObject: meta).write(to: directory.appendingPathComponent("meta.json"))
+        var transcript: [String: Any] = ["engine": "parakeet", "model": "parakeet-tdt-0.6b-v3-coreml", "created_at": "2026-10-08T10:02:00Z",
+            "execution_machine": "fixture", "execution_location": "recording_mac",
+            "segments": [["speaker": "unknown", "source": "system", "start_ms": 0, "end_ms": 1000, "text": "Synthetic speech"]]]
+        if gaps { transcript["capture_gaps"] = [["source": "system", "start_ms": 1000, "end_ms": 2000, "reason": "track_unavailable"]] }
+        let data = try JSONSerialization.data(withJSONObject: transcript)
+        try data.write(to: directory.appendingPathComponent("transcript.json"))
+        let id = "teams-" + AudioRetention.digest(Data("2026-10-08T10:00:00Z\nmeeting".utf8)).prefix(24)
+        let body = try GatewayArchive.envelope(meta: meta, transcript: transcript, recordingID: "meeting")
+        let canonical = try JSONSerialization.data(withJSONObject: JSONSerialization.jsonObject(with: body), options: [.sortedKeys])
+        let receipt: [String: Any] = ["saved": true, "sessionId": id, "utteranceCount": 1,
+            "localTranscriptSHA256": AudioRetention.digest(data), "localEnvelopeSHA256": AudioRetention.digest(canonical),
+            "documents": ["title": "Original title", "startedAt": "2026-10-08T10:00:00Z", "notesMarkdown": "Saved notes",
+                "transcriptMarkdown": "Saved speech", "metadata": ["sessionId": id]]]
+        if saved {
+            try JSONSerialization.data(withJSONObject: receipt).write(to: directory.appendingPathComponent("archive-receipt.json"))
+            let export = try MeetingDocuments.export(receipt: receipt, root: notes, recording: directory)
+            try MeetingDocuments.rememberExport(export, root: notes, recording: directory, sessionID: String(id))
+        }
+        return Fixture(directory: directory, notes: notes, lease: root.appendingPathComponent("lease"), receipt: receipt)
+    }
+    func testChangedMetadataCannotHideBehindAnUnchangedTranscript() throws {
+        for key in ["meeting_context", "participants", "note_template"] {
+            let f = try fixture()
+            XCTAssertEqual(ArchiveBacklog.inspect(f.directory, notesRoot: f.notes).state, .saved)
+            var meta = try ArchiveBacklog.object(f.directory.appendingPathComponent("meta.json"))
+            if key == "meeting_context" { meta[key] = ["title": "Changed title"] }
+            if key == "participants" { meta[key] = ["joined": [["name": "Fixture Alice", "sources": ["meeting_roster"]]], "coverage": "partial", "invited": [], "invitees_status": "unavailable"] }
+            if key == "note_template" { meta[key] = ["id": "changed", "name": "Changed", "context": "Different instructions", "sections": [["title": "Summary", "instructions": "Summarize"]]] }
+            try JSONSerialization.data(withJSONObject: meta).write(to: f.directory.appendingPathComponent("meta.json"))
+            XCTAssertEqual(ArchiveBacklog.inspect(f.directory, notesRoot: f.notes).state, .needsReview, key)
+        }
+    }
+    func testMetadataChangeDuringSaveCannotBindTheOldResponse() async throws {
+        let f = try fixture(saved: false)
+        let reply = try JSONSerialization.data(withJSONObject: f.receipt)
+        let directory = f.directory
+        do {
+            try await GatewayArchive.save(f.directory, transport: { _ in
+                var meta = try ArchiveBacklog.object(directory.appendingPathComponent("meta.json"))
+                meta["meeting_context"] = ["title": "Changed during delivery"]
+                try JSONSerialization.data(withJSONObject: meta).write(to: directory.appendingPathComponent("meta.json"))
+                return reply
+            }, capabilityTransport: { try LegacyReceiptReconciliationTests.capabilities() }, exportRootOverride: f.notes, activityLockPath: f.lease)
+            XCTFail("An old response cannot prove delivery of changed metadata")
+        } catch {}
+        XCTAssertFalse(FileManager.default.fileExists(atPath: f.directory.appendingPathComponent("archive-receipt.json").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: f.notes.path))
+        let conflict = try XCTUnwrap(FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+            .first { $0.lastPathComponent.hasPrefix("delivery-conflict.") })
+        let preserved = try ArchiveBacklog.object(conflict)
+        let originalRequest = try XCTUnwrap(preserved["request"] as? [String: Any])
+        let originalMeta = try XCTUnwrap(originalRequest["meta"] as? [String: Any])
+        XCTAssertEqual((originalMeta["meeting_context"] as? [String: Any])?["title"] as? String, "Original title")
+        XCTAssertEqual((preserved["receipt"] as? [String: Any])?["sessionId"] as? String, f.receipt["sessionId"] as? String)
+    }
+    func testSavedGapWarningTakesPriorityOverStaleModelAndAIErrors() throws {
+        let f = try fixture(gaps: true)
+        var state = try MeetingPipelineState.load(f.directory)
+        state.transcription.lastError = SpeechRecognitionIssue.localModelMissing.failure
+        state.transcription.lastErrorAt = 100
+        state.delivery = .init(count: 2, nextAttemptAt: 7000,
+            lastError: DeliveryFailure(code: "ai_invalid_output", detail: "Earlier AI failure", retryable: false, completionAttempted: true),
+            transcriptSHA256: f.receipt["localTranscriptSHA256"] as? String, completionAttempts: 2)
+        try state.write(f.directory)
+        let item = ArchiveBacklog.inspect(f.directory, notesRoot: f.notes)
+        let meeting = RecentMeeting.make(item)
+        XCTAssertEqual(meeting.stage, .needsAttention)
+        XCTAssertNil(meeting.issue)
+        XCTAssertTrue(meeting.detail.contains("capture gaps"))
+        state = try MeetingPipelineState.load(f.directory)
+        state.reconcile(item, now: 8000)
+        XCTAssertNil(state.transcription.lastError); XCTAssertNil(state.transcription.lastErrorAt)
+        XCTAssertNil(state.delivery.lastError); XCTAssertEqual(state.delivery.count, 2)
+        XCTAssertEqual(state.delivery.completionAttempts, 2)
+    }
+    func testSourceFingerprintIgnoresObjectOrderAndPrivateCaptureHousekeeping() throws {
+        let f = try fixture()
+        let file = f.directory.appendingPathComponent("meta.json")
+        var meta = try ArchiveBacklog.object(file)
+        meta["checkpoint_at"] = 9999; meta["files"] = ["mic": "PRIVATE AUDIO PATH"]
+        try JSONSerialization.data(withJSONObject: meta, options: [.prettyPrinted, .sortedKeys]).write(to: file)
+        XCTAssertEqual(ArchiveBacklog.inspect(f.directory, notesRoot: f.notes).state, .saved)
+        let body = try GatewayArchive.deliveryEnvelope(f.directory, meta: meta, transcriptData: ArchiveBacklog.read(f.directory.appendingPathComponent("transcript.json")))
+        let reordered = try JSONSerialization.data(withJSONObject: JSONSerialization.jsonObject(with: body), options: [.prettyPrinted, .sortedKeys])
+        XCTAssertEqual(try GatewayArchive.envelopeFingerprint(body), try GatewayArchive.envelopeFingerprint(reordered))
+        XCTAssertFalse(String(decoding: body, as: UTF8.self).contains("PRIVATE AUDIO PATH"))
+    }
+    func testSavedSourceConflictDoesNotAllowNetworkOrAnotherPaidAttempt() async throws {
+        let f = try fixture()
+        var meta = try ArchiveBacklog.object(f.directory.appendingPathComponent("meta.json"))
+        meta["meeting_context"] = ["title": "Changed after saving"]
+        try JSONSerialization.data(withJSONObject: meta).write(to: f.directory.appendingPathComponent("meta.json"))
+        do {
+            try await GatewayArchive.save(f.directory, transport: { _ in XCTFail("A saved conflict must not resend"); return Data() },
+                capabilityTransport: { XCTFail("A saved conflict needs review before network"); return Data() }, exportRootOverride: f.notes, activityLockPath: f.lease)
+            XCTFail("Changed saved metadata must require a revision")
+        } catch {}
+        XCTAssertFalse(RecentMeeting.make(ArchiveBacklog.inspect(f.directory, notesRoot: f.notes)).canVerifyLegacyReceipt)
+    }
+    func testSuccessfulCallbackWithoutSavedArtifactsCannotClaimCompletion() async throws {
+        let f = try fixture(saved: false)
+        let stage = MeetingDeliveryStage(activityLockPath: f.lease, saveArchive: { _ in },
+            onSaved: { _ in XCTFail("A callback returning does not prove saved documents") })
+        if case .failed(let issue) = await stage.deliver(f.directory, now: 100) {
+            XCTAssertEqual(issue.code, "local_save_unverified")
+        } else { XCTFail("Delivery must verify its artifacts before reporting success") }
+        let state = try MeetingPipelineState.load(f.directory)
+        XCTAssertEqual(state.delivery.count, 1); XCTAssertEqual(state.delivery.completionAttempts, 0)
+    }
+}

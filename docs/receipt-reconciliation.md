@@ -1,6 +1,6 @@
 # Verify a legacy saved receipt
 
-Older helpers saved successful Gateway receipts without a local transcript hash. Matching a session ID and utterance count cannot prove that the current speech is the saved speech. These meetings stay in Needs attention and cannot be resent automatically or through the direct save path.
+Older helpers saved successful Gateway receipts without a transcript hash or complete source fingerprint. Matching a session ID, utterance count and speech alone cannot prove which meeting details were sent. These meetings stay in Needs attention and cannot be resent automatically or through the direct save path. Existing declared fingerprints must still match the current source.
 
 Meeting details now offer **Verify saved meeting…** for this specific case. Opening the sheet only reviews local files. **Verify on Gateway** explicitly sends the closed text envelope for comparison. It sends the transcript, timestamps, observed meeting details and notes selection, never audio. If the notes default changed, choose the original notes root above its year/month folders. This does not change the future default or copy history.
 
@@ -16,7 +16,7 @@ The response includes persisted meeting documents and a versioned `canonical_rea
 
 ## Local repair and limits
 
-A verified match preserves the old receipt as `archive-receipt.legacy-<sha256>.json`, binds the returned receipt to the current transcript bytes, recovers the local export and reconciles progress. Existing export edits and audio remain. A replaced recording directory, changed source, unavailable ownership or malformed reply blocks publication.
+A verified match preserves the old receipt as `archive-receipt.legacy-<sha256>.json`, binds the returned receipt to the current transcript bytes and complete normalized text package, recovers the local export and reconciles progress. Existing export edits and audio remain. A replaced recording directory, changed source, unavailable ownership or malformed reply blocks publication. See [delivery evidence](delivery-evidence.md) for the two local fingerprints.
 
 Receipt publication, export and state are separate writes. If export or progress fails after verification, the repaired receipt and its original backup remain. A normal verified-export retry can finish offline without another completion. This is not a transaction across recording and notes folders. Atomic rename does not guarantee hardware durability, and a hostile concurrent replacement of parent paths is outside this filesystem model.
 

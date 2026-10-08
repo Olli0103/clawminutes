@@ -2,7 +2,17 @@ import Foundation
 
 /// An explicit, text-only canonical readback. Unknown AI budgets are preserved.
 enum LegacyReceiptReconciliation {
-    static let reason = "Legacy saved receipt lacks a transcript hash; verify delivery before retry"
+    static let reason = "Saved receipt lacks a complete source fingerprint; verify delivery before retry"
+    static func needsVerification(_ receipt: [String: Any]) -> Bool {
+        receipt["localTranscriptSHA256"] == nil || receipt["localEnvelopeSHA256"] == nil
+    }
+    static func declaredFingerprintsMatch(_ receipt: [String: Any], directory: URL, meta: [String: Any], transcriptData: Data) -> Bool {
+        if let declared = receipt["localTranscriptSHA256"], declared as? String != AudioRetention.digest(transcriptData) { return false }
+        if let declared = receipt["localEnvelopeSHA256"] {
+            guard let hash = declared as? String, hash == (try? GatewayArchive.sourceFingerprint(directory, meta: meta, transcriptData: transcriptData)) else { return false }
+        }
+        return true
+    }
     struct Plan: Sendable {
         let directory: URL, exportRoot: URL
         let directoryIdentity: String
@@ -43,18 +53,16 @@ enum LegacyReceiptReconciliation {
         }
         let transcript = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
         let receipt = try ArchiveBacklog.object(directory.appendingPathComponent("archive-receipt.json"))
-        guard receipt["localTranscriptSHA256"] == nil,
+        guard needsVerification(receipt),
+              receipt["localTranscriptSHA256"] == nil || receipt["localTranscriptSHA256"] as? String == AudioRetention.digest(data),
               ArchiveBacklog.receiptIdentityMatches(receipt, transcriptData: data, meta: meta, directory: directory),
               let id = receipt["sessionId"] as? String else {
             throw TranscriptionFailure("A matching legacy saved receipt was not found. Local files are preserved.")
         }
         let root = try MeetingDocuments.exportRoot(recording: directory, fallbackRoot: notesRoot)
-        var deliveryMeta = GatewayArchive.deliveryMetadata(meta, directory: directory)
-        if let recovery = try NotesRecovery.active(directory, retry: state.deliveryRetry, transcriptData: data) {
-            deliveryMeta["notes_recovery"] = recovery.json
-        }
-        let body = try GatewayArchive.envelope(meta: deliveryMeta,
-            transcript: transcript, recordingID: meta["recording_id"] as? String ?? directory.lastPathComponent)
+        let body = try GatewayArchive.deliveryEnvelope(directory, meta: meta, transcriptData: data)
+        let sourceHash = try GatewayArchive.envelopeFingerprint(body)
+        guard receipt["localEnvelopeSHA256"] == nil || receipt["localEnvelopeSHA256"] as? String == sourceHash else { throw changed }
         guard try snapshot(directory) == initial else { throw changed }
         return Plan(directory: directory, exportRoot: root, directoryIdentity: identity, snapshot: initial, body: body,
             transcriptSHA256: AudioRetention.digest(data), sessionID: id, utterances: (transcript["segments"] as? [Any])?.count ?? 0)
@@ -98,6 +106,7 @@ enum LegacyReceiptReconciliation {
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backup.path)
         }
         receipt["localTranscriptSHA256"] = plan.transcriptSHA256
+        receipt["localEnvelopeSHA256"] = try GatewayArchive.envelopeFingerprint(plan.body)
         let file = plan.directory.appendingPathComponent("archive-receipt.json")
         try JSONSerialization.data(withJSONObject: receipt, options: [.sortedKeys]).write(to: file, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)

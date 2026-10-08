@@ -180,6 +180,13 @@ struct MeetingPipelineState: Codable, Sendable {
         PipelineEvents.record(self)
     }
     mutating func reconcile(_ item: ArchiveBacklog.Item, now: Double) {
+        let oldTranscriptionError = transcription.lastError, oldDeliveryError = delivery.lastError
+        if item.verifiedText != nil {
+            transcription.lastError = nil; transcription.lastErrorAt = nil
+        }
+        if item.verifiedText?.includesDelivery == true {
+            delivery.lastError = nil; delivery.lastErrorAt = nil
+        }
         let previousStage = stage
         switch item.state {
         case .recording: stage = .capturing
@@ -196,7 +203,7 @@ struct MeetingPipelineState: Codable, Sendable {
         case .needsReview, .fixture:
             stage = transcription.lastError?.code == "local_model_missing" ? .waitingForModel : .needsAttention
         }
-        if previousStage != stage { updatedAt = now }
+        if previousStage != stage || oldTranscriptionError != transcription.lastError || oldDeliveryError != delivery.lastError { updatedAt = now }
     }
     func mayTranscribe(at now: Double) -> Bool {
         transcription.count < 3 && transcription.lastError?.retryable != false && transcription.nextAttemptAt <= now

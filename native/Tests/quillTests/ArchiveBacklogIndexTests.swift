@@ -22,7 +22,10 @@ final class ArchiveBacklogIndexTests: XCTestCase {
         try FileManager.default.setAttributes([.modificationDate: mtime], ofItemAtPath: transcript.path)
         _ = try index.scan(root: root, notesRoot: root)
         XCTAssertEqual(checks, 2, "ctime must invalidate an edit with the same length and restored mtime")
+        try Data("changed roster".utf8).write(to: dir.appendingPathComponent("participants.json"))
+        _ = try index.scan(root: root, notesRoot: root)
+        XCTAssertEqual(checks, 3, "Participants contribute to the delivered source fingerprint")
         _ = try index.scan(root: root, notesRoot: root.appendingPathComponent("new-default"))
-        XCTAssertEqual(checks, 3)
+        XCTAssertEqual(checks, 4)
     }
 }

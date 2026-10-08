@@ -47,6 +47,9 @@ final class LegacyReceiptReconciliationTests: XCTestCase {
     func testRepairPreservesUnknownPaidBudgetAndLegacyEvidence() async throws {
         let f = try fixture(ai: true)
         let transcript = try ArchiveBacklog.read(f.recording.appendingPathComponent("transcript.json"))
+        var legacyReceipt = try ArchiveBacklog.object(f.recording.appendingPathComponent("archive-receipt.json"))
+        legacyReceipt["localTranscriptSHA256"] = AudioRetention.digest(transcript)
+        try JSONSerialization.data(withJSONObject: legacyReceipt).write(to: f.recording.appendingPathComponent("archive-receipt.json"))
         let retry = ArchiveBacklog.Retry(attempts: 2, nextAttemptAt: 9999, transcriptSHA256: AudioRetention.digest(transcript))
         let retryBytes = try JSONEncoder().encode(retry)
         try retryBytes.write(to: f.recording.appendingPathComponent("archive-retry.json"))
@@ -55,6 +58,8 @@ final class LegacyReceiptReconciliationTests: XCTestCase {
         let response = try Self.response(plan)
         let result = try await LegacyReceiptReconciliation.apply(plan, transport: { _ in response }, capabilityTransport: { try Self.capabilities() }, activityLockPath: f.lease)
         XCTAssertTrue(result.exported)
+        XCTAssertEqual(try ArchiveBacklog.object(f.recording.appendingPathComponent("archive-receipt.json"))["localEnvelopeSHA256"] as? String,
+            try GatewayArchive.envelopeFingerprint(plan.body))
         XCTAssertEqual(ArchiveBacklog.inspect(f.recording, notesRoot: f.notes).state, .saved)
         let state = try MeetingPipelineState.load(f.recording)
         XCTAssertEqual(state.delivery.count, 2); XCTAssertTrue(state.delivery.budgetUnverified == true)
@@ -99,7 +104,7 @@ final class LegacyReceiptReconciliationTests: XCTestCase {
             try await GatewayArchive.save(f.recording, transport: { _ in XCTFail("No resend allowed"); return Data() },
                 capabilityTransport: { XCTFail("No network preflight allowed"); return Data() }, exportRootOverride: f.notes, activityLockPath: f.lease)
             XCTFail("Legacy receipt requires explicit verification")
-        } catch { XCTAssertTrue(String(describing: error).contains("Legacy saved receipt")) }
+        } catch { XCTAssertTrue(String(describing: error).contains(LegacyReceiptReconciliation.reason)) }
     }
     func testEarlierFingerprintConflictPreservesAllEvidence() throws {
         let f = try fixture(ai: true)
