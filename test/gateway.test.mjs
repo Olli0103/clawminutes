@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {validateEnvelope,gatewayHandler,installedRuntimeDirectory} from '../src/gateway.mjs';
+import {validateEnvelope,gatewayHandler,installedRuntimeDirectory,maximumCaptureGaps} from '../src/gateway.mjs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -20,6 +20,7 @@ test('Gateway readiness checks the isolated store contract without a model call 
  const response={headers:{},setHeader(k,v){this.headers[k]=v},writeHead(code){this.code=code},end(body){this.body=JSON.parse(body)}};
  await gatewayHandler({stateDir,openclawDir:process.env.OPENCLAW_TEAMS_SDK_TEST_DIR||installedRuntimeDirectory(),complete:async()=>{calls++;throw Error('No model allowed');}})({method:'GET'},response);
  assert.equal(response.code,200);assert.equal(response.body.rawAudioAccepted,false);
+ assert.equal(response.body.capabilities.captureGapEvidence,2);assert.equal(response.body.capabilities.maximumCaptureGaps,maximumCaptureGaps);
  assert.equal(response.body.protocolVersion,1);assert.equal(response.body.capabilities.textEnvelope,1);
  assert.equal(response.body.archive.verification,'isolated-readback-v1');
  assert.equal(calls,0);assert.deepEqual(await fs.readdir(stateDir),[]);
@@ -59,4 +60,29 @@ test('a failing diagnostic sink cannot reject a completed error response',async(
  assert.equal(await gatewayHandler({onFailure(){throw Error('diagnostic sink unavailable');}})({method:'PUT'},response),true);
  assert.equal(response.code,405);
  assert.equal(response.body.code,'method_not_allowed');
+});
+
+
+test('Gateway admits every uncertainty reason emitted by native incremental recovery',()=>{
+ for(const reason of ['boundary_context_unverified','capture_timing_uncertain','rotation_pending']){
+  const gap={source:'system',start_ms:1000,end_ms:2000,reason};
+  const payload={...envelope,transcript:{...envelope.transcript,capture_gaps:[gap]}};
+  assert.deepEqual(validateEnvelope(payload).transcript.capture_gaps,[gap]);
+ }
+});
+
+test('long recovered meetings preserve more than 32 uncertainty ranges',()=>{
+ const gaps=Array.from({length:40},(_,i)=>({source:i%2?'mic':'system',start_ms:i*1000,end_ms:i*1000+100,reason:'device_changed'}));
+ assert.deepEqual(validateEnvelope({...envelope,transcript:{...envelope.transcript,capture_gaps:gaps}}).transcript.capture_gaps,gaps);
+});
+
+
+test('expanded capture evidence remains bounded and closed at every range',()=>{
+ const gap={source:'mic',start_ms:1000,end_ms:2000,reason:'boundary_context_unverified'};
+ const withGaps=capture_gaps=>({...envelope,transcript:{...envelope.transcript,capture_gaps}});
+ assert.equal(validateEnvelope(withGaps(Array(maximumCaptureGaps).fill(gap))).transcript.capture_gaps.length,maximumCaptureGaps);
+ assert.throws(()=>validateEnvelope(withGaps(Array(maximumCaptureGaps+1).fill(gap))),/capture gaps/);
+ for(const invalid of [{...gap,audio:'blob'},{...gap,path:'/private/audio'}, {...gap,reason:'invented'}, {...gap,end_ms:NaN}, {...gap,start_ms:-1}, {...gap,end_ms:7*24*3600*1000+1}]){
+  assert.throws(()=>validateEnvelope(withGaps([invalid])),/capture gap/);
+ }
 });

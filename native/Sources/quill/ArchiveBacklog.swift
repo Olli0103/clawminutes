@@ -188,8 +188,14 @@ enum ArchiveBacklog {
         guard cause == "sign_in_required" || (cause == "plugin_update_needed" && capabilities != nil) else { return }
         var state = try MeetingPipelineState.load(item.directory)
         guard state.deliveryRetry == item.retry else { throw MeetingPipelineState.conflictingState }
+        let transcriptData = try read(item.directory.appendingPathComponent("transcript.json"))
+        if cause == "plugin_update_needed", let capabilities {
+            let body = try GatewayArchive.deliveryEnvelope(item.directory,
+                meta: object(item.directory.appendingPathComponent("meta.json")), transcriptData: transcriptData)
+            try capabilities.verifyCaptureEvidence(in: body)
+        }
         let transcriptOnly = try NotesRecovery.active(item.directory, retry: state.deliveryRetry,
-            transcriptData: read(item.directory.appendingPathComponent("transcript.json")))?.kind == .transcriptOnly
+            transcriptData: transcriptData)?.kind == .transcriptOnly
         guard (state.delivery.completionAttempts ?? 0) < 3 || transcriptOnly else { return }
         guard state.delivery.budgetUnverified != true || transcriptOnly else { return }
         state.delivery.lastError = nil; state.delivery.lastErrorAt = nil

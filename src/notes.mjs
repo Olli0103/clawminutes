@@ -70,7 +70,8 @@ export function documents(record){
   const rows=(m.captureGaps||[]).filter(g=>(g.reason==='boundary_context_unverified')===boundary);
   if(!rows.length)return '';
   const title=boundary?'Transcription boundary review':'Capture gaps';
-  const detail=boundary?'Words at file boundaries in these ranges need review. Original recognition and audio are retained. This does not establish interrupted capture.':'Missing speech is not recoverable from this transcript.';
+  const timingReview=rows.some(g=>['capture_timing_uncertain','rotation_pending'].includes(g.reason));
+  const detail=boundary?'Words at file boundaries in these ranges need review. Original recognition and audio are retained. This does not establish interrupted capture.':timingReview?'Audio is incomplete or its timing is uncertain in these intervals. Missing speech cannot be recovered from the transcript.':'Missing speech is not recoverable from this transcript.';
   return `## ${title}\n\n${detail}\n\n`+rows.map(g=>`- ${g.source}: ${g.start_ms} to ${g.end_ms} ms, ${g.reason}`).join('\n')+'\n\n';
  }).join('');
  const sections=record.summary.sections?.map(s=>`## ${safeHeading(s.title)}\n\n${s.body}\n`).join('\n')||(record.summary.highlights?'## Transcript highlights\n\n'+record.summary.highlights.map(s=>`- ${s.text}`).join('\n'):'Transcript only.\n');

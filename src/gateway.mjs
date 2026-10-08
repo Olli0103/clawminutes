@@ -10,6 +10,10 @@ import {DeliveryError,deliveryError,safeErrorDiagnostic} from './delivery-errors
 import {withNotesAttempt,validateNotesRecovery,authorizeTranscriptRecovery} from './notes-attempts.mjs';
 import {archiveIdentity,validateRevision,verifyRevisionParent} from './revisions.mjs';
 import {gatewayCapabilities} from './capabilities.mjs';
+// Native recovery can retain more than 32 ranges across its bounded segment
+// manifest. Keep a separate finite text-evidence limit; never truncate warnings.
+export const maximumCaptureGaps=4096;
+const captureGapReasons=new Set(['capture_failed','buffers_stalled','frame_coverage_shortfall','incomplete_at_stop','helper_interrupted','track_unavailable','device_changed','boundary_context_unverified','capture_timing_uncertain','rotation_pending']);
 export function validateEnvelope(value){
   if(!value || typeof value!=='object' || Array.isArray(value) || Object.keys(value).some(k=>!['meta','transcript','recordingId'].includes(k)))throw Error('Only transcript metadata is accepted. Raw audio is forbidden.');
   if(typeof value.recordingId!=='string'||!/^[-\w.]{1,128}$/.test(value.recordingId))throw Error('Invalid recording identity');
@@ -31,10 +35,10 @@ export function validateEnvelope(value){
     if(!Number.isInteger(segment.start_ms)||!Number.isInteger(segment.end_ms)||segment.start_ms<0||segment.end_ms<segment.start_ms)throw Error('Invalid utterance clock');
   }
   if(t.capture_gaps!==undefined){
-    if(!Array.isArray(t.capture_gaps)||t.capture_gaps.length>32)throw Error('Invalid capture gaps');
+    if(!Array.isArray(t.capture_gaps)||t.capture_gaps.length>maximumCaptureGaps)throw Error('Invalid capture gaps');
     for(const gap of t.capture_gaps){
       if(!gap||typeof gap!=='object'||Array.isArray(gap)||Object.keys(gap).some(k=>!['source','start_ms','end_ms','reason'].includes(k))||
-         !['mic','system'].includes(gap.source)||!['capture_failed','buffers_stalled','frame_coverage_shortfall','incomplete_at_stop','helper_interrupted','track_unavailable','device_changed'].includes(gap.reason)||
+         !['mic','system'].includes(gap.source)||!captureGapReasons.has(gap.reason)||
          !Number.isSafeInteger(gap.start_ms)||!Number.isSafeInteger(gap.end_ms)||gap.start_ms<0||gap.end_ms<gap.start_ms||gap.end_ms>7*24*3600*1000)throw Error('Invalid capture gap evidence');
     }
   }

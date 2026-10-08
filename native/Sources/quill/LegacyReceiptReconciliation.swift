@@ -87,6 +87,7 @@ enum LegacyReceiptReconciliation {
         try validate()
         let capabilities = try GatewayCapabilities.verify(await capabilityTransport())
         guard capabilities.capabilities.receiptVerification == 1 else { throw GatewayCapabilities.unsupported }
+        try capabilities.verifyCaptureEvidence(in: plan.body)
         let data = try await transport(plan.body)
         guard data.count <= 20_000_000, var receipt = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               let proof = receipt["verification"] as? [String: Any], proof["version"] as? Int == 1,

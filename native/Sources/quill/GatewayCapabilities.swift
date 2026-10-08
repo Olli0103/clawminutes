@@ -11,6 +11,8 @@ struct GatewayCapabilities: Decodable, Sendable {
         let revisions: Int
         let notesRecovery: Int
         let receiptVerification: Int?
+        let captureGapEvidence: Int?
+        let maximumCaptureGaps: Int?
     }
     struct Archive: Decodable, Sendable {
         let adapterVersion: Int
@@ -41,6 +43,21 @@ struct GatewayCapabilities: Decodable, Sendable {
             throw unsupported
         }
         return value
+    }
+    /// Older Gateways accept seven reasons and at most 32 ranges. Require the
+    /// expanded contract only when this particular text package needs it.
+    func verifyCaptureEvidence(in body: Data) throws {
+        guard let value = try JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let transcript = value["transcript"] as? [String: Any] else { throw Self.unsupported }
+        guard let raw = transcript["capture_gaps"] else { return }
+        guard let gaps = raw as? [[String: Any]] else { throw Self.unsupported }
+        let expanded = Set(["boundary_context_unverified", "capture_timing_uncertain", "rotation_pending"])
+        let needsExpanded = gaps.count > 32 || gaps.contains { expanded.contains($0["reason"] as? String ?? "") }
+        if needsExpanded {
+            guard capabilities.captureGapEvidence == 2,
+                  let maximum = capabilities.maximumCaptureGaps,
+                  gaps.count <= min(4096, maximum) else { throw Self.unsupported }
+        }
     }
     private static func safeDisplay(_ value: String) -> Bool {
         !value.isEmpty && value.count <= 256 && !value.unicodeScalars.contains { CharacterSet.controlCharacters.contains($0) }

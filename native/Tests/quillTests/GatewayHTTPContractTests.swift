@@ -51,16 +51,29 @@ final class GatewayHTTPContractTests: XCTestCase, @unchecked Sendable {
         let meta: [String: Any] = ["started": "2026-10-08T08:00:00Z", "ended": "2026-10-08T08:01:00Z", "audio_started_at": 1791446400.0,
             "status": "stopped", "fixture": true, "notes_mode": "ai", "files": ["mic": "/forbidden/audio"],
             "note_template": ["id": "fixture", "name": "Fixture", "context": "Synthetic", "sections": [["title": "Summary", "instructions": "Summarize"]]]]
+        let uncertaintyReasons = ["boundary_context_unverified", "capture_timing_uncertain", "rotation_pending", "device_changed"]
+        var uncertaintyRanges: [[String: Any]] = []
+        for index in 0..<40 {
+            let source: String = index % 2 == 0 ? "mic" : "system"
+            let start: Int = index * 1000
+            let reason: String = uncertaintyReasons[index % 4]
+            uncertaintyRanges.append(["source": source, "start_ms": start, "end_ms": start + 100, "reason": reason])
+        }
         var transcript: [String: Any] = ["engine": "parakeet", "model": "parakeet-tdt-0.6b-v3-coreml", "created_at": "2026-10-08T08:02:00Z",
             "execution_machine": "fixture-mac", "execution_location": "recording_mac",
             "segments": [["speaker": "system_unknown", "source": "system", "start_ms": 0, "end_ms": 1000, "text": "Synthetic speech."]],
-            "capture_gaps": [["source": "mic", "start_ms": 1000, "end_ms": 1000, "reason": "helper_interrupted"]]]
+            "capture_gaps": uncertaintyRanges]
         let envelope = try GatewayArchive.envelope(meta: meta, transcript: transcript, recordingID: "http-fixture")
         XCTAssertFalse(String(decoding: envelope, as: UTF8.self).contains("/forbidden/audio"))
         let (first, firstStatus) = try await post(envelope)
         XCTAssertEqual(firstStatus, 200)
         let saved = try XCTUnwrap(JSONSerialization.jsonObject(with: first) as? [String: Any])
         XCTAssertEqual(saved["saved"] as? Bool, true)
+        let documents = try XCTUnwrap(saved["documents"] as? [String: Any])
+        let metadata = try XCTUnwrap(documents["metadata"] as? [String: Any])
+        let details = try XCTUnwrap(metadata["metadata"] as? [String: Any])
+        XCTAssertEqual(details["captureGaps"] as? NSArray, transcript["capture_gaps"] as? NSArray)
+        XCTAssertTrue((documents["notesMarkdown"] as? String)?.contains("Transcription boundary review") == true)
         let (repeatData, repeatStatus) = try await post(envelope)
         XCTAssertEqual(repeatStatus, 200)
         let repeated = try XCTUnwrap(JSONSerialization.jsonObject(with: repeatData) as? [String: Any])

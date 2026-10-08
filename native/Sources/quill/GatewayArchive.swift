@@ -226,7 +226,8 @@ enum GatewayArchive {
         let sourceHash = try envelopeFingerprint(body)
         // Verify before transmitting speech. Receipted local-export recovery
         // above remains usable offline and does not need this request.
-        _ = try GatewayCapabilities.verify(await capabilityTransport())
+        let capabilities = try GatewayCapabilities.verify(await capabilityTransport())
+        try capabilities.verifyCaptureEvidence(in: body)
         let data = try await transport(body)
         guard var receipt = try JSONSerialization.jsonObject(with: data) as? [String: Any], receipt["saved"] as? Bool == true,
               let sessionID = receipt["sessionId"] as? String, sessionID.hasPrefix("teams-"),

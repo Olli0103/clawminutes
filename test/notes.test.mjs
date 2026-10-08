@@ -74,3 +74,14 @@ test('notes model receives voice-match uncertainty and cannot treat it as confir
  assert.match(JSON.parse(request.user).transcript[0],/voice match, uncertain/);
  assert.match(documents(record).transcriptMarkdown,/voice match, uncertain/);
 });
+
+
+test('uncertain timing and interrupted handoff exports do not assert missing audio',()=>{
+ for(const reason of ['capture_timing_uncertain','rotation_pending']){
+  const record=meetingRecord(meta,{...transcript,capture_gaps:[{source:'mic',start_ms:1000,end_ms:2000,reason}]},'timing-review');
+  for(const text of [documents(record).notesMarkdown,documents(record).transcriptMarkdown]){
+   assert.match(text,/Audio is incomplete or its timing is uncertain/);
+   assert.doesNotMatch(text,/Missing speech is not recoverable/);
+  }
+ }
+});
