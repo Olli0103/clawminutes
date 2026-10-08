@@ -26,6 +26,7 @@ struct MeetingApp: Sendable {
 
 struct MeetingScan: Sendable {
     var observations: [String: MeetingObservation] = [:]
+    var confirmedEndedConsentCalls: [MeetingConsentIdentity] = []
     var contexts: [String: MeetingContext] = [:]
     var needsPermission = false
     var speakers: [String: [String]] = [:]
@@ -170,6 +171,20 @@ actor MeetingScanner {
             }
             guard let elements = children(root, attribute: kAXWindowsAttribute) else { continue }
             let windows = elements.map { readTree($0) }
+            // Unlike known[], restored consent has no AX object or serial ID.
+            // Only explicit end screens in a complete, non-minimized inventory
+            // can retire it; an active or unreadable replacement blocks this.
+            result.confirmedEndedConsentCalls += MeetingEvidence.confirmedConsentEnds(windows.map { window in
+                let ended = window.nodes.contains { MeetingEvidence.isEndMessage($0.text) }
+                let title = TeamsMeetingTitle.clean(string(window.element, kAXTitleAttribute))
+                let identity = (ended ? app.processStartedAt : nil).map {
+                    MeetingConsentIdentity(processID: app.pid, processStartedAt: $0,
+                        windowID: windowNumber(pid: app.pid, window: window.element), title: title)
+                }
+                return ConsentEndWindow(identity: identity, complete: window.complete,
+                    minimized: bool(window.element, kAXMinimizedAttribute), inCall: hasCallControls(window),
+                    endScreen: ended)
+            })
             for window in windows where hasCallControls(window) && !window.nodes.contains(where: { MeetingEvidence.isEndMessage($0.text) }) {
                 let existing = known.values.first { $0.pid == app.pid && CFEqual($0.window, window.element) }
                 let id = existing?.meeting.id ?? nextID(pid: app.pid)

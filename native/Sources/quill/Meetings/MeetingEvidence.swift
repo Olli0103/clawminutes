@@ -1,5 +1,15 @@
 import Foundation
 
+/// A complete per-process window inventory can confirm an old consent's end.
+/// Missing windows or controls alone cannot do so.
+struct ConsentEndWindow: Sendable {
+    let identity: MeetingConsentIdentity?
+    let complete: Bool
+    let minimized: Bool
+    let inCall: Bool
+    let endScreen: Bool
+}
+
 /// Once a visible meeting has ended, keeping its tab open must not restart
 /// recording when that tab moves into the background.
 struct MeetingEndState {
@@ -21,6 +31,14 @@ struct MeetingEndState {
 }
 
 enum MeetingEvidence {
+    static func confirmedConsentEnds(_ windows: [ConsentEndWindow]) -> [MeetingConsentIdentity] {
+        guard !windows.isEmpty,
+              windows.allSatisfy({ $0.complete && !$0.minimized && !$0.inCall }) else { return [] }
+        return windows.compactMap { window in
+            guard window.endScreen, let identity = window.identity, identity.persistable else { return nil }
+            return identity
+        }
+    }
     static func missingWindow(meeting: DetectedMeeting, replacementCall: Bool, destroyed: Bool,
                               knownWindowID: UInt32?, currentWindowIDs: Set<UInt32>?) -> MeetingObservation {
         if replacementCall { return .present(meeting) }

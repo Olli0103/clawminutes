@@ -1,5 +1,7 @@
 # Verification and known limits
 
+This file preserves historical checks and version-specific limitations. For the current source candidate, requirement status and outstanding acceptance gates, use [review-status.md](review-status.md). Historical runtime observations do not establish current installation or live acceptance.
+
 ClawMinutes is an experimental source release. These observations come from development checks on 1, 2, and 5 October 2026. Private recordings, meeting content, machine identifiers, credentials, and runtime receipts are not part of the public repository.
 
 ## Observed behavior

@@ -1,61 +1,8 @@
-# Opus review implementation
+# Opus review implementation history
 
-The goal covers the complete review and UX proposals. Teams remains the only enabled meeting provider. New meeting providers are excluded from this implementation. Checked items require code and verification evidence; a proposed design alone is not completion.
+The current requirement-by-requirement audit is [review-status.md](review-status.md). It distinguishes implemented source changes, remaining source gaps, live acceptance and deferred proposals. Teams remains the only enabled meeting provider.
 
-## Defects and recovery
-
-- [ ] R1 Recover orphaned captures at launch under exclusive ownership, preserve interruption evidence, and restart after crashes without interrupting live capture.
-- [ ] R2 Structured delivery/model errors, durable capped AI attempts, bounded retries, per-meeting causes and explicit recovery actions.
-- [x] R3 Future-only retention opt-in, explicit historical cleanup, and conservative missing/silent remote capture checks.
-- [ ] R4 Consent survives relaunch only for the evidenced ongoing call, with process incarnation and call identity.
-- [x] R5 Partial-track recovery with gaps, durable transcription retries and retry after model setup; never present partial speech as complete.
-- [x] R6 Completed archive immutability, including longer transcripts and changed metadata; preserve partial-save recovery.
-- [ ] R7 Revisions and speaker corrections end to end, including templates and reprocessing, preserving earlier documents.
-- [ ] R8 Independent call-window closure evidence and actionable stop countdown; unknown visibility must not stop capture.
-- [x] R9 Changing the output folder does not migrate history implicitly. Explicit migration preserves user edits.
-- [ ] R10 Immediate microphone device-change handling, time-based recovery budget and recovery-failure notification.
-- [ ] R11 Diagnostic error causes, current version provenance and redacted provider/stage logging.
-- [x] R12 Malformed configuration survives every settings writer.
-- [x] R13 Indexed delivery checks avoid repeatedly hashing saved history while detecting changed inputs.
-- [x] R14 Recording housekeeping continues through modal UI; consent avoids stealing focus.
-
-## Architecture and contracts
-
-- [ ] One versioned per-meeting pipeline record, migrated alongside existing artifacts. Irreversible deletion still verifies source artifacts and receipts.
-- [x] Separate transcription, delivery and retention implementations behind a small pipeline interface.
-- [x] Explicit capability negotiation and an archive adapter contract, without admitting unverified host semantics merely because method names match.
-- [x] Isolate Teams detection from dormant provider code; do not enable additional providers.
-- [x] Structured event log and a redacted diagnostics command/bundle.
-- [ ] Public distribution signing/notarization workflow and permission continuity verification. External signing credentials remain an explicit delivery gate.
-- [x] Preserve uncertainty for voice-cluster-derived names in transcripts and AI prompts.
-- [x] Cache small polling settings with file-change invalidation; preserve fresh routing, retention and writer reads.
-- [ ] Storage usage/free-space checks, legacy receipt reconciliation and accurate reuse documentation.
-- [x] Full native suite configured in CI, with Swift-to-JavaScript HTTP tests against the real handler and SDK. A live CI run is still required for each pushed commit.
-
-## User experience
-
-- [x] Status-first pop-up: current meeting, primary recording action, health and processing stages, recent meetings, Open notes, Settings, Pause prompts, Quit.
-- [x] Per-meeting attention and success states with one actionable cause; errors do not disappear when a different meeting starts.
-- [x] Settings grouped into General, Recording, Notes, Connection, Privacy and storage, Permissions, Advanced.
-- [ ] Installer-owned Launch at login setting, preserving current work and surviving updates. Source and isolated verification are complete; installed login/logout/approval and crash acceptance remain open.
-- [ ] Guided first-run checklist and safe short capture check.
-- [ ] Notes-ready notification, actionable call-end and microphone warnings, accessible keyboard controls and light/dark presentation.
-- [ ] Speaker correction/revision UI, template import/export and regeneration, local recent-meeting search and quick actions.
-
-## Incremental transcription
-
-- [ ] Durable closed-chunk transcription during recording, final reconciliation, bounded concurrency and recovery checkpoints.
-- [ ] Explicit provisional/final transcript semantics; final speech remains authoritative and is the Gateway input.
-- [ ] Evaluate and document streaming feasibility with the pinned local engine, measure latency/compute/battery and preserve local-only behavior.
-- [ ] Live draft notes, if implemented, use revisioned idempotent identities and cannot overwrite final notes.
-
-## Acceptance and deployment
-
-- [ ] Regression reproduction before each consequential fix; deterministic isolated tests do not contact live providers or mutate user recordings.
-- [ ] Audit all requirements against final code, tests, renders and release package.
-- [ ] Obtain explicit approval for live installation/reload/restart; never interrupt an active recording.
-- [ ] Controlled live crash, outage, sign-in, call-end, device-change and long-meeting acceptance.
-- [ ] Gateway event-loop/memory and outstanding-call ownership investigation remains open until directly evidenced. Any disable/reload A/B needs approval.
+The entries below are historical checkpoints. Their unchecked work, test counts, SDK constraints and limitations describe that checkpoint, not necessarily the current checkout. Do not treat historical fixture or install results as acceptance of the current candidate. Current release gates and verification are recorded in the status document.
 
 ## Evidence so far
 
@@ -399,3 +346,11 @@ New microphone and Teams files now use signed 16-bit PCM CAF at the original rat
 The final full isolated native suite runs 505 tests, with 493 passing and 12 opt-in checks skipped. The 17 writer tests cover actual headers/payloads, every sample for mono/stereo planar/interleaved input, eager/lazy paths and both handoff files, saturation and mixed historical Float32/new PCM16 boundary/duration reads without source changes. Distinct normalized samples exactly representable in both formats retain the existing bit-exact concurrent no-missing/no-duplicated-frame assertion. The earlier 86-test writer/boundary/recovery/closed-recognition/retention group passed. One test temporarily dereferenced a format pointer from a discarded temporary audio object; retaining the owning format corrected that test-reader lifetime issue. No production workaround was added for it.
 
 Both CI workflows for preceding lost-receipt commit 1088d90 passed, including the real SDK matrix and native-core. This compact-storage checkpoint needs its own CI. README copy also names the actual saved-meeting check and rolling per-source recovery window. No installed helper/Gateway, real audio, settings, permissions, credentials or model/provider was changed. Live capture/recognition quality, conversion latency, CPU/energy and long-meeting memory remain unverified. Full requirement reconciliation, signing and approved installed/live acceptance remain open.
+
+### Requirement audit and restored-consent end evidence
+
+[review-status.md](review-status.md) now maps all fourteen original defects, architecture changes, smaller findings, UX journeys, roadmap boundaries and release gates to current source and isolated evidence. The former introductory checkboxes mixed historical source gaps with unexecuted live checks; the current map separates them. Historical entries remain unchanged below their dates. The compact-PCM baseline `9bd1786` passed both CI workflows, including native-core and real SDK 2026.9.7/2026.9.8 contracts.
+
+An isolated regression reproduced a restored consent entry surviving a confirmed matching call end before any new call was observed. The scanner now emits matching end identities only from a complete, non-minimized per-process window inventory without active call controls. Consent retires only unobserved restored entries; active handled calls retain their existing end grace period. The assistant persists removal even when its prompted-ID set is still empty. Incomplete/minimized inventories, ordinary absent controls, different window/title/process identity, an ongoing restored call and an open prompt cannot clear consent. A call ending wholly while the helper is off and later reusing the same identity remains ambiguous; no stable Teams call ID is claimed.
+
+Verification: the red regression failed once with the evidence argument ignored. After implementation, 43 focused consent/evidence/policy/isolation tests pass, and the full isolated native suite runs 509 tests with 497 passing and 12 opt-in skips. Local links in the current requirement map resolve. No installed helper, Gateway, real recording, settings, permissions, credentials or user audio were changed. This source checkpoint still needs exact-commit CI and clean-source packaging.

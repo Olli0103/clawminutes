@@ -153,14 +153,17 @@ final class MeetingAssistant {
             for roster in scan.rosters { self.tracking.observe(roster) }
             let previousMeeting = self.recordingSpeakerMeetingID
             let promptedBefore = self.consent.prompted
-            self.consent.update(scan.observations, now: ProcessInfo.processInfo.systemUptime,
-                                promptInProgress: self.consentPromptInProgress)
+            let removedSavedConsent = self.consent.update(scan.observations, now: ProcessInfo.processInfo.systemUptime,
+                                promptInProgress: self.consentPromptInProgress,
+                                confirmedEndedCalls: scan.confirmedEndedConsentCalls)
             if self.policy.recording {
                 for observation in scan.observations.values {
                     if case .present(let meeting) = observation { _ = self.consent.observe(meeting) }
                 }
             }
-            if self.consent.prompted != promptedBefore { self.persistConsent() }
+            if self.consent.prompted != promptedBefore || removedSavedConsent {
+                self.persistConsent()
+            }
             let action = self.policy.update(scan.observations, now: ProcessInfo.processInfo.systemUptime)
             self.recordingSpeakerMeetingID = self.policy.recording
                 ? self.tracking.recordingMeetingID(preferred: self.policy.recordingMeeting?.id, previous: previousMeeting) : nil

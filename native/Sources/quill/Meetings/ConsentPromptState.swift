@@ -67,8 +67,22 @@ struct ConsentPromptState {
         return !alreadyPrompted
     }
 
+    @discardableResult
     mutating func update(_ observations: [String: MeetingObservation], now: TimeInterval,
-                         promptInProgress: Bool = false) {
+                         promptInProgress: Bool = false,
+                         confirmedEndedCalls: [MeetingConsentIdentity] = []) -> Bool {
+        var removedSavedConsent = false
+        // A restored record has no scanner-local meeting ID yet. Positive end
+        // evidence must retire it before a later call can reuse that window.
+        // Live handled calls retain the existing corroborated 30-second policy.
+        if !promptInProgress {
+            for identity in confirmedEndedCalls where identity.persistable && !activeOwners.contains(identity.owner) {
+                if records[identity.owner]?.windowIDs.contains(identity.windowID ?? 0) == true {
+                    records.removeValue(forKey: identity.owner)
+                    removedSavedConsent = true
+                }
+            }
+        }
         let owners = Set(prompted.map { owner($0) })
         for (id, observation) in observations where owners.contains(owner(id)) {
             // Do not accumulate retired windows between calls. A scanner can
@@ -94,6 +108,7 @@ struct ConsentPromptState {
                 for member in members { self.owners.removeValue(forKey: member) }
             }
         }
+        return removedSavedConsent
     }
 
     private static func owner(_ id: String) -> String {
