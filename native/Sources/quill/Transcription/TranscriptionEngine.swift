@@ -44,3 +44,9 @@ protocol TranscriptionEngine: Sendable {
     func transcribe(_ audio: URL) async throws -> [TranscriptSegment]
     func release() async
 }
+
+/// An explicitly local engine accepting owned 16 kHz mono PCM. Cloud engines
+/// have no default adapter and cannot receive additional boundary context.
+protocol LocalPCMTranscriptionEngine: TranscriptionEngine {
+    func transcribe(samples: [Float]) async throws -> [TranscriptSegment]
+}

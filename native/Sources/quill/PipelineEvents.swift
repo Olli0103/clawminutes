@@ -11,12 +11,16 @@ enum PipelineEvents {
         let transcriptionAttempts: Int
         let deliveryAttempts: Int
         let errorCode: String?
+        let localExportAttempts: Int?
+        let localExportErrorCode: String?
+        let completionAttempts: Int?
+        let paidBudgetUnverified: Bool?
     }
     static let maximumBytes = 1_000_000
     static let knownCodes: Set<String> = [
         "local_model_missing", "speech_credentials_missing", "speech_recognition_failed", "speech_retry_limit",
         "pipeline_state_invalid", "pipeline_state_conflict", "legacy_attempts_unverified", "sign_in_required", "network_unavailable", "plugin_unavailable",
-        "gateway_unavailable", "plugin_update_needed", "local_save_failed", "revision_conflict", "revision_parent_unavailable",
+        "gateway_unavailable", "plugin_update_needed", "local_save_failed", "local_save_unverified", "local_export_failed", "local_export_retry_limit", "revision_conflict", "revision_parent_unavailable",
         "ai_retry_limit", "ai_invalid_output", "ai_completion_failed", "ai_input_too_large", "ai_tool_attempt",
         "notes_model_unavailable", "notes_owner_required", "notes_cache_failed", "notes_state_conflict", "notes_recovery_unavailable", "notes_retry_consumed",
         "archive_integrity", "content_type_required", "invalid_payload", "method_not_allowed",
@@ -28,11 +32,15 @@ enum PipelineEvents {
     @discardableResult static func record(_ state: MeetingPipelineState,
                                           at root: URL = Config.path.deletingLastPathComponent()) -> Bool {
         do {
-            let event = Event(schemaVersion: 1, time: state.updatedAt,
+            let event = Event(schemaVersion: 2, time: state.updatedAt,
                               recordingRef: AudioRetention.digest(Data(state.recordingIdentity.utf8)).prefix(24).description,
                               stage: state.stage, transcriptionAttempts: state.transcription.count,
                               deliveryAttempts: state.delivery.count,
-                              errorCode: safeCode(state.transcription.lastError?.code ?? state.delivery.lastError?.code))
+                              errorCode: safeCode(state.transcription.lastError?.code ?? state.delivery.lastError?.code ?? state.localExport?.lastError?.code),
+                              localExportAttempts: state.localExport?.count,
+                              localExportErrorCode: safeCode(state.localExport?.lastError?.code),
+                              completionAttempts: state.delivery.completionAttempts,
+                              paidBudgetUnverified: state.delivery.budgetUnverified)
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
             let lock = root.appendingPathComponent("events.lock")
             let descriptor = open(lock.path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR)
@@ -69,10 +77,13 @@ enum PipelineEvents {
                   let data = try? Data(contentsOf: file), let text = String(data: data, encoding: .utf8) else { continue }
             result += text.split(separator: "\n").compactMap { line in
                 guard let event = try? JSONDecoder().decode(Event.self, from: Data(line.utf8)),
-                      event.schemaVersion == 1, event.time.isFinite,
+                      [1, 2].contains(event.schemaVersion), event.time.isFinite,
                       event.recordingRef.range(of: #"^[0-9a-f]{24}$"#, options: .regularExpression) != nil,
                       (0...1000).contains(event.transcriptionAttempts), (0...1000).contains(event.deliveryAttempts),
-                      event.errorCode == nil || knownCodes.contains(event.errorCode!) || event.errorCode == "unclassified_error" else { return nil }
+                      event.localExportAttempts.map({ (0...1000).contains($0) }) ?? true,
+                      event.completionAttempts.map({ (0...3).contains($0) }) ?? true,
+                      event.errorCode == safeCode(event.errorCode),
+                      event.localExportErrorCode == safeCode(event.localExportErrorCode) else { return nil }
                 return event
             }
         }

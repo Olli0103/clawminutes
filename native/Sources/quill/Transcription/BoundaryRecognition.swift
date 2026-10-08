@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import FluidAudio
 
 /// Re-decodes a bounded, continuous PCM seam. Timed anchors or complete short
 /// files authorize replacing earlier speech. It never changes a cache.
@@ -9,36 +10,24 @@ enum BoundaryRecognition {
         let left: [TranscriptSegment]
         let right: [TranscriptSegment]
     }
-    struct Clip {
-        let file: URL
+    /// Owned model-ready samples. No audio excerpt is written to disk.
+    struct Clip: Sendable {
+        let samples: [Float]
         let leftStart: Double
         let leftSeconds: Double
         let rightSeconds: Double
         let rightDuration: Double
         let leftDuration: Double
-        private let folder: URL
-        private let identity: AudioRetention.FileIdentity
-
-        fileprivate init(file: URL, leftStart: Double, leftSeconds: Double, rightSeconds: Double,
-                         leftDuration: Double, rightDuration: Double, folder: URL) throws {
-            self.file = file; self.leftStart = leftStart; self.leftSeconds = leftSeconds
-            self.rightSeconds = rightSeconds; self.leftDuration = leftDuration; self.folder = folder
-            self.rightDuration = rightDuration
-            identity = try AudioRetention.FileIdentity.read(file)
-        }
-        func remove() {
-            // Never recursively remove an unexpected or replaced temporary item.
-            guard (try? AudioRetention.FileIdentity.read(file)) == identity,
-                  let files = try? FileManager.default.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil),
-                  files.count == 1, files[0].lastPathComponent == file.lastPathComponent else { return }
-            try? FileManager.default.removeItem(at: file)
-            _ = rmdir(folder.path)
-        }
     }
+    static let sampleRate = 16000.0
+    static let maximumSamples = Int(contextSeconds * 2 * sampleRate)
 
     static func makeClip(left: URL, right: URL) throws -> Clip {
+        try Task.checkCancellation()
         let firstIdentity = try AudioRetention.FileIdentity.read(left), secondIdentity = try AudioRetention.FileIdentity.read(right)
-        let first = try AVAudioFile(forReading: left), second = try AVAudioFile(forReading: right)
+        // Request owned planar floats even for integer/interleaved source CAFs.
+        let first = try AVAudioFile(forReading: left, commonFormat: .pcmFormatFloat32, interleaved: false)
+        let second = try AVAudioFile(forReading: right, commonFormat: .pcmFormatFloat32, interleaved: false)
         let format = first.processingFormat
         guard first.length > 0, second.length > 0, format == second.processingFormat,
               (8000...192000).contains(format.sampleRate), (1...2).contains(format.channelCount) else {
@@ -46,59 +35,44 @@ enum BoundaryRecognition {
         }
         let firstFrames = min(first.length, Int64(contextSeconds * format.sampleRate))
         let secondFrames = min(second.length, Int64(contextSeconds * format.sampleRate))
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("ocmh-boundary-" + UUID().uuidString)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-        let path = folder.appendingPathComponent("context.caf")
-        let descriptor = Darwin.open(path.path, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR)
-        guard descriptor >= 0 else {
-            _ = rmdir(folder.path)
+        // At most 12 seconds, 192 kHz and two Float32 channels: 18,432,000
+        // source bytes. Resampling produces at most 192,000 owned floats.
+        guard let joined = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: UInt32(firstFrames + secondFrames)) else {
             throw MeetingPipelineState.invalidState
         }
-        defer { close(descriptor) }
-        var reserved = stat()
-        guard fstat(descriptor, &reserved) == 0, reserved.st_mode & S_IFMT == S_IFREG else { throw MeetingPipelineState.invalidState }
-        var completed = false
-        defer {
-            if !completed {
-                // Writes change size and timestamps; only the reserved inode
-                // remains eligible for cleanup after a partial preparation.
-                if let current = try? AudioRetention.FileIdentity.read(path),
-                   current.inode == UInt64(reserved.st_ino), current.device == Int64(reserved.st_dev) {
-                    try? FileManager.default.removeItem(at: path)
-                }
-                _ = rmdir(folder.path)
-            }
-        }
-        let output = try AVAudioFile(forWriting: path, settings: format.settings,
-            commonFormat: format.commonFormat, interleaved: format.isInterleaved)
-        defer { output.close() }
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
         first.framePosition = first.length - firstFrames
-        try copy(first, frames: firstFrames, into: output)
+        try copy(first, frames: firstFrames, into: joined, offset: 0)
         second.framePosition = 0
-        try copy(second, frames: secondFrames, into: output)
-        output.close()
-        let written = try AudioRetention.FileIdentity.read(path)
+        try copy(second, frames: secondFrames, into: joined, offset: Int(firstFrames))
+        joined.frameLength = joined.frameCapacity
+        try Task.checkCancellation()
+        let samples = try AudioConverter().resampleBuffer(joined)
+        let duration = Double(firstFrames + secondFrames) / format.sampleRate
+        guard !samples.isEmpty, samples.count <= maximumSamples,
+              abs(Double(samples.count) / sampleRate - duration) <= 0.002,
+              samples.allSatisfy(\.isFinite) else { throw MeetingPipelineState.invalidState }
+        try Task.checkCancellation()
         guard try AudioRetention.FileIdentity.read(left) == firstIdentity,
-              try AudioRetention.FileIdentity.read(right) == secondIdentity,
-              written.inode == UInt64(reserved.st_ino), written.device == Int64(reserved.st_dev) else { throw MeetingPipelineState.conflictingState }
-        let clip = try Clip(file: path, leftStart: Double(first.length - firstFrames) / format.sampleRate,
+              try AudioRetention.FileIdentity.read(right) == secondIdentity else { throw MeetingPipelineState.conflictingState }
+        return Clip(samples: samples, leftStart: Double(first.length - firstFrames) / format.sampleRate,
             leftSeconds: Double(firstFrames) / format.sampleRate, rightSeconds: Double(secondFrames) / format.sampleRate,
-            leftDuration: Double(first.length) / format.sampleRate, rightDuration: Double(second.length) / format.sampleRate, folder: folder)
-        completed = true
-        return clip
+            rightDuration: Double(second.length) / format.sampleRate, leftDuration: Double(first.length) / format.sampleRate)
     }
-    private static func copy(_ input: AVAudioFile, frames: Int64, into output: AVAudioFile) throws {
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: input.processingFormat, frameCapacity: 4096) else {
-            throw MeetingPipelineState.invalidState
-        }
-        var remaining = frames
+    private static func copy(_ input: AVAudioFile, frames: Int64, into output: AVAudioPCMBuffer, offset: Int) throws {
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: input.processingFormat, frameCapacity: 4096),
+              let destination = output.floatChannelData else { throw MeetingPipelineState.invalidState }
+        var remaining = frames, position = offset
         while remaining > 0 {
             try Task.checkCancellation()
             try input.read(into: buffer, frameCount: UInt32(min(remaining, Int64(buffer.frameCapacity))))
-            guard buffer.frameLength > 0 else { throw MeetingPipelineState.invalidState }
-            try output.write(from: buffer)
-            remaining -= Int64(buffer.frameLength)
+            guard buffer.frameLength > 0, let channels = buffer.floatChannelData else { throw MeetingPipelineState.invalidState }
+            let count = Int(buffer.frameLength)
+            for channel in 0..<Int(output.format.channelCount) {
+                let source = UnsafeBufferPointer(start: channels[channel], count: count)
+                guard source.allSatisfy(\.isFinite) else { throw MeetingPipelineState.invalidState }
+                destination[channel].advanced(by: position).update(from: channels[channel], count: count)
+            }
+            remaining -= Int64(count); position += count
         }
     }
 

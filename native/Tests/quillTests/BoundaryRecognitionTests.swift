@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import FluidAudio
 import XCTest
 @testable import quill
 
@@ -50,42 +51,35 @@ final class BoundaryRecognitionTests: XCTestCase, @unchecked Sendable {
         let silence = BoundaryRecognition.reconcile(left: [], right: [], context: [], leftStart: 24, leftDuration: 30, rightSeconds: 6, rightDuration: 30)
         XCTAssertNotNil(silence)
     }
-    private func audio(_ file: URL, seconds: Double, value: Float, channels: UInt32 = 1) throws {
-        let format = AVAudioFormat(standardFormatWithSampleRate: 24000, channels: channels)!
-        let data = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: UInt32(seconds * 24000))!
+    private func audio(_ file: URL, seconds: Double, value: Float, channels: UInt32 = 1, sampleRate: Double = 24000) throws {
+        let format = AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: channels)!
+        let data = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: UInt32(seconds * sampleRate))!
         data.frameLength = data.frameCapacity
         for channel in 0..<Int(channels) { data.floatChannelData![channel].initialize(repeating: value, count: Int(data.frameLength)) }
         let file = try AVAudioFile(forWriting: file, settings: format.settings)
         try file.write(from: data); file.close()
     }
-    func testPCMContextCopiesExactTailAndHeadWithoutChangingSourcesAndCleansUp() throws {
+    func testPCMContextCopiesExactTailAndHeadIntoOwnedMemoryWithoutChangingSources() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let first = root.appendingPathComponent("mic.caf"), second = root.appendingPathComponent("mic-2.caf")
-        try audio(first, seconds: 10, value: 0.1); try audio(second, seconds: 10, value: 0.2)
+        try audio(first, seconds: 10, value: 0.1, sampleRate: 16000)
+        try audio(second, seconds: 10, value: 0.2, sampleRate: 16000)
         let original = try AudioRetention.FileIdentity.read(first)
+        let files = try FileManager.default.contentsOfDirectory(atPath: root.path)
         let clip = try BoundaryRecognition.makeClip(left: first, right: second)
-        defer { clip.remove() }
         XCTAssertEqual(clip.leftStart, 4); XCTAssertEqual(clip.leftDuration, 10); XCTAssertEqual(clip.rightDuration, 10)
-        let file = try AVAudioFile(forReading: clip.file)
-        XCTAssertEqual(file.length, 288000)
-        let data = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 4096)!
-        var index = 0
-        while file.framePosition < file.length {
-            try file.read(into: data)
-            XCTAssertGreaterThan(data.frameLength, 0)
-            guard data.frameLength > 0 else { break }
-            for position in 0..<Int(data.frameLength) {
-                XCTAssertEqual(data.floatChannelData![0][position], index < 144000 ? Float(0.1) : Float(0.2))
-                index += 1
-            }
-        }
-        XCTAssertEqual(index, 288000)
+        XCTAssertEqual(clip.samples.count, 192000)
+        XCTAssertTrue(clip.samples.prefix(96000).allSatisfy { $0 == Float(0.1) })
+        XCTAssertTrue(clip.samples.suffix(96000).allSatisfy { $0 == Float(0.2) })
         XCTAssertEqual(try AudioRetention.FileIdentity.read(first), original)
-        clip.remove(); XCTAssertFalse(FileManager.default.fileExists(atPath: clip.file.path))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), files)
+        // Owned PCM must not depend on the source files staying open/present.
+        try FileManager.default.removeItem(at: first); try FileManager.default.removeItem(at: second)
+        XCTAssertEqual(clip.samples.count, 192000); XCTAssertEqual(clip.samples.last, Float(0.2))
     }
-    func testChangedFormatAndLinkedInputsAreRejectedAndUnexpectedTemporaryItemsAreKept() throws {
+    func testChangedFormatLinkedAndNonFiniteInputsAreRejected() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -95,66 +89,80 @@ final class BoundaryRecognitionTests: XCTestCase, @unchecked Sendable {
         try FileManager.default.removeItem(at: second)
         try FileManager.default.createSymbolicLink(at: second, withDestinationURL: first)
         XCTAssertThrowsError(try BoundaryRecognition.makeClip(left: first, right: second))
-        try FileManager.default.removeItem(at: second); try audio(second, seconds: 1, value: 0.2)
-        let clip = try BoundaryRecognition.makeClip(left: first, right: second)
-        defer { try? FileManager.default.removeItem(at: clip.file.deletingLastPathComponent()) }
-        let unexpected = clip.file.deletingLastPathComponent().appendingPathComponent("unexpected.txt")
-        try Data("preserved".utf8).write(to: unexpected)
-        clip.remove()
-        XCTAssertTrue(FileManager.default.fileExists(atPath: clip.file.path))
-        XCTAssertEqual(try String(contentsOf: unexpected, encoding: .utf8), "preserved")
+        try FileManager.default.removeItem(at: second); try audio(second, seconds: 1, value: .nan)
+        XCTAssertThrowsError(try BoundaryRecognition.makeClip(left: first, right: second))
     }
-    func testStereoContextPreservesBothChannelsAndPrivatePermissions() throws {
+    func testStereoContextResamplingMatchesFileRecognitionConversion() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let format = AVAudioFormat(standardFormatWithSampleRate: 48000, channels: 2)!
         let files = [root.appendingPathComponent("system.caf"), root.appendingPathComponent("system-2.caf")]
+        let reference = root.appendingPathComponent("test-reference.caf")
+        let whole = try AVAudioFile(forWriting: reference, settings: format.settings)
         for (index, url) in files.enumerated() {
             let data = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 48000)!
             data.frameLength = 48000
-            for channel in 0..<2 { data.floatChannelData![channel].initialize(repeating: Float(index * 2 + channel), count: 48000) }
+            for channel in 0..<2 { data.floatChannelData![channel].initialize(repeating: Float(index * 2 + channel) * 0.1, count: 48000) }
             let file = try AVAudioFile(forWriting: url, settings: format.settings)
-            try file.write(from: data); file.close()
+            try file.write(from: data); file.close(); try whole.write(from: data)
         }
+        whole.close()
         let clip = try BoundaryRecognition.makeClip(left: files[0], right: files[1])
-        defer { clip.remove() }
-        XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: clip.file.path)[.posixPermissions] as? NSNumber)?.intValue, 0o600)
-        XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: clip.file.deletingLastPathComponent().path)[.posixPermissions] as? NSNumber)?.intValue, 0o700)
-        let reader = try AVAudioFile(forReading: clip.file)
-        XCTAssertEqual(reader.processingFormat.channelCount, 2); XCTAssertEqual(reader.length, 96000)
-        let data = AVAudioPCMBuffer(pcmFormat: reader.processingFormat, frameCapacity: 4096)!
-        var frame = 0
-        while reader.framePosition < reader.length {
-            try reader.read(into: data)
-            guard data.frameLength > 0 else { XCTFail("Unexpected PCM EOF"); break }
-            for position in 0..<Int(data.frameLength) {
-                for channel in 0..<2 { XCTAssertEqual(data.floatChannelData![channel][position], Float((frame < 48000 ? 0 : 2) + channel)) }
-                frame += 1
-            }
-        }
-        XCTAssertEqual(frame, 96000)
+        let expected = try AudioConverter().resampleAudioFile(reference)
+        XCTAssertEqual(clip.samples.count, 32000); XCTAssertEqual(clip.samples.count, expected.count)
+        for (actual, expected) in zip(clip.samples, expected) { XCTAssertEqual(actual, expected, accuracy: 0.00001) }
     }
+
+    func testHighestAdmittedFormatStillProducesAtMostTwelveSecondsOfModelSamples() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let left = root.appendingPathComponent("left.caf"), right = root.appendingPathComponent("right.caf")
+        try audio(left, seconds: 8, value: 0.1, channels: 2, sampleRate: 192000)
+        try audio(right, seconds: 8, value: 0.2, channels: 2, sampleRate: 192000)
+        let clip = try BoundaryRecognition.makeClip(left: left, right: right)
+        XCTAssertEqual(clip.leftStart, 2); XCTAssertEqual(clip.leftSeconds, 6); XCTAssertEqual(clip.rightSeconds, 6)
+        XCTAssertEqual(clip.samples.count, BoundaryRecognition.maximumSamples)
+        XCTAssertTrue(clip.samples.allSatisfy(\.isFinite))
+    }
+
 }
 
-private actor BoundaryEngine: TranscriptionEngine {
+private actor BoundaryEngine: LocalPCMTranscriptionEngine {
     nonisolated let name: String
     nonisolated let model = "synthetic-context"
-    private(set) var calls: [URL] = []
-    let decodeContext: @Sendable (URL) async throws -> [TranscriptSegment]
-    init(name: String = "parakeet", decodeContext: @escaping @Sendable (URL) async throws -> [TranscriptSegment] = { _ in BoundaryRecognitionTests.context }) {
+    private(set) var calls: [String] = []
+    let decodeContext: @Sendable ([Float]) async throws -> [TranscriptSegment]
+    init(name: String = "parakeet", decodeContext: @escaping @Sendable ([Float]) async throws -> [TranscriptSegment] = { _ in BoundaryRecognitionTests.context }) {
         self.name = name; self.decodeContext = decodeContext
     }
     func prepare() async throws {}
     func release() async {}
+    func transcribe(samples: [Float]) async throws -> [TranscriptSegment] {
+        calls.append("memory-context")
+        guard samples.count == 192000 else { throw MeetingPipelineState.invalidState }
+        return try await decodeContext(samples)
+    }
     func transcribe(_ audio: URL) async throws -> [TranscriptSegment] {
-        calls.append(audio)
+        calls.append(audio.lastPathComponent)
         switch audio.lastPathComponent {
         case "mic.caf": return BoundaryRecognitionTests.before
         case "mic-2.caf": return BoundaryRecognitionTests.after
-        case "context.caf": return try await decodeContext(audio)
         default: return BoundaryRecognitionTests.spans([(4, 4.5, "Remote speech.")])
         }
+    }
+}
+
+/// An engine's display name alone must not grant an in-memory local capability.
+private actor FileOnlyBoundaryEngine: TranscriptionEngine {
+    nonisolated let name = "parakeet", model = "synthetic-file-only"
+    private(set) var calls = 0
+    func prepare() async throws {}
+    func release() async {}
+    func transcribe(_ audio: URL) async throws -> [TranscriptSegment] {
+        calls += 1
+        return audio.lastPathComponent == "mic.caf" ? BoundaryRecognitionTests.before : BoundaryRecognitionTests.after
     }
 }
 
@@ -180,7 +188,7 @@ extension BoundaryRecognitionTests {
         meta["status"] = "stopped"; meta["ended"] = "2026-10-08T08:01:00Z"
         try JSONSerialization.data(withJSONObject: meta).write(to: dir.appendingPathComponent("meta.json"))
     }
-    private func worker(_ dir: URL, engine: BoundaryEngine) -> RecordingTranscriber {
+    private func worker(_ dir: URL, engine: any TranscriptionEngine) -> RecordingTranscriber {
         RecordingTranscriber(activityLockPath: dir.appendingPathComponent("lifecycle.lock"), audioDuration: { url in
             let audio = try AVAudioFile(forReading: url)
             return Double(audio.length) / audio.processingFormat.sampleRate
@@ -205,8 +213,7 @@ extension BoundaryRecognitionTests {
         XCTAssertTrue(transcript.capture_gaps?.isEmpty ?? true)
         XCTAssertEqual(try Data(contentsOf: ClosedChunkRecognition.path(dir, file: "mic.caf")), cache)
         let calls = await engine.calls
-        XCTAssertEqual(calls.map(\.lastPathComponent), ["mic-2.caf", "system.caf", "context.caf"])
-        XCTAssertFalse(FileManager.default.fileExists(atPath: calls.last!.path))
+        XCTAssertEqual(calls, ["mic-2.caf", "system.caf", "memory-context"])
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("archive-receipt.json").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("mic.caf").path))
     }
@@ -225,8 +232,7 @@ extension BoundaryRecognitionTests {
             let markdown = try String(contentsOf: dir.appendingPathComponent("transcript.md"), encoding: .utf8)
             XCTAssertTrue(markdown.contains("## Transcription boundary review")); XCTAssertFalse(markdown.contains("## Capture gaps"))
             let lastCall = await engine.calls.last
-            let context = try XCTUnwrap(lastCall)
-            XCTAssertFalse(FileManager.default.fileExists(atPath: context.path))
+            XCTAssertEqual(lastCall, "memory-context")
             XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("mic-2.caf").path))
         }
     }
@@ -252,7 +258,7 @@ extension BoundaryRecognitionTests {
             let engine = BoundaryEngine()
             try await worker(dir, engine: engine).transcribe(dir, detectSpeakers: false)
             let calls = await engine.calls
-            XCTAssertFalse(calls.contains { $0.lastPathComponent == "context.caf" })
+            XCTAssertFalse(calls.contains { $0 == "memory-context" })
             if uncertain { XCTAssertEqual(try result(dir).capture_gaps?.last?.reason, "capture_timing_uncertain") }
         }
     }
@@ -262,25 +268,24 @@ extension BoundaryRecognitionTests {
         let engine = BoundaryEngine(name: "elevenlabs")
         try await worker(dir, engine: engine).transcribe(dir, detectSpeakers: false, engineOverride: .elevenLabs)
         let calls = await engine.calls
-        XCTAssertEqual(calls.count, 3); XCTAssertFalse(calls.contains { $0.lastPathComponent == "context.caf" })
+        XCTAssertEqual(calls.count, 3); XCTAssertFalse(calls.contains { $0 == "memory-context" })
         XCTAssertEqual(try result(dir).capture_gaps?.last?.reason, "boundary_context_unverified")
     }
-    func testCancellationDuringContextCannotPublishAndRemovesOnlyTemporaryClip() async throws {
+    func testCancellationDuringInMemoryContextCannotPublishOrChangeAudio() async throws {
         let dir = try fixture(); defer { try? FileManager.default.removeItem(at: dir) }
         try finish(dir)
         let engine = BoundaryEngine { _ in try await Task.sleep(for: .seconds(30)); return Self.context }
         let transcriber = worker(dir, engine: engine)
         let work = Task { try await transcriber.transcribe(dir, detectSpeakers: false) }
         for _ in 0..<200 {
-            if await engine.calls.contains(where: { $0.lastPathComponent == "context.caf" }) { break }
+            if await engine.calls.contains(where: { $0 == "memory-context" }) { break }
             try await Task.sleep(for: .milliseconds(10))
         }
         let lastCall = await engine.calls.last
         let context = try XCTUnwrap(lastCall)
-        XCTAssertEqual(context.lastPathComponent, "context.caf")
+        XCTAssertEqual(context, "memory-context")
         work.cancel()
         do { try await work.value; XCTFail("Cancelled context must not publish") } catch {}
-        XCTAssertFalse(FileManager.default.fileExists(atPath: context.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("transcript.json").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("mic.caf").path))
     }
@@ -295,4 +300,15 @@ extension BoundaryRecognitionTests {
         XCTAssertFalse(FileManager.default.fileExists(atPath: dir.appendingPathComponent("transcript.json").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("mic-2.caf").path))
     }
+    func testNameAloneCannotGrantLocalMemoryCapabilityOrCreateAContextFile() async throws {
+        let dir = try fixture(); defer { try? FileManager.default.removeItem(at: dir) }
+        try finish(dir)
+        let engine = FileOnlyBoundaryEngine()
+        try await worker(dir, engine: engine).transcribe(dir, detectSpeakers: false)
+        let count = await engine.calls
+        XCTAssertEqual(count, 3)
+        XCTAssertEqual(try result(dir).capture_gaps?.last?.reason, "boundary_context_unverified")
+        XCTAssertTrue(try result(dir).segments.map(\.text).joined(separator: " ").contains("inter national"))
+    }
+
 }

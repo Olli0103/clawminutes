@@ -21,6 +21,12 @@ enum HelperDiagnostics {
         let transcriptionAttempts: Int?
         let deliveryAttempts: Int?
         let errorCode: String?
+        let transcriptionErrorCode: String?
+        let deliveryErrorCode: String?
+        let localExportErrorCode: String?
+        let localExportAttempts: Int?
+        let completionAttempts: Int?
+        let paidBudgetUnverified: Bool?
         let stateVerified: Bool
     }
     struct Report: Codable {
@@ -46,18 +52,29 @@ enum HelperDiagnostics {
             guard let values = try? directory.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
                   values.isDirectory == true, values.isSymbolicLink != true else { continue }
             let item = ArchiveBacklog.inspect(directory)
-            let state = try? MeetingPipelineState.load(directory, inspected: item)
+            var state = try? MeetingPipelineState.load(directory, inspected: item)
+            // Schema-2 loads preserve saved history. Reconcile only this in-memory
+            // diagnostic copy so verified artifacts suppress stale stage errors.
+            state?.reconcile(item, now: Date().timeIntervalSince1970)
+            let deliveryError = item.verifiedText?.includesDelivery == true ? nil : state?.deliveryRetry?.lastError ?? state?.delivery.lastError
+            let primaryError = state?.transcription.lastError ?? deliveryError ?? state?.localExport?.lastError
             meetings.append(Meeting(recordingRef: AudioRetention.digest(Data((state?.recordingIdentity ?? directory.lastPathComponent).utf8)).prefix(24).description,
                                     artifactState: item.state, pipelineStage: state?.stage,
                                     transcriptionAttempts: state?.transcription.count,
                                     deliveryAttempts: item.retry?.attempts ?? state?.delivery.count,
-                                    errorCode: PipelineEvents.safeCode(state?.transcription.lastError?.code ?? item.retry?.lastError?.code ?? state?.delivery.lastError?.code),
+                                    errorCode: PipelineEvents.safeCode(primaryError?.code),
+                                    transcriptionErrorCode: PipelineEvents.safeCode(state?.transcription.lastError?.code),
+                                    deliveryErrorCode: PipelineEvents.safeCode(deliveryError?.code),
+                                    localExportErrorCode: PipelineEvents.safeCode(state?.localExport?.lastError?.code),
+                                    localExportAttempts: state?.localExport?.count,
+                                    completionAttempts: state?.delivery.completionAttempts,
+                                    paidBudgetUnverified: state?.delivery.budgetUnverified,
                                     stateVerified: state != nil))
         }
         let config = try? ArchiveBacklog.object(settings)
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "development"
         let os = ProcessInfo.processInfo.operatingSystemVersion
-        return Report(schemaVersion: 1, generatedAt: Date().timeIntervalSince1970,
+        return Report(schemaVersion: 2, generatedAt: Date().timeIntervalSince1970,
                       helperVersion: version.range(of: #"^[0-9]+\.[0-9]+\.[0-9]+$"#, options: .regularExpression) == nil ? "development" : version,
                       operatingSystem: "macOS \(os.majorVersion).\(os.minorVersion).\(os.patchVersion)", permissions: permissions,
                       configurationReadable: config != nil, localModelAvailable: localModelAvailable,

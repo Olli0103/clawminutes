@@ -224,17 +224,16 @@ actor RecordingTranscriber {
                 guard second.track.continuousFromPrevious, !first.track.timingUncertain, !second.track.timingUncertain else { continue }
                 let boundary = second.track.offsetMs
                 do {
-                    guard engine.name == "parakeet", !allowAudioLinks,
+                    guard engine.name == "parakeet", let localEngine = engine as? any LocalPCMTranscriptionEngine, !allowAudioLinks,
                           abs(Double(boundary - first.track.offsetMs) / 1000 - first.duration) <= 0.002 else {
                         throw MeetingPipelineState.invalidState
                     }
                     try Task.checkCancellation()
                     let clip = try BoundaryRecognition.makeClip(left: directory.appendingPathComponent(first.track.file),
                         right: directory.appendingPathComponent(second.track.file))
-                    defer { clip.remove() }
                     guard abs(clip.leftDuration - first.duration) <= 0.002,
                           abs(clip.rightDuration - second.duration) <= 0.002 else { throw MeetingPipelineState.conflictingState }
-                    let context = try await engine.transcribe(clip.file)
+                    let context = try await localEngine.transcribe(samples: clip.samples)
                     try Task.checkCancellation()
                     guard let pair = BoundaryRecognition.reconcile(left: first.segments, right: second.segments, context: context,
                         leftStart: clip.leftStart, leftDuration: clip.leftDuration, rightSeconds: clip.rightSeconds,
