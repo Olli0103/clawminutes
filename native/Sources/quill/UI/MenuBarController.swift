@@ -40,11 +40,19 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
             libraryWindow = nil // Releases the search view and its memory-only text cache.
         } else if window === migrationWindow {
             window.contentViewController = nil; migrationWindow = nil; copyingNotes = false
+        } else if window === cleanupWindow {
+            window.contentViewController = nil; cleanupWindow = nil; deletingAudio = false
         }
     }
+    private var cleanupWindow: NSWindow?
+    private var deletingAudio = false
     private var migrationWindow: NSWindow?
     private var copyingNotes = false
-    func windowShouldClose(_ sender: NSWindow) -> Bool { sender !== migrationWindow || !copyingNotes }
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if sender === migrationWindow { return !copyingNotes }
+        if sender === cleanupWindow { return !deletingAudio }
+        return true
+    }
     func copyExistingNotes(_ selection: [RecentMeeting]? = nil) {
         if let migrationWindow { migrationWindow.makeKeyAndOrderFront(nil); return }
         let meetings = selection ?? recentMeetings.filter { $0.ready }
@@ -65,6 +73,20 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
             self.migrationWindow = window
             window.center(); NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
         }
+    }
+    func reviewRecordedAudio(_ selection: [RecentMeeting]? = nil) {
+        if let cleanupWindow { cleanupWindow.makeKeyAndOrderFront(nil); return }
+        let meetings = selection ?? recentMeetings
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 650, height: 560),
+            styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.title = "Review recorded audio"; window.isReleasedWhenClosed = false; window.delegate = self
+        window.contentViewController = NSHostingController(rootView: AudioCleanupView(controller: self, meetings: meetings,
+            onClose: { [weak window] in window?.close() }, onBusyChange: { [weak self, weak window] active in
+                self?.deletingAudio = active
+                window?.standardWindowButton(.closeButton)?.isEnabled = !active
+            }))
+        cleanupWindow = window
+        window.center(); NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
     }
     func refreshLocalMeetings() async {
         let root = Config.resolveRoot(cliOverride: nil), notesRoot = MeetingNotesSettings.folder

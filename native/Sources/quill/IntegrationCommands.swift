@@ -48,10 +48,20 @@ struct ArchiveBacklogCommand: AsyncParsableCommand {
 }
 
 struct VerifyAudioRetention: ParsableCommand {
-    static let configuration = CommandConfiguration(commandName: "verify-audio-retention", abstract: "Verify saved transcript, notes and audio coverage, then delete the finished raw tracks. Never starts capture or contacts the Gateway.")
+    static let configuration = CommandConfiguration(commandName: "verify-audio-retention", abstract: "Review saved transcript, notes and audio coverage. Add --delete to remove verified tracks. Never starts capture or contacts the Gateway.")
     @Option var directory: String
+    @Flag(help: "Permanently delete audio after fresh verification. The default is read-only.") var delete = false
     mutating func run() throws {
-        let count = try AudioRetention.deleteAfterVerification(URL(fileURLWithPath: directory))
+        let folder = URL(fileURLWithPath: directory)
+        if !delete {
+            if let plan = try AudioRetention.review(folder) {
+                print("Verified \(plan.remaining.count) remaining track(s), \(plan.bytes) bytes. Audio unchanged. Add --delete to remove them.")
+            } else { print("Audio already removed. No changes made.") }
+            return
+        }
+        let work = try HelperWorkLease.acquire()
+        defer { withExtendedLifetime(work) {} }
+        let count = try AudioRetention.deleteAfterVerification(folder, policy: .explicitExisting)
         print("Verified transcript and notes; removed \(count) audio track(s).")
     }
 }

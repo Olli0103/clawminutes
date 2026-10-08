@@ -139,6 +139,7 @@ struct MeetingDetailView: View {
                     if meeting.canRetryAINotes {
                         Button("Try AI notes again…") { recoveryKind = .retryAI }
                     }
+                    Button("Review this meeting’s audio…") { controller.reviewRecordedAudio([meeting]) }
                     Button("Show files in Finder") { controller.openDocument(meeting.directory) }.buttonStyle(.link)
                     DisclosureGroup("Technical details") {
                         Text(meeting.issue?.code ?? meeting.stage.rawValue).font(.caption.monospaced()).textSelection(.enabled)
@@ -275,6 +276,8 @@ struct HelperSettings: View {
                         Text("Applies to recordings started after enabling this setting. Older recordings stay untouched. Audio with capture gaps or missing Teams speech is kept for review.")
                             .font(.caption).foregroundStyle(.secondary)
                         Text(controller.storageSummary).font(.callout)
+                        Button("Review recorded audio…") { controller.reviewRecordedAudio() }
+                            .disabled(controller.recentMeetings.isEmpty)
                         Button("Check storage usage", action: controller.checkStorage)
                         Button("Open recording files", action: controller.openRecordings)
                     }
