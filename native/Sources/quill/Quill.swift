@@ -105,7 +105,6 @@ struct Meetings: AsyncParsableCommand {
                 }
             }
             let output: [String: Any] = ["needs_accessibility_permission": scan.needsPermission,
-                                         "needs_zoom_screen_permission": scan.needsZoomScreenPermission,
                                          "apps": apps.map(\.name), "meetings": rows, "active_speakers": scan.speakers,
                                          "speaker_capture": scan.speakerCaptureStatus,
                                          "speaker_boxes": scan.speakerBoxes,
@@ -116,9 +115,7 @@ struct Meetings: AsyncParsableCommand {
                                               "complete": observation.roster_complete ?? false]
                                          },
                                          "tile_speakers": tileSpeakers, "observed_at": scan.observedAt,
-                                         "zoom_border_scores": await scanner.zoomBorderScores(),
-                                         "zoom_capture_status": await scanner.zoomCaptureStatus(),
-                                         "captions": scan.captions.map { ["speaker": $0.names.first ?? "", "text": $0.text ?? ""] }]
+                                         "enabled_provider": "Microsoft Teams"]
             let data = try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys])
             FileHandle.standardOutput.write(data + Data("\n".utf8))
             if watch { try await Task.sleep(for: .seconds(2)) }

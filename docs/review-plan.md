@@ -23,8 +23,8 @@ The goal covers the complete review and UX proposals. Teams remains the only ena
 
 - [ ] One versioned per-meeting pipeline record, migrated alongside existing artifacts. Irreversible deletion still verifies source artifacts and receipts.
 - [x] Separate transcription, delivery and retention implementations behind a small pipeline interface.
-- [ ] Explicit capability negotiation and an archive adapter contract, without admitting unverified host semantics merely because method names match.
-- [ ] Isolate Teams detection from dormant provider code; do not enable additional providers.
+- [x] Explicit capability negotiation and an archive adapter contract, without admitting unverified host semantics merely because method names match.
+- [x] Isolate Teams detection from dormant provider code; do not enable additional providers.
 - [x] Structured event log and a redacted diagnostics command/bundle.
 - [ ] Public distribution signing/notarization workflow and permission continuity verification. External signing credentials remain an explicit delivery gate.
 - [x] Preserve uncertainty for voice-cluster-derived names in transcripts and AI prompts.
@@ -135,3 +135,11 @@ Connection checks and each pending text save require a versioned Gateway handsha
 The archive adapter performs a synthetic session/utterance/summary round trip, duplicate append and reopened-store readback in a private temporary directory before canonical use. It calls no model and caches successful verification for the loaded store constructor. A fake store with matching methods but lost readback reproduces the earlier structural-only admission and now fails closed. The real contracts pass on SDK 2026.9.7 and 2026.9.8. Exact version pins remain deliberately narrower than the review proposal; one probe does not establish new private schema/lease semantics. Broader admission and a public import interface remain open, as does live compatibility acceptance.
 
 Full local verification: 316 native tests, 304 passed and 12 opt-in tests skipped; 45 JavaScript tests on each supported SDK. The earlier focused suite passed 18 tests before the final offline-export assertion; the final full suite includes it. Both `d3555d6` CI runs passed. No live helper/Gateway, real archive, credentials or settings were changed. Details are in [Gateway compatibility checks](gateway-capabilities.md).
+
+### Teams adapter isolation checkpoint
+
+The enabled scanner now owns only native Teams detection and speaker observations. Both discovery and scanner input require supported Teams bundle/service evidence. Rejected inputs return before the permission callback or Accessibility access. Teams roster extraction no longer dispatches through a provider selector. The existing title/consent identity, frame-timing guards, latched end evidence, independent all-Spaces closure check and incremental speaker-tree refresh remain. No additional provider or browser-caption action was added.
+
+Pure inherited provider parsers are grouped under `Meetings/Legacy` for fixtures. The visual Zoom detector moved into the test target; the built helper's symbols contain neither that actor/sample type nor `SCScreenshotManager`. Three isolated regressions cover rejected/forged app inputs, a denied Teams permission callback without tree access, and roster membership that cannot imply a speaking frame.
+
+The full native suite passes 319 tests with 307 passed and 12 opt-in tests skipped. The prior initial focused evidence passed 35 tests with one opt-in skipped. Gateway code is unchanged since its 45-test suites on both SDKs and both passing `c1fb701` CI runs. No live scanner, provider, capture, permissions or helper/Gateway lifecycle was exercised. Live Teams regressions remain part of approved acceptance.

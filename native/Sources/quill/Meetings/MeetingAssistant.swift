@@ -29,7 +29,6 @@ final class MeetingAssistant {
     private var enabled = Config.meetingDetection()
     private var lastStatus: String?
     private var consent = ConsentPromptState(saved: UserDefaults.standard.data(forKey: "teamsPromptedCallsV2"))
-    private var needsZoomScreenPermission = false
 
     init(recordingNotification: @escaping (String, String) -> Void = { notifyUser(title: $0, body: $1) }) {
         self.recordingNotification = recordingNotification
@@ -70,13 +69,6 @@ final class MeetingAssistant {
     func requestPermission() {
         if AXIsProcessTrusted() {
             poll()
-            return
-        }
-        if needsZoomScreenPermission {
-            _ = CGRequestScreenCaptureAccess()
-            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
-                NSWorkspace.shared.open(url)
-            }
             return
         }
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
@@ -146,9 +138,7 @@ final class MeetingAssistant {
         let generation = recordingGeneration
         Task { [weak self, scanner] in
             let captureSpeakers = Config.speakerDetection()
-            let scan = await scanner.scan(apps: apps, captureSpeakers: captureSpeakers,
-                                          enableCaptions: self?.policy.recording == true && captureSpeakers && Config.autoMeetingCaptions(),
-                                          captionMeetingID: self?.recordingSpeakerMeetingID)
+            let scan = await scanner.scan(apps: apps, captureSpeakers: captureSpeakers)
             guard let self else { return }
             self.scanning = false
             guard self.enabled else { return }
@@ -176,19 +166,18 @@ final class MeetingAssistant {
                 ? self.tracking.recordingMeetingID(preferred: self.policy.recordingMeeting?.id, previous: previousMeeting) : nil
             if self.policy.recording, let id = self.recordingSpeakerMeetingID, id != previousMeeting,
                let roster = self.tracking.seed(meetingID: id, at: Date().timeIntervalSince1970) { self.onSpeakers?(roster) }
-            self.needsZoomScreenPermission = scan.needsZoomScreenPermission && self.policy.recordingMeeting?.service == "Zoom"
             if generation == self.recordingGeneration, let id = self.recordingSpeakerMeetingID, let names = scan.speakers[id] {
                 self.onSpeakers?(SpeakerObservation(observed_at: scan.speakerObservedAt[id] ?? scan.observedAt,
                                                     meeting_id: id, names: names))
             }
-            for caption in scan.captions + scan.rosters where generation == self.recordingGeneration && caption.meeting_id == self.recordingSpeakerMeetingID {
+            for caption in scan.rosters where generation == self.recordingGeneration && caption.meeting_id == self.recordingSpeakerMeetingID {
                 self.onSpeakers?(caption)
             }
             if scan.needsPermission {
                 self.report("Meeting detection needs Accessibility permission", true)
                 return
             } else if let meeting = self.policy.recordingMeeting {
-                self.report(scan.speakerNameWarnings[meeting.id] ?? "Watching \(meeting.service) in \(meeting.app)", true)
+                self.report("Watching \(meeting.service) in \(meeting.app)", true)
             } else if self.policy.recording {
                 self.report(self.policy.automaticStop ? "No meeting linked; stop recording manually" : "Automatic stop off for this recording", true)
             } else {
