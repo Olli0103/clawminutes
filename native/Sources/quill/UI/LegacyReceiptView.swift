@@ -16,15 +16,15 @@ struct LegacyReceiptView: View {
     @State private var reviewRevision = 0
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Verify saved meeting").font(.title2.weight(.semibold))
+            Text("Check for saved meeting").font(.title2.weight(.semibold))
             Text(meeting.title).font(.headline)
             Text("Compare this transcript and meeting details with the completed Gateway archive. Verification does not create Gateway notes, change its archive or call a model.")
                 .font(.callout).foregroundStyle(.secondary)
-            Text("A match repairs this Mac's receipt and notes location. Existing edits and audio stay. The original receipt is kept as evidence.")
+            Text("An exact match restores this Mac's save confirmation and notes location. Existing edits and audio stay. Any original confirmation is kept.")
                 .font(.callout).foregroundStyle(.secondary)
             if reviewing { ProgressView("Reviewing local files…") }
             if let plan {
-                Text("Transcript utterances: \(plan.utterances). Text and meeting details will be sent for comparison. No audio is sent.")
+                Text("Transcript entries: \(plan.utterances). Text and meeting details will be sent for comparison. No audio is sent.")
                 Text("Local notes folder: " + plan.exportRoot.path).font(.caption).textSelection(.enabled)
                 DisclosureGroup("Archive identity") { Text(plan.sessionID).font(.caption.monospaced()).textSelection(.enabled) }
             }
@@ -37,12 +37,12 @@ struct LegacyReceiptView: View {
             }
             Spacer()
             HStack {
-                if busy { ProgressView().controlSize(.small); Text("Verifying Gateway readback…").font(.caption) }
+                if busy { ProgressView().controlSize(.small); Text("Checking saved meeting…").font(.caption) }
                 if !busy && !reviewing && result == nil { Button("Review again") { issue = nil; reviewing = true; reviewRevision += 1 } }
                 Spacer()
                 Button(result == nil ? "Cancel" : "Done") { dismiss() }.disabled(busy)
                 if result == nil {
-                    Button("Verify on Gateway", action: verify).buttonStyle(.borderedProminent).disabled(busy || reviewing || plan == nil)
+                    Button("Check on Gateway", action: verify).buttonStyle(.borderedProminent).disabled(busy || reviewing || plan == nil)
                 }
             }
         }.padding(24).frame(width: 560, height: 470).background(Color(nsColor: .windowBackgroundColor)).interactiveDismissDisabled(busy)

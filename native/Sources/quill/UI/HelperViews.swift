@@ -158,7 +158,7 @@ struct MeetingDetailView: View {
                         Button("Try AI notes again…") { recoveryKind = .retryAI }
                     }
                     if meeting.canVerifyLegacyReceipt {
-                        Button("Verify saved meeting…") { verifyingLegacyReceipt = true }
+                        Button("Check for saved meeting…") { verifyingLegacyReceipt = true }
                     }
                     Button("Review this meeting’s audio…") { controller.reviewRecordedAudio([meeting]) }
                     Button("Show files in Finder") { controller.openDocument(meeting.directory) }.buttonStyle(.link)

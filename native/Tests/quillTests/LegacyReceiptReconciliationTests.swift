@@ -172,23 +172,148 @@ final class LegacyReceiptReconciliationTests: XCTestCase {
         XCTAssertEqual(ArchiveBacklog.inspect(f.recording, notesRoot: f.notes).state, .saved)
     }
     @MainActor func testLegacyReviewRendersWithoutNetworkOrPublishingFiles() async throws {
-        let f = try fixture(), before = try NotesFolderSnapshot.capture(f.recording)
-        let meeting = RecentMeeting.make(ArchiveBacklog.inspect(f.recording)), controller = MenuBarController(preview: true)
         guard let output = ProcessInfo.processInfo.environment["CLAWMINUTES_UI_PREVIEW_DIR"] else { return }
-        let previous = NSApp.appearance
+        let controller = MenuBarController(preview: true), previous = NSApp.appearance
         defer { NSApp.appearance = previous }
-        for dark in [false, true] {
-            NSApp.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
-            let view = NSHostingView(rootView: LegacyReceiptView(controller: controller, meeting: meeting, initialRoot: f.notes)
-                .environment(\.colorScheme, dark ? .dark : .light))
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 470), styleMask: [.titled], backing: .buffered, defer: false)
-            window.appearance = NSApp.appearance; window.contentView = view
-            try await Task.sleep(for: .milliseconds(500)); view.layoutSubtreeIfNeeded()
-            let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
-            view.cacheDisplay(in: view.bounds, to: bitmap)
-            try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
-                .write(to: URL(fileURLWithPath: output).appendingPathComponent("legacy-receipt-" + (dark ? "dark" : "light") + ".png"))
-            XCTAssertFalse(window.isVisible); XCTAssertEqual(try NotesFolderSnapshot.capture(f.recording), before)
+        for missing in [false, true] {
+            let f = try fixture()
+            if missing { try FileManager.default.removeItem(at: f.recording.appendingPathComponent("archive-receipt.json")) }
+            let before = try NotesFolderSnapshot.capture(f.recording)
+            let meeting = RecentMeeting.make(ArchiveBacklog.inspect(f.recording))
+            for dark in [false, true] {
+                NSApp.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+                let view = NSHostingView(rootView: LegacyReceiptView(controller: controller, meeting: meeting, initialRoot: f.notes)
+                    .environment(\.colorScheme, dark ? .dark : .light))
+                let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 470), styleMask: [.titled], backing: .buffered, defer: false)
+                window.appearance = NSApp.appearance; window.contentView = view
+                try await Task.sleep(for: .milliseconds(500)); view.layoutSubtreeIfNeeded()
+                let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+                view.cacheDisplay(in: view.bounds, to: bitmap)
+                let name = (missing ? "missing-receipt-" : "legacy-receipt-") + (dark ? "dark" : "light") + ".png"
+                try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                    .write(to: URL(fileURLWithPath: output).appendingPathComponent(name))
+                XCTAssertFalse(window.isVisible); XCTAssertEqual(try NotesFolderSnapshot.capture(f.recording), before)
+            }
         }
     }
+    func testLostReceiptCanRecoverAnExactCompletedSaveWithoutResettingUnknownBudget() async throws {
+        let f = try fixture(ai: true)
+        try FileManager.default.removeItem(at: f.recording.appendingPathComponent("archive-receipt.json"))
+        let transcript = try ArchiveBacklog.read(f.recording.appendingPathComponent("transcript.json"))
+        let retry = ArchiveBacklog.Retry(attempts: 2, nextAttemptAt: 9999, transcriptSHA256: AudioRetention.digest(transcript))
+        let legacy = try JSONEncoder().encode(retry)
+        try legacy.write(to: f.recording.appendingPathComponent("archive-retry.json"))
+        let before = try NotesFolderSnapshot.capture(f.recording)
+        let plan = try LegacyReceiptReconciliation.prepare(f.recording, notesRoot: f.notes)
+        XCTAssertEqual(try NotesFolderSnapshot.capture(f.recording), before)
+        let response = try Self.response(plan)
+        let result = try await LegacyReceiptReconciliation.apply(plan, transport: { _ in response },
+            capabilityTransport: { try Self.capabilities() }, activityLockPath: f.lease)
+        XCTAssertTrue(result.exported)
+        XCTAssertEqual(ArchiveBacklog.inspect(f.recording, notesRoot: f.notes).state, .saved)
+        let state = try MeetingPipelineState.load(f.recording)
+        XCTAssertEqual(state.delivery.count, 2); XCTAssertTrue(state.delivery.budgetUnverified == true)
+        XCTAssertNil(state.delivery.completionAttempts)
+        XCTAssertEqual(try ArchiveBacklog.read(f.recording.appendingPathComponent("archive-retry.json")), legacy)
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: f.recording.path).contains { $0.hasPrefix("archive-receipt.legacy-") })
+    }
+
+    func testMissingReceiptReviewIsAvailableWithoutInventingPriorDelivery() throws {
+        let f = try fixture()
+        try FileManager.default.removeItem(at: f.recording.appendingPathComponent("archive-receipt.json"))
+        let before = try NotesFolderSnapshot.capture(f.recording)
+        let item = ArchiveBacklog.inspect(f.recording)
+        XCTAssertEqual(item.state, .archivePending)
+        XCTAssertTrue(RecentMeeting.make(item).canVerifyLegacyReceipt)
+        let plan = try LegacyReceiptReconciliation.prepare(f.recording, notesRoot: f.notes)
+        XCTAssertTrue(plan.receiptWasMissing)
+        XCTAssertEqual(plan.sessionID, "teams-" + (try MeetingPipelineState.identity(f.recording)).prefix(24))
+        XCTAssertEqual(try NotesFolderSnapshot.capture(f.recording), before)
+        XCTAssertEqual(try MeetingPipelineState.load(f.recording).delivery.count, 0)
+    }
+    func testMissingReceiptRejectsAbsentOrConflictingCanonicalSaveWithoutLocalPublication() async throws {
+        for kind in ["missing", "conflict", "unsupported", "bad_proof", "bad_documents"] {
+            let f = try fixture()
+            try FileManager.default.removeItem(at: f.recording.appendingPathComponent("archive-receipt.json"))
+            let plan = try LegacyReceiptReconciliation.prepare(f.recording, notesRoot: f.notes)
+            let before = try NotesFolderSnapshot.capture(f.recording)
+            var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Self.response(plan, valid: kind != "bad_proof")) as? [String: Any])
+            if kind == "bad_documents" { object["documents"] = ["title": "Incomplete"] }
+            let response = try JSONSerialization.data(withJSONObject: object)
+            do {
+                _ = try await LegacyReceiptReconciliation.apply(plan, transport: { _ in
+                    if kind == "unsupported" { XCTFail("Old Gateway cannot receive text") }
+                    if kind == "missing" || kind == "conflict" {
+                        throw DeliveryFailure(code: kind == "missing" ? "archive_not_verified" : "revision_conflict",
+                            detail: "No exact completed save", retryable: false, completionAttempted: false)
+                    }
+                    return response
+                }, capabilityTransport: { try Self.capabilities(verification: kind != "unsupported") }, activityLockPath: f.lease)
+                XCTFail("No exact proof exists: \(kind)")
+            } catch {}
+            let after = try NotesFolderSnapshot.capture(f.recording)
+            XCTAssertEqual(after.files.filter { $0.key != "archive.lock" }, before.files, kind)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: f.notes.path))
+        }
+    }
+    func testReceiptAppearingDuringMissingReceiptReviewInvalidatesRepair() async throws {
+        for duringRequest in [false, true] {
+            let f = try fixture()
+            let file = f.recording.appendingPathComponent("archive-receipt.json")
+            let original = try ArchiveBacklog.read(file)
+            try FileManager.default.removeItem(at: file)
+            let plan = try LegacyReceiptReconciliation.prepare(f.recording, notesRoot: f.notes)
+            let response = try Self.response(plan)
+            if !duringRequest { try original.write(to: file) }
+            do {
+                _ = try await LegacyReceiptReconciliation.apply(plan, transport: { _ in
+                    if !duringRequest { XCTFail("A stale review cannot send text") }
+                    try original.write(to: file)
+                    return response
+                }, capabilityTransport: {
+                    if !duringRequest { XCTFail("A stale review cannot start negotiation") }
+                    return try Self.capabilities()
+                }, activityLockPath: f.lease)
+                XCTFail("A newly present receipt must invalidate the missing-receipt plan")
+            } catch {}
+            XCTAssertEqual(try ArchiveBacklog.read(file), original)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: f.notes.path))
+        }
+    }
+    func testMalformedPresentReceiptCannotBeTreatedAsMissing() throws {
+        for bytes in [Data("invalid json".utf8), Data("false".utf8), Data("{}".utf8)] {
+            let f = try fixture(), file = f.recording.appendingPathComponent("archive-receipt.json")
+            try bytes.write(to: file)
+            XCTAssertFalse(LegacyReceiptReconciliation.receiptAbsent(f.recording))
+            XCTAssertThrowsError(try LegacyReceiptReconciliation.prepare(f.recording, notesRoot: f.notes))
+            XCTAssertFalse(RecentMeeting.make(ArchiveBacklog.inspect(f.recording)).canVerifyLegacyReceipt)
+            XCTAssertEqual(try ArchiveBacklog.read(file), bytes)
+        }
+        let f = try fixture(), file = f.recording.appendingPathComponent("archive-receipt.json")
+        try FileManager.default.removeItem(at: file)
+        try FileManager.default.createSymbolicLink(at: file, withDestinationURL: f.root.appendingPathComponent("absent-target"))
+        XCTAssertFalse(LegacyReceiptReconciliation.receiptAbsent(f.recording))
+        XCTAssertThrowsError(try LegacyReceiptReconciliation.prepare(f.recording, notesRoot: f.notes))
+    }
+
+    func testMissingReceiptUsesOnlyTheOriginalMatchingExportBinding() throws {
+        for mismatch in [false, true] {
+            let f = try fixture(), file = f.recording.appendingPathComponent("archive-receipt.json")
+            let id = try XCTUnwrap(ArchiveBacklog.object(file)["sessionId"] as? String)
+            try MeetingDocuments.rememberExport(f.notes.appendingPathComponent("existing"), root: f.notes,
+                recording: f.recording, sessionID: mismatch ? "teams-other" : id)
+            try FileManager.default.removeItem(at: file)
+            let before = try NotesFolderSnapshot.capture(f.recording)
+            // Normal export callers cannot use a receipt-less binding.
+            XCTAssertThrowsError(try MeetingDocuments.exportRoot(recording: f.recording, fallbackRoot: f.root.appendingPathComponent("new-default")))
+            if mismatch {
+                XCTAssertThrowsError(try LegacyReceiptReconciliation.prepare(f.recording, notesRoot: f.root.appendingPathComponent("new-default")))
+            } else {
+                let plan = try LegacyReceiptReconciliation.prepare(f.recording, notesRoot: f.root.appendingPathComponent("new-default"))
+                XCTAssertEqual(plan.exportRoot.path, f.notes.path)
+            }
+            XCTAssertEqual(try NotesFolderSnapshot.capture(f.recording), before)
+        }
+    }
+
 }

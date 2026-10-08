@@ -181,6 +181,32 @@ final class GatewayHTTPContractTests: XCTestCase, @unchecked Sendable {
         let preserved = regenerated.appendingPathComponent("archive-receipt.legacy-" + AudioRetention.digest(legacyBytes) + ".json")
         XCTAssertEqual(try ArchiveBacklog.read(preserved), legacyBytes)
         XCTAssertFalse(RecentMeeting.make(ArchiveBacklog.inspect(regenerated, notesRoot: notesRoot)).canVerifyLegacyReceipt)
+        // A completed canonical save is recoverable even when the local receipt
+        // was lost and neither side can authorize another paid attempt.
+        try FileManager.default.removeItem(at: regenerated.appendingPathComponent("archive-receipt.json"))
+        var unknownBudget = try MeetingPipelineState.load(regenerated)
+        unknownBudget.delivery.count = 2
+        unknownBudget.delivery.completionAttempts = nil
+        unknownBudget.delivery.budgetUnverified = true
+        try unknownBudget.write(regenerated)
+        let gatewayLedger = root.appendingPathComponent("teams-transcribe/notes-attempts/" + (newReceipt["sessionId"] as! String) + ".json")
+        let unprovableLedger = Data(#"{"schemaVersion":1,"attempts":2,"fingerprint":"unprovable-legacy-hash"}"#.utf8)
+        try unprovableLedger.write(to: gatewayLedger)
+        XCTAssertTrue(RecentMeeting.make(ArchiveBacklog.inspect(regenerated, notesRoot: notesRoot)).canVerifyLegacyReceipt)
+        let lostPlan = try LegacyReceiptReconciliation.prepare(regenerated, notesRoot: notesRoot)
+        XCTAssertTrue(lostPlan.receiptWasMissing)
+        let lostResult = try await LegacyReceiptReconciliation.apply(lostPlan, transport: { body in
+            let (data, status) = try await post(body, verifying: true)
+            guard status == 200 else { throw DeliveryFailure.response(status: status, data: data) }
+            return data
+        }, capabilityTransport: capabilities, activityLockPath: lease)
+        XCTAssertTrue(lostResult.exported)
+        XCTAssertEqual(try String(contentsOf: editedNotes, encoding: .utf8), "User-edited notes stay")
+        XCTAssertEqual(try ArchiveBacklog.read(gatewayLedger), unprovableLedger)
+        let retainedBudget = try MeetingPipelineState.load(regenerated)
+        XCTAssertEqual(retainedBudget.delivery.count, 2); XCTAssertNil(retainedBudget.delivery.completionAttempts)
+        XCTAssertEqual(retainedBudget.delivery.budgetUnverified, true)
+        XCTAssertFalse(RecentMeeting.make(ArchiveBacklog.inspect(regenerated, notesRoot: notesRoot)).canVerifyLegacyReceipt)
         let (counts, _) = try await session.data(from: origin.appendingPathComponent("statistics"))
         XCTAssertEqual((try JSONSerialization.jsonObject(with: counts) as? [String: Int])?["completions"], 5)
     }

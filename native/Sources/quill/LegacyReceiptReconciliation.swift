@@ -3,6 +3,10 @@ import Foundation
 /// An explicit, text-only canonical readback. Unknown AI budgets are preserved.
 enum LegacyReceiptReconciliation {
     static let reason = "Saved receipt lacks a complete source fingerprint; verify delivery before retry"
+    static func receiptAbsent(_ directory: URL) -> Bool {
+        var info = stat()
+        return lstat(directory.appendingPathComponent("archive-receipt.json").path, &info) != 0 && errno == ENOENT
+    }
     static func needsVerification(_ receipt: [String: Any]) -> Bool {
         receipt["localTranscriptSHA256"] == nil || receipt["localEnvelopeSHA256"] == nil
     }
@@ -21,6 +25,7 @@ enum LegacyReceiptReconciliation {
         let transcriptSHA256: String
         let sessionID: String
         let utterances: Int
+        var receiptWasMissing: Bool { snapshot["archive-receipt.json"] == "absent" }
     }
     struct Result: Sendable { let exported: Bool; let detail: String }
     static let changed = TranscriptionFailure("Meeting files changed after review. Review again before verifying delivery.")
@@ -52,17 +57,19 @@ enum LegacyReceiptReconciliation {
             throw TranscriptionFailure("The earlier local delivery fingerprint differs. Review the original source before reconciling this receipt. Existing budgets and files remain unchanged.")
         }
         let transcript = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
-        let receipt = try ArchiveBacklog.object(directory.appendingPathComponent("archive-receipt.json"))
-        guard needsVerification(receipt),
-              receipt["localTranscriptSHA256"] == nil || receipt["localTranscriptSHA256"] as? String == AudioRetention.digest(data),
-              ArchiveBacklog.receiptIdentityMatches(receipt, transcriptData: data, meta: meta, directory: directory),
-              let id = receipt["sessionId"] as? String else {
-            throw TranscriptionFailure("A matching legacy saved receipt was not found. Local files are preserved.")
-        }
-        let root = try MeetingDocuments.exportRoot(recording: directory, fallbackRoot: notesRoot)
         let body = try GatewayArchive.deliveryEnvelope(directory, meta: meta, transcriptData: data)
-        let sourceHash = try GatewayArchive.envelopeFingerprint(body)
-        guard receipt["localEnvelopeSHA256"] == nil || receipt["localEnvelopeSHA256"] as? String == sourceHash else { throw changed }
+        let id = "teams-" + state.recordingIdentity.prefix(24)
+        if initial["archive-receipt.json"] != "absent" {
+            let receipt = try ArchiveBacklog.object(directory.appendingPathComponent("archive-receipt.json"))
+            guard needsVerification(receipt),
+                  declaredFingerprintsMatch(receipt, directory: directory, meta: meta, transcriptData: data),
+                  ArchiveBacklog.receiptIdentityMatches(receipt, transcriptData: data, meta: meta, directory: directory),
+                  receipt["sessionId"] as? String == id else {
+                throw TranscriptionFailure("A matching legacy saved receipt was not found. Local files are preserved.")
+            }
+        }
+        let root = try MeetingDocuments.exportRoot(recording: directory, fallbackRoot: notesRoot,
+            missingReceiptSessionID: initial["archive-receipt.json"] == "absent" ? id : nil)
         guard try snapshot(directory) == initial else { throw changed }
         return Plan(directory: directory, exportRoot: root, directoryIdentity: identity, snapshot: initial, body: body,
             transcriptSHA256: AudioRetention.digest(data), sessionID: id, utterances: (transcript["segments"] as? [Any])?.count ?? 0)
@@ -98,13 +105,15 @@ enum LegacyReceiptReconciliation {
         }
         _ = try MeetingDocuments.validateDocuments(receipt)
         try validate()
-        let old = try ArchiveBacklog.read(plan.directory.appendingPathComponent("archive-receipt.json"))
-        let backup = plan.directory.appendingPathComponent("archive-receipt.legacy-" + AudioRetention.digest(old) + ".json")
-        if FileManager.default.fileExists(atPath: backup.path) {
-            guard try ArchiveBacklog.read(backup) == old else { throw changed }
-        } else {
-            try old.write(to: backup, options: .atomic)
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backup.path)
+        if !plan.receiptWasMissing {
+            let old = try ArchiveBacklog.read(plan.directory.appendingPathComponent("archive-receipt.json"))
+            let backup = plan.directory.appendingPathComponent("archive-receipt.legacy-" + AudioRetention.digest(old) + ".json")
+            if FileManager.default.fileExists(atPath: backup.path) {
+                guard try ArchiveBacklog.read(backup) == old else { throw changed }
+            } else {
+                try old.write(to: backup, options: .atomic)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backup.path)
+            }
         }
         receipt["localTranscriptSHA256"] = plan.transcriptSHA256
         receipt["localEnvelopeSHA256"] = try GatewayArchive.envelopeFingerprint(plan.body)

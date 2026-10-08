@@ -64,7 +64,8 @@ struct RecentMeeting: Identifiable, Sendable {
             detail: issue?.detail ?? item.reason, notes: notes,
             transcript: readableDocument(transcript) ? transcript : nil,
             revision: state?.revision ?? 1, completionAttempts: item.retry?.completionAttempts ?? 0,
-            canVerifyLegacyReceipt: item.reason == LegacyReceiptReconciliation.reason,
+            canVerifyLegacyReceipt: item.reason == LegacyReceiptReconciliation.reason
+                || (state != nil && item.verifiedText == .transcript && LegacyReceiptReconciliation.receiptAbsent(item.directory)),
             canRetryLocalExport: item.verifiedText == .archive)
     }
     static func readableDocument(_ file: URL) -> Bool {

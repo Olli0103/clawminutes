@@ -111,15 +111,20 @@ enum TeamsMeetingTitle {
 enum MeetingDocuments {
     /// Bind each export to its original destination. Changing the default
     /// affects future exports; history requires an explicit migration.
-    static func exportRoot(recording: URL, fallbackRoot: URL) throws -> URL {
+    static func exportRoot(recording: URL, fallbackRoot: URL, missingReceiptSessionID: String? = nil) throws -> URL {
         let binding = recording.appendingPathComponent("notes-export-location.json")
         if FileManager.default.fileExists(atPath: binding.path) {
             let info = try ArchiveBacklog.object(binding)
+            let receiptFile = recording.appendingPathComponent("archive-receipt.json")
+            var receiptInfo = stat()
+            let missingReceipt = lstat(receiptFile.path, &receiptInfo) != 0 && errno == ENOENT
+            // Canonical-readback preparation may review an existing destination
+            // using its exact meeting identity. Publication still requires proof.
+            let expected = missingReceipt ? missingReceiptSessionID
+                : (try? ArchiveBacklog.object(receiptFile))?["sessionId"] as? String
             guard info["schemaVersion"] as? Int == 1, let root = info["root"] as? String, root.hasPrefix("/"),
                   let destination = info["destination"] as? String, destination.hasPrefix("/"),
-                  let sessionID = info["sessionId"] as? String,
-                  let receipt = try? ArchiveBacklog.object(recording.appendingPathComponent("archive-receipt.json")),
-                  receipt["sessionId"] as? String == sessionID else {
+                  let sessionID = info["sessionId"] as? String, expected == sessionID else {
                 throw TranscriptionFailure("Saved export location needs review. Existing notes preserved.")
             }
             let rootURL = URL(fileURLWithPath: root, isDirectory: true)
