@@ -47,7 +47,7 @@ final class GatewayHTTPContractTests: XCTestCase, @unchecked Sendable {
             return data
         }
         let negotiated = try GatewayCapabilities.verify(await capabilities())
-        XCTAssertEqual(negotiated.archive.verification, "isolated-readback-v1")
+        XCTAssertEqual(negotiated.archive.verification, "isolated-readback-v2")
         let meta: [String: Any] = ["started": "2026-10-08T08:00:00Z", "ended": "2026-10-08T08:01:00Z", "audio_started_at": 1791446400.0,
             "status": "stopped", "fixture": true, "notes_mode": "ai", "files": ["mic": "/forbidden/audio"],
             "note_template": ["id": "fixture", "name": "Fixture", "context": "Synthetic", "sections": [["title": "Summary", "instructions": "Summarize"]]]]

@@ -1,47 +1,56 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {randomUUID} from 'node:crypto';
-import {isDeepStrictEqual} from 'node:util';
+import {spawn} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import {DeliveryError} from './delivery-errors.mjs';
 
-// The version allowlist remains mandatory in archiveAdapter. This probe checks
-// observable storage semantics in an isolated directory, never the real archive.
+// Cache the loaded constructor and exact probe descriptor, never a version name.
+// A separate process bounds SDK work and releases its workers before cleanup.
 const verified=new WeakMap();
-export async function verifyArchiveStore(Store){
-  if(verified.has(Store))return verified.get(Store);
-  const pending=probe(Store);
-  verified.set(Store,pending);
-  try{await pending;}catch(error){verified.delete(Store);throw error;}
+export const archiveProbeTimeoutMs=20_000;
+export async function verifyArchiveStore(Store,descriptor){
+  const key=JSON.stringify(descriptor);
+  let entries=verified.get(Store);
+  if(!entries){entries=new Map();verified.set(Store,entries);}
+  if(entries.has(key))return entries.get(key);
+  const pending=probe(descriptor);entries.set(key,pending);
+  try{
+    await pending;
+    while(entries.size>4)entries.delete(entries.keys().next().value);
+  }catch(error){if(entries.get(key)===pending)entries.delete(key);throw error;}
 }
-async function probe(Store){
+async function probe(descriptor){
   let root;
   try{
     root=await fs.mkdtemp(path.join(os.tmpdir(),'clawminutes-store-probe-'));
     await fs.chmod(root,0o700);
-    const options={env:{...process.env,OPENCLAW_STATE_DIR:root}};
-    const directory=path.join(root,'transcripts');
-    const store=new Store(directory,options);
-    const id='teams-probe-'+randomUUID();
-    const session={sessionId:id,title:'Synthetic adapter check',source:{providerId:'teams-transcribe',kind:'recording'},
-      startedAt:'2026-10-08T00:00:00Z',stoppedAt:'2026-10-08T00:00:01Z',metadata:{fixture:true,contractProbe:1}};
-    const utterance={id:id+':0',sessionId:id,startedAt:session.startedAt,endedAt:session.stoppedAt,
-      speaker:{label:'Unknown speaker'},text:'Synthetic archive check.',final:true,metadata:{source:'system',attribution:'unknown'}};
-    const summary={sessionId:id,title:session.title,generatedAt:session.stoppedAt,source:'transcript-only',
-      overview:'Synthetic archive check.',participants:[],decisions:[],actionItems:[],risks:[],
-      transcript:['[2026-10-08T00:00:00Z] Unknown speaker: Synthetic archive check.'],utteranceCount:1};
-    await store.writeSession(session);
-    await store.appendUtteranceForSession(session,utterance);
-    await store.appendUtteranceForSession(session,utterance);
-    await store.writeSummary(summary,session);
-    const reopened=new Store(directory,options);
-    const saved=await reopened.readSession(id),rows=await reopened.readUtterancesForSession(session),snapshot=await reopened.readSummary(session);
-    const same=(a,b)=>isDeepStrictEqual(JSON.parse(JSON.stringify(a??null)),JSON.parse(JSON.stringify(b??null)));
-    if(!saved||['sessionId','title','source','startedAt','stoppedAt','metadata'].some(key=>!same(saved[key],session[key]))||
-       !Array.isArray(rows)||rows.length!==1||Object.keys(utterance).some(key=>!same(rows[0][key],utterance[key]))||
-       !snapshot||typeof snapshot.markdown!=='string'||!snapshot.markdown.includes(utterance.text)||
-       Object.keys(summary).some(key=>!same(snapshot.summary?.[key],summary[key])))throw Error('Archive contract differs');
+    await new Promise((resolve,reject)=>{
+      const child=spawn(process.execPath,[fileURLToPath(new URL('./archive-probe.mjs',import.meta.url)),JSON.stringify(descriptor),root],{
+        cwd:root,stdio:['ignore','pipe','ignore'],
+        env:{PATH:process.env.PATH||'',HOME:root,OPENCLAW_HOME:root,OPENCLAW_STATE_DIR:root,TMPDIR:root,TMP:root,TEMP:root}
+      });
+      let output='',bytes=0,failure;
+      function stop(error){failure??=error;child.kill('SIGKILL');}
+      const timer=setTimeout(()=>stop(Error('Archive probe deadline exceeded')),archiveProbeTimeoutMs);
+      child.stdout.on('data',data=>{
+        bytes+=data.length;
+        if(bytes>16_384)stop(Error('Archive probe output exceeded its bound'));
+        else output+=data.toString('utf8');
+      });
+      child.on('error',error=>{failure??=error;});
+      // Await close, including on timeout. Never remove files under a live probe.
+      child.on('close',(code,signal)=>{
+        clearTimeout(timer);
+        if(failure||code!==0||signal){reject(failure||Error('Archive probe failed'));return;}
+        try{
+          const result=JSON.parse(output);
+          if(Object.keys(result).length!==2||result.ok!==true||result.contract!==2)throw Error('Invalid archive proof');
+          resolve();
+        }catch(error){reject(error);}
+      });
+    });
   }catch(cause){
-    throw new DeliveryError('plugin_update_needed','The Gateway archive adapter failed its isolated readback check. Local files are preserved; no model was called.',{status:503,cause});
+    throw new DeliveryError('plugin_update_needed','The Gateway archive adapter failed its isolated contract check. Local files are preserved; no model was called.',{status:503,cause});
   }finally{if(root)await fs.rm(root,{recursive:true,force:true});}
 }

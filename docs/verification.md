@@ -175,3 +175,8 @@ Full native suite: 316 tests, 304 passed and 12 opt-in tests skipped. All 45 Jav
 ## Teams adapter isolation checkpoint
 
 Full native suite: 319 tests, 307 passed and 12 opt-in tests skipped. Negative scanner inputs never invoke the injected permission callback; denied synthetic Teams input reaches only that callback and cannot establish a call. Teams roster and active-speaker-frame evidence remain separate. The debug helper symbol audit excludes `ZoomWindowSpeakerDetector`, `ZoomSpeakerSample` and `SCScreenshotManager`; the legacy visual fixture is test-only and was skipped. Existing Teams frame, participant, consent, policy, end-state and HTTP tests pass. Both `c1fb701` CI runs passed. This is source/build evidence, not a live Teams scan or release-package/permission-continuity result.
+
+
+## Review candidate v2 SDK admission
+
+The earlier exact-version and bounded-range reports above describe previous candidates. The current candidate keeps the minimum plugin API and requires the v2 isolated storage/reader proof rather than an upper SDK version bound. Local verification passes 61 JavaScript tests, the production archive smoke and 489 native tests with 12 opt-in skips. The future-version case uses changed package metadata and the actual test SDK store; it is not an actual 2026.9.9 release test. The probe also exposed limitations of the real SDK readOnly option, so receipt verification keeps the existing-database guard and exposes only the exercised readers. See [current proof and limitations](gateway-capabilities.md) and [dated review evidence](review-plan.md). No installed lifecycle or provider action occurred.

@@ -37,12 +37,19 @@ struct GatewayCapabilities: Decodable, Sendable {
               value.capabilities.textEnvelope == 1, value.capabilities.structuredErrors == 1,
               value.capabilities.idempotentCompletedSave, value.capabilities.cappedNotesAttempts == 3,
               value.capabilities.revisions == 1, value.capabilities.notesRecovery == 1,
-              value.archive.adapterVersion == 1, ["2026.9.7", "2026.9.8"].contains(value.archive.sdkVersion),
-              value.archive.verification == "isolated-readback-v1",
+              verifiedArchive(value.archive),
               safeDisplay(value.gatewayMachine), value.notesModelConfigured == nil || safeDisplay(value.notesModelConfigured!) else {
             throw unsupported
         }
         return value
+    }
+    private static func verifiedArchive(_ archive: Archive) -> Bool {
+        guard archive.sdkVersion.count <= 80,
+              archive.sdkVersion.range(of: #"^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?\z"#, options: .regularExpression) != nil else { return false }
+        if archive.adapterVersion == 2 && archive.verification == "isolated-readback-v2" { return true }
+        // Preserve the earlier verified contract only for its known SDKs.
+        return archive.adapterVersion == 1 && archive.verification == "isolated-readback-v1"
+            && ["2026.9.7", "2026.9.8"].contains(archive.sdkVersion)
     }
     /// Older Gateways accept seven reasons and at most 32 ranges. Require the
     /// expanded contract only when this particular text package needs it.

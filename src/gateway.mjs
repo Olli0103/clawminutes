@@ -4,7 +4,7 @@ import os from 'node:os';
 import {createHash,randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {isDeepStrictEqual} from 'node:util';
-import {archiveAdapter,existingArchiveDatabase,meetingRecord,assertArchiveReadback,assertUtteranceCompatibility} from './archive.mjs';
+import {archiveRuntime,meetingRecord,assertArchiveReadback,assertUtteranceCompatibility} from './archive.mjs';
 import {validateTemplate,validateContext,validateParticipants,generateNotes,documents,restoreGeneratedNotes} from './notes.mjs';
 import {DeliveryError,deliveryError,safeErrorDiagnostic} from './delivery-errors.mjs';
 import {withNotesAttempt,validateNotesRecovery,authorizeTranscriptRecovery} from './notes-attempts.mjs';
@@ -74,7 +74,7 @@ export async function saveEnvelope(envelope,options={}){
 async function persistEnvelope(envelope,{openclawDir,stateDir,complete}={}){
   const e=envelope;const id=archiveIdentity(e.meta.started,e.recordingId);
   let record=meetingRecord(e.meta,e.transcript,id);record.session.metadata.fixture=e.meta.fixture===true;
-  const Store=await archiveAdapter(openclawDir);const store=new Store(path.join(stateDir,'transcripts'),{env:{...process.env,OPENCLAW_STATE_DIR:stateDir}});
+  const {Store}=await archiveRuntime(openclawDir);const store=new Store(path.join(stateDir,'transcripts'),{env:{...process.env,OPENCLAW_STATE_DIR:stateDir}});
   await verifyRevisionParent(store,record,e.meta.revision);
   const existing=await store.readSession(id);
   if(existing){
@@ -105,7 +105,7 @@ async function persistEnvelope(envelope,{openclawDir,stateDir,complete}={}){
   assertArchiveReadback(record,rows,summary);
   return archiveReceipt(record,rows);
 }
-// Read the canonical store with the SDK's readOnly admission. Verification never
+// Use the verified reader-only interface on an existing database. Verification never
 // reserves notes attempts, generates a summary or writes session/export records.
 export async function verifyEnvelope(envelope,{openclawDir,stateDir}={}){
   let e;
@@ -114,10 +114,9 @@ export async function verifyEnvelope(envelope,{openclawDir,stateDir}={}){
   if(pendingSaves.has(key))throw new DeliveryError('save_in_progress','A save is in progress. Wait before verifying.',{retryable:true,status:409});
   const id=archiveIdentity(e.meta.started,e.recordingId);
   const record=meetingRecord(e.meta,e.transcript,id);record.session.metadata.fixture=e.meta.fixture===true;
-  const Store=await archiveAdapter(openclawDir);
-  const databasePath=await existingArchiveDatabase(openclawDir,stateDir);
-  if(!databasePath)throw new DeliveryError('archive_not_verified','A completed Gateway archive was not found. No meeting was saved.',{status:409});
-  const store=new Store(path.join(stateDir,'transcripts'),{path:databasePath,readOnly:true,env:{...process.env,OPENCLAW_STATE_DIR:stateDir}});
+  const runtime=await archiveRuntime(openclawDir);
+  const store=await runtime.existingReader(stateDir);
+  if(!store)throw new DeliveryError('archive_not_verified','A completed Gateway archive was not found. No meeting was saved.',{status:409});
   const existing=await store.readSession(id);
   const receipt=existing&&await completedReceipt(e,record,store,existing);
   if(!receipt)throw new DeliveryError('archive_not_verified','A matching completed Gateway meeting was not found. Local files are preserved; nothing was saved.',{status:409});

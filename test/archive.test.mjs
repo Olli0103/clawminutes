@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {meetingRecord,archiveAdapter} from '../src/archive.mjs';
+import {meetingRecord,archiveRuntime} from '../src/archive.mjs';
 import plugin from '../src/index.js';
 const meta={started:'2026-10-01T10:00:00Z',audio_started_at:1790848800,status:'stopped'};
 const transcript={engine:'parakeet',model:'parakeet-tdt-0.6b-v3-coreml',execution_machine:'recording-mac',execution_location:'recording_mac',segments:[{start_ms:500,end_ms:900,text:'Fixture speech',source:'system',speaker:'system_1',speaker_name:'Alice',attribution:'meeting_tile'}]};
@@ -8,7 +8,7 @@ test('archive preserves clock, STT model, execution host and separate notes prov
 test('acoustic labels and roster membership alone cannot become participant names',()=>{for(const attribution of ['diarization','participant_roster','audio_source','unknown',undefined]){const t={...transcript,segments:[{...transcript.segments[0],attribution}]};assert.equal(meetingRecord(meta,t,'f').utterances[0].speaker.label,'Unknown speaker');}});
 test('bad utterance clock rejects archival',()=>{assert.throws(()=>meetingRecord(meta,{...transcript,segments:[{...transcript.segments[0],end_ms:1}]},'f'),/Invalid utterance/);});
 test('plugin registration has no audio capture effect and exposes no remote Start',()=>{const cli=[],node=[],service=[];plugin.register({id:'teams-transcribe',registerHttpRoute:()=>{},registerSessionAction:()=>{},pluginConfig:{},registerCli:(...args)=>cli.push(args),registerNodeHostCommand:c=>node.push(c),registerService:s=>service.push(s)});assert.equal(cli.length,1);assert.deepEqual(node,[]);assert.equal(service.length,0);});
-test('archive fails closed without real installed runtime',async()=>{await assert.rejects(archiveAdapter(),/needs_evidence/);});
+test('archive fails closed without real installed runtime',async()=>{await assert.rejects(archiveRuntime(),/needs_evidence/);});
 
 test('Teams compact view label is excluded from archived and exported meeting titles',()=>{
   const r=meetingRecord({...meta,meeting_context:{title:'Meeting compact view | AI Standup'}},transcript,'fixture');

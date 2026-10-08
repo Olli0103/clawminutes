@@ -22,7 +22,7 @@ test('Gateway readiness checks the isolated store contract without a model call 
  assert.equal(response.code,200);assert.equal(response.body.rawAudioAccepted,false);
  assert.equal(response.body.capabilities.captureGapEvidence,2);assert.equal(response.body.capabilities.maximumCaptureGaps,maximumCaptureGaps);
  assert.equal(response.body.protocolVersion,1);assert.equal(response.body.capabilities.textEnvelope,1);
- assert.equal(response.body.archive.verification,'isolated-readback-v1');
+ assert.equal(response.body.archive.verification,'isolated-readback-v2');
  assert.equal(calls,0);assert.deepEqual(await fs.readdir(stateDir),[]);
  }finally{await fs.rm(stateDir,{recursive:true,force:true});}
 });

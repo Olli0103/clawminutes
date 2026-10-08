@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {saveEnvelope,installedRuntimeDirectory,validateEnvelope} from '../src/gateway.mjs';
-import {archiveAdapter} from '../src/archive.mjs';
+import {archiveRuntime} from '../src/archive.mjs';
 import {archiveIdentity,revisionRecordingId} from '../src/revisions.mjs';
 const template={id:'fixture',name:'Fixture',context:'Synthetic',sections:[{title:'Summary',instructions:'Summarize'}]};
 function envelope(){return {recordingId:'version-fixture',meta:{started:'2026-10-08T10:00:00Z',ended:'2026-10-08T10:01:00Z',audio_started_at:1791453600,status:'stopped',fixture:true,notes_mode:'ai',note_template:template},transcript:{engine:'parakeet',model:'parakeet-tdt-0.6b-v3-coreml',created_at:'2026-10-08T10:02:00Z',execution_machine:'fixture-mac',execution_location:'recording_mac',segments:[{speaker:'system_unknown',source:'system',start_ms:0,end_ms:1000,text:'Synthetic speech.'}]}};}
@@ -20,7 +20,7 @@ test('saved speaker corrections create an idempotent revision and preserve the o
   assert.notEqual(changed.sessionId,original.sessionId);assert.deepEqual(repeated.documents,changed.documents);assert.equal(calls,2);
   assert.match(changed.documents.transcriptMarkdown,/Fixture Alice/);assert.match(changed.documents.notesMarkdown,/Version: 2, supersedes/);
   const restored=await saveEnvelope(first,options);assert.deepEqual(restored.documents,original.documents);assert.equal(calls,2);
-  const Store=await archiveAdapter(options.openclawDir),store=new Store(path.join(stateDir,'transcripts'),{env:{...process.env,OPENCLAW_STATE_DIR:stateDir}});
+  const {Store}=await archiveRuntime(options.openclawDir),store=new Store(path.join(stateDir,'transcripts'),{env:{...process.env,OPENCLAW_STATE_DIR:stateDir}});
   const parent=await store.readSession(original.sessionId),child=await store.readSession(changed.sessionId);
   assert.equal(child.metadata.revision.parentSessionId,parent.sessionId);
   assert.equal((await store.readUtterancesForSession(parent))[0].speaker.label,'Unknown speaker');

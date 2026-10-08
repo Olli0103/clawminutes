@@ -26,6 +26,26 @@ final class GatewayCapabilitiesTests: XCTestCase, @unchecked Sendable {
         XCTAssertThrowsError(try GatewayCapabilities.verify(data(legacy)))
         XCTAssertThrowsError(try GatewayCapabilities.verify(Data(repeating: 32, count: 16_385)))
     }
+    func testFutureSDKRequiresTheStrongerObservableArchiveContract() throws {
+        var value = status()
+        for version in ["2026.9.7", "2026.9.9", "2026.9.9-rc.1+fixture"] {
+            value["archive"] = ["adapterVersion": 2, "sdkVersion": version, "verification": "isolated-readback-v2"]
+            XCTAssertEqual(try GatewayCapabilities.verify(data(value)).archive.sdkVersion, version)
+        }
+        let archives: [[String: Any]] = [
+            ["adapterVersion": 1, "sdkVersion": "2026.9.9", "verification": "isolated-readback-v2"],
+            ["adapterVersion": 2, "sdkVersion": "2026.9.9", "verification": "isolated-readback-v1"],
+            ["adapterVersion": 3, "sdkVersion": "2026.9.9", "verification": "isolated-readback-v2"],
+            ["adapterVersion": 2, "sdkVersion": "2026.9.9"],
+            ["adapterVersion": 2, "sdkVersion": "2026.9.9\n", "verification": "isolated-readback-v2"],
+            ["adapterVersion": 2, "sdkVersion": "../archive", "verification": "isolated-readback-v2"],
+            ["adapterVersion": 2, "sdkVersion": String(repeating: "9", count: 81), "verification": "isolated-readback-v2"]
+        ]
+        for archive in archives {
+            value["archive"] = archive
+            XCTAssertThrowsError(try GatewayCapabilities.verify(data(value)))
+        }
+    }
     private func session(_ root: URL) throws -> URL {
         let directory = root.appendingPathComponent("meeting")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

@@ -23,11 +23,11 @@ test('real SDK discovery admits this plugin on each supported host API',async()=
     const repo=new URL('../',import.meta.url);
     for(const name of ['package.json','openclaw.plugin.json'])await fs.copyFile(new URL(name,repo),path.join(plugin,name));
     await fs.cp(new URL('src',repo),path.join(plugin,'src'),{recursive:true});
-    for(const host of ['2026.9.7','2026.9.8','2026.9.9']) {
+    for(const host of ['2026.9.6','2026.9.7','2026.9.8','2026.9.9']) {
       const result=discover({loadPaths:[plugin],workspaceDir:temporary,env:{...process.env,HOME:temporary,OPENCLAW_HOME:temporary,OPENCLAW_STATE_DIR:temporary,OPENCLAW_COMPATIBILITY_HOST_VERSION:host}});
       const admitted=result.candidates.some(candidate=>candidate.packageName==='openclaw-teams-transcribe');
-      assert.equal(admitted,host!=='2026.9.9',`${host}: ${result.diagnostics.map(d=>d.message).join('; ')}`);
-      if(host==='2026.9.9')assert.ok(result.diagnostics.some(d=>/plugin requires plugin API/.test(d.message)));
+      assert.equal(admitted,host!=='2026.9.6',`${host}: ${result.diagnostics.map(d=>d.message).join('; ')}`);
+      if(host==='2026.9.6')assert.ok(result.diagnostics.some(d=>/plugin requires plugin API/.test(d.message)));
     }
   } finally {await fs.rm(temporary,{recursive:true,force:true});}
 });

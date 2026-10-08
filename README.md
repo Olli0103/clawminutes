@@ -35,7 +35,7 @@ This is an experimental source release. Local recording, transcription, Gateway 
 
 The recording helper requires Apple Silicon, macOS 15 or later, Microsoft Teams, and microphone, Screen & System Audio Recording, and Accessibility permissions. Building currently requires Xcode 27.2 beta with Swift 6.4, Python 3, and `cloudflared`.
 
-The Gateway plugin requires Node.js 24 or later and **OpenClaw 2026.9.7 or 2026.9.8**. The Meetings archive adapter currently uses those versions' internal store API and rejects other versions. This is a compatibility constraint, not a promise of support for every OpenClaw release.
+The Gateway plugin requires Node.js 24 or later and OpenClaw's plugin API 2026.9.7 or later. Its internal Meetings adapter admits an SDK only after an isolated storage contract passes. CI exercises the real 2026.9.7 and 2026.9.8 packages; newer version metadata alone does not establish compatibility. See [Gateway compatibility checks](docs/gateway-capabilities.md).
 
 ## Build from source
 
@@ -114,7 +114,7 @@ The meeting library searches local titles, notes and transcripts, with matching 
 
 Failed AI notes offer transcript-only recovery or an explicit additional attempt when the existing budget permits it. Recovery preserves the original transcript and earlier failures; it cannot reset paid-attempt limits. See [notes recovery](docs/notes-recovery.md) for replay behavior and legacy-ledger limits.
 
-Connection and delivery now require a [verified Gateway text/archive handshake](docs/gateway-capabilities.md). A successful HTTP response alone cannot send a meeting. The adapter checks its storage behavior with synthetic data in a temporary directory, while retaining the supported SDK version pins.
+Connection and delivery now require a [verified Gateway text/archive handshake](docs/gateway-capabilities.md). A successful HTTP response alone cannot send a meeting. The adapter checks synthetic storage and existing-archive reader behavior in a private child process with a 20-second deadline. Package discovery and the native handshake allow newer SDK versions that pass the stronger contract.
 
 ## Data flow and audio retention
 

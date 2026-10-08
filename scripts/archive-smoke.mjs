@@ -3,7 +3,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import assert from 'node:assert/strict';
-import {archiveAdapter} from '../src/archive.mjs';
+import {archiveRuntime} from '../src/archive.mjs';
 import {saveEnvelope} from '../src/gateway.mjs';
 const openclawDir=process.env.OPENCLAW_TEAMS_OPENCLAW_DIR;
 if(!openclawDir)throw Error('Set OPENCLAW_TEAMS_OPENCLAW_DIR to the development SDK directory.');
@@ -38,7 +38,7 @@ try{
   const renamed=directory+'-renamed';await fs.rename(directory,renamed);directory=renamed;
   const afterRename=await saveEnvelope(await readEnvelope(),options);
   assert.equal(afterRename.sessionId,first.sessionId);assert.deepEqual(afterRename.documents,first.documents);
-  const Store=await archiveAdapter(openclawDir);
+  const {Store}=await archiveRuntime(openclawDir);
   const store=new Store(path.join(stateDir,'transcripts'),{env:{...process.env,OPENCLAW_STATE_DIR:stateDir}});
   const session=await store.readSession(first.sessionId),rows=await store.readUtterancesForSession(session);
   assert.equal(session.metadata.fixture,true);assert.equal(rows.length,3);

@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {saveEnvelope,installedRuntimeDirectory} from '../src/gateway.mjs';
-import {archiveAdapter,meetingRecord} from '../src/archive.mjs';
+import {archiveRuntime,meetingRecord} from '../src/archive.mjs';
 
 test('real SDK archive preserves names, timing and gaps through repeated saves',async()=>{
   const stateDir=await fs.mkdtemp(path.join(os.tmpdir(),'clawminutes-sdk-contract-'));
@@ -61,7 +61,7 @@ test('a retry completes a partial archive rather than claiming delivery',async()
     const {createHash}=await import('node:crypto');
     const id='teams-'+createHash('sha256').update(payload.meta.started+'\n'+payload.recordingId).digest('hex').slice(0,24);
     const record=meetingRecord(payload.meta,payload.transcript,id);
-    const Store=await archiveAdapter(options.openclawDir);
+    const {Store}=await archiveRuntime(options.openclawDir);
     const store=new Store(path.join(stateDir,'transcripts'),{env:{...process.env,OPENCLAW_STATE_DIR:stateDir}});
     await store.writeSession(record.session);
     await store.appendUtteranceForSession(record.session,record.utterances[0]);
@@ -88,7 +88,7 @@ test('invalid model output stops automatic completions durably',async()=>{
 test('retry after a canonical summary write failure reuses persisted model output',async()=>{
   const stateDir=await fs.mkdtemp(path.join(os.tmpdir(),'clawminutes-summary-failure-'));
   const openclawDir=process.env.OPENCLAW_TEAMS_SDK_TEST_DIR||installedRuntimeDirectory();
-  const Store=await archiveAdapter(openclawDir),original=Store.prototype.writeSummary;
+  const {Store}=await archiveRuntime(openclawDir),original=Store.prototype.writeSummary;
   let fail=true,calls=0;
   try{
     Store.prototype.writeSummary=async function(...args){if(fail){fail=false;throw Error('Synthetic archive write failure');}return original.apply(this,args);};

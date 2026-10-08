@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {saveEnvelope,verifyEnvelope,gatewayHandler,installedRuntimeDirectory} from '../src/gateway.mjs';
-import {archiveAdapter} from '../src/archive.mjs';
+import {archiveRuntime} from '../src/archive.mjs';
 const payload={recordingId:'receipt-fixture',meta:{started:'2026-10-05T10:00:00Z',ended:'2026-10-05T10:01:00Z',audio_started_at:1791194400,status:'stopped',fixture:true,notes_mode:'ai',note_template:{id:'fixture',name:'Fixture',context:'Synthetic',sections:[{title:'Summary',instructions:'Summarize'}]}},transcript:{engine:'parakeet',model:'parakeet-tdt-0.6b-v3-coreml',created_at:'2026-10-05T10:02:00Z',execution_machine:'fixture',execution_location:'recording_mac',segments:[{speaker:'unknown',source:'system',start_ms:0,end_ms:1000,text:'Synthetic speech.'}]}};
 const runtime=process.env.OPENCLAW_TEAMS_SDK_TEST_DIR||installedRuntimeDirectory();
 async function request(body,mode,options){
@@ -16,7 +16,7 @@ async function request(body,mode,options){
 test('verification reads completed canonical notes without model, store or attempt-ledger writes',async()=>{
  const stateDir=await fs.mkdtemp(path.join(os.tmpdir(),'clawminutes-verify-'));let calls=0;
  const options={stateDir,openclawDir:runtime,complete:async()=>{calls++;return {provider:'fixture',model:'fixture',text:JSON.stringify({sections:[{title:'Summary',body:'Synthetic notes.'}]})};}};
- const Store=await archiveAdapter(runtime);const methods=['writeSession','appendUtteranceForSession','writeSummary'];const originals=Object.fromEntries(methods.map(name=>[name,Store.prototype[name]]));
+ const {Store}=await archiveRuntime(runtime);const methods=['writeSession','appendUtteranceForSession','writeSummary'];const originals=Object.fromEntries(methods.map(name=>[name,Store.prototype[name]]));
  const readWorker=Store.prototype.readWorker;const admissions=[];
  try{
   const saved=await saveEnvelope(payload,options);
@@ -59,7 +59,7 @@ test('a partial canonical save is reported incomplete rather than completed or r
  try{
   const {meetingRecord}=await import('../src/archive.mjs');const {archiveIdentity}=await import('../src/revisions.mjs');
   const record=meetingRecord(payload.meta,payload.transcript,archiveIdentity(payload.meta.started,payload.recordingId));
-  const Store=await archiveAdapter(runtime);const store=new Store(path.join(stateDir,'transcripts'),{env:{...process.env,OPENCLAW_STATE_DIR:stateDir}});
+  const {Store}=await archiveRuntime(runtime);const store=new Store(path.join(stateDir,'transcripts'),{env:{...process.env,OPENCLAW_STATE_DIR:stateDir}});
   await store.writeSession(record.session);await store.appendUtteranceForSession(record.session,record.utterances[0]);
   await assert.rejects(verifyEnvelope(payload,{stateDir,openclawDir:runtime}),error=>error.code==='archive_not_verified');
   assert.equal((await store.readSummary(record.session))?.summary,undefined);

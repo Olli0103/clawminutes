@@ -1,51 +1,6 @@
-import fs from 'node:fs/promises';
-import path from 'node:path';
 import os from 'node:os';
-import {pathToFileURL} from 'node:url';
 import {DeliveryError} from './delivery-errors.mjs';
-import {verifyArchiveStore} from './archive-contract.mjs';
-// Verified SDK releases expose no public completed-record import.
-// Use its real canonical store and lease machinery, never write guessed SQLite rows.
-export const verifiedArchiveVersions = Object.freeze(['2026.9.7','2026.9.8']);
-export async function archiveAdapter(openclawDir) {
-  if(!openclawDir) throw new DeliveryError('plugin_update_needed','needs_evidence: installed OpenClaw directory is required for the Meetings archive adapter.',{status:503});
-  try{
-    const pkg=JSON.parse(await fs.readFile(path.join(openclawDir,'package.json'),'utf8'));
-    if(!verifiedArchiveVersions.includes(pkg.version)) throw new DeliveryError('plugin_update_needed',`Archive adapter verified only for OpenClaw ${verifiedArchiveVersions.join(' or ')}. This SDK version is unsupported. Recording preserved.`,{status:503});
-    const dist=path.join(openclawDir,'dist');
-    for(const f of (await fs.readdir(dist)).filter(f=>/^store-.*\.mjs$/.test(f))) {
-      const source=await fs.readFile(path.join(dist,f),'utf8');
-      if(!source.includes('src/transcripts/store.ts')) continue;
-      const module=await import(pathToFileURL(path.join(dist,f)).href);
-      const Store=Object.values(module).find(v=>typeof v==='function' && typeof v.prototype?.appendUtteranceForSession==='function');
-      if(Store) { await verifyArchiveStore(Store); return Store; }
-    }
-  }catch(cause){
-    if(cause instanceof DeliveryError)throw cause;
-    throw new DeliveryError('plugin_update_needed','The Gateway archive implementation could not be verified. Check the installed SDK and plugin versions. Local files are preserved.',{status:503,cause});
-  }
-  throw new DeliveryError('plugin_update_needed','needs_evidence: OpenClaw transcript store implementation changed. Recording preserved.',{status:503});
-}
-// Use the pinned SDK's pure path resolver before constructing a read worker.
-// The worker otherwise creates an empty state directory even in readOnly mode.
-export async function archiveDatabaseResolver(openclawDir){
-  const dist=path.join(openclawDir,'dist');
-  for(const name of (await fs.readdir(dist)).filter(name=>/^openclaw-state-db\.paths-.*\.mjs$/.test(name))){
-    const module=await import(pathToFileURL(path.join(dist,name)).href);
-    const resolve=Object.values(module).find(value=>typeof value==='function'&&value.name==='resolveOpenClawStateSqlitePath');
-    if(resolve)return resolve;
-  }
-  throw new DeliveryError('plugin_update_needed','The installed SDK archive path resolver could not be verified. No canonical archive was opened.',{status:503});
-}
-export async function existingArchiveDatabase(openclawDir,stateDir){
-  const resolve=await archiveDatabaseResolver(openclawDir);
-  const file=resolve({...process.env,OPENCLAW_STATE_DIR:stateDir});
-  try{
-    const info=await fs.lstat(file);
-    if(!info.isFile()||info.isSymbolicLink())throw Error('Archive database requires review');
-    return file;
-  }catch(error){if(error.code==='ENOENT')return null;throw error;}
-}
+export {archiveRuntime} from './archive-sdk.mjs';
 export function meetingRecord(meta,transcript,id) {
   if(!Array.isArray(transcript.segments) || !transcript.engine || !transcript.model) throw Error('Invalid transcript provenance');
   const origin=meta.audio_started_at*1000;
