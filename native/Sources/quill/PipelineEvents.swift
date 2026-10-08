@@ -15,7 +15,7 @@ enum PipelineEvents {
     static let maximumBytes = 1_000_000
     static let knownCodes: Set<String> = [
         "local_model_missing", "speech_credentials_missing", "speech_recognition_failed", "speech_retry_limit",
-        "pipeline_state_invalid", "sign_in_required", "network_unavailable", "plugin_unavailable",
+        "pipeline_state_invalid", "pipeline_state_conflict", "legacy_attempts_unverified", "sign_in_required", "network_unavailable", "plugin_unavailable",
         "gateway_unavailable", "plugin_update_needed", "local_save_failed", "revision_conflict", "revision_parent_unavailable",
         "ai_retry_limit", "ai_invalid_output", "ai_completion_failed", "ai_input_too_large", "ai_tool_attempt",
         "notes_model_unavailable", "notes_owner_required", "notes_cache_failed", "notes_state_conflict", "notes_recovery_unavailable", "notes_retry_consumed",

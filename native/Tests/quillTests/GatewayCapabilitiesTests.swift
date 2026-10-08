@@ -71,14 +71,16 @@ final class GatewayCapabilitiesTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(try ArchiveBacklog.read(file), before, "A generic Retry cannot bypass compatibility review")
         let proof = try GatewayCapabilities.verify(data(status()))
         try ArchiveBacklog.rearmConnection(ArchiveBacklog.inspect(directory), now: 2000, capabilities: proof)
-        let ready = try JSONDecoder().decode(ArchiveBacklog.Retry.self, from: ArchiveBacklog.read(file))
+        let ready = try XCTUnwrap(MeetingPipelineState.load(directory).deliveryRetry)
         XCTAssertNil(ready.lastError); XCTAssertEqual(ready.attempts, 4); XCTAssertEqual(ready.completionAttempts, 1)
         XCTAssertTrue(ArchiveBacklog.inspect(directory).pending)
-        var invalidOutput = retry
-        invalidOutput.lastError = DeliveryFailure(code: "ai_invalid_output", detail: "Synthetic", retryable: false, completionAttempted: true)
-        try JSONEncoder().encode(invalidOutput).write(to: file)
-        let blocked = try ArchiveBacklog.read(file)
+        XCTAssertEqual(try ArchiveBacklog.read(file), before, "Legacy evidence stays frozen after migration")
+        var state = try MeetingPipelineState.load(directory)
+        state.delivery.lastError = DeliveryFailure(code: "ai_invalid_output", detail: "Synthetic", retryable: false, completionAttempted: true)
+        try state.write(directory)
+        let stateFile = directory.appendingPathComponent("state.json")
+        let blocked = try ArchiveBacklog.read(stateFile)
         try ArchiveBacklog.rearmConnection(ArchiveBacklog.inspect(directory), now: 3000, capabilities: proof)
-        XCTAssertEqual(try ArchiveBacklog.read(file), blocked, "A verified connection cannot grant an AI retry")
+        XCTAssertEqual(try ArchiveBacklog.read(stateFile), blocked, "A verified connection cannot grant an AI retry")
     }
 }

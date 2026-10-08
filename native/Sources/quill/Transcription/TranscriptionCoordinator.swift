@@ -258,7 +258,8 @@ actor TranscriptionCoordinator {
                 log(dir, "postprocess: \(cleanup.status)")
                 await runHook(for: dir)
                 let item = backlogIndex.item(dir)
-                if var state { state.reconcile(item, now: clock()); try state.write(dir) }
+                var latest = try MeetingPipelineState.load(dir)
+                latest.reconcile(item, now: clock()); try latest.write(dir)
                 switch lastIssue {
                 case .failed(let name), .needsReview(let name, _): if name == dir.lastPathComponent && item.state == .saved { lastIssue = nil }
                 default: break

@@ -13,7 +13,8 @@ final class HelperDiagnosticsTests: XCTestCase {
         try data.write(to: settings)
         try Data(#"{"started":"2026-10-08T10:00:00Z","ended":"2026-10-08T11:00:00Z","status":"stopped","recording_id":"PRIVATE-ID","meeting_context":{"title":"PRIVATE-TITLE"}}"#.utf8).write(to: dir.appendingPathComponent("meta.json"))
         var state = try MeetingPipelineState.load(dir)
-        state.transcription.lastError = DeliveryFailure(code: "PRIVATE-CODE", detail: "PRIVATE-PROVIDER-DETAIL", retryable: false, completionAttempted: false)
+        state.schemaVersion = 1 // Legacy fixture; the report imports without publishing a new generation.
+        state.transcription.lastError = DeliveryFailure(code: "private_code", detail: "PRIVATE-PROVIDER-DETAIL", retryable: false, completionAttempted: false)
         // Write directly so the read-only report has no event-producing setup side effect.
         let original = try JSONEncoder().encode(state)
         try original.write(to: dir.appendingPathComponent("state.json"))

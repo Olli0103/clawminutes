@@ -75,6 +75,11 @@ final class ArchiveBacklogTests: XCTestCase, @unchecked Sendable {
         let id = "teams-" + AudioRetention.digest(Data(("2026-10-07T09:00:00Z\n" + dir.lastPathComponent).utf8)).prefix(24)
         let receipt: [String: Any] = ["saved": true, "sessionId": id, "utteranceCount": 1,
             "localTranscriptSHA256": AudioRetention.digest(data), "documents": ["title": "fixture"]]
+        var state = try MeetingPipelineState.load(dir)
+        state.delivery = .init(count: 5, nextAttemptAt: 7000,
+            lastError: DeliveryFailure(code: "ai_retry_limit", detail: "Synthetic capped attempt", retryable: false, completionAttempted: true),
+            transcriptSHA256: AudioRetention.digest(data), completionAttempts: 3)
+        try state.write(dir)
         try JSONSerialization.data(withJSONObject: receipt).write(to: dir.appendingPathComponent("archive-receipt.json"))
         try Data(notes.appendingPathComponent("meeting").path.utf8).write(to: dir.appendingPathComponent("notes-export-path.txt"))
         XCTAssertEqual(ArchiveBacklog.inspect(dir, notesRoot: notes).state, .exportPending)
@@ -90,7 +95,7 @@ final class ArchiveBacklogTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(ArchiveBacklog.inspect(dir, notesRoot: changedRoot).state, .saved, "A bound export remains saved after changing defaults")
         XCTAssertFalse(FileManager.default.fileExists(atPath: changedRoot.path))
         try Data(#"{"segments":[{"text":"Changed speech","start_ms":0,"end_ms":1000}]}"#.utf8).write(to: dir.appendingPathComponent("transcript.json"))
-        XCTAssertEqual(ArchiveBacklog.inspect(dir, notesRoot: notes).state, .archivePending)
+        XCTAssertEqual(ArchiveBacklog.inspect(dir, notesRoot: notes).state, .needsReview, "Changing delivered speech cannot reset an existing attempt ledger")
     }
 
     func testOverlappingBacklogChecksNeverSendTwice() async throws {

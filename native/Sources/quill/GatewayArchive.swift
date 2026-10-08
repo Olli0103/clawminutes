@@ -165,8 +165,8 @@ enum GatewayArchive {
             }
             meta["participants"] = ["joined": joined, "coverage": joined.isEmpty ? "unavailable" : "partial", "invited": [], "invitees_status": "unavailable"]
         }
-        let retryFile = dir.appendingPathComponent("archive-retry.json")
-        let retry = FileManager.default.fileExists(atPath: retryFile.path) ? try JSONDecoder().decode(ArchiveBacklog.Retry.self, from: ArchiveBacklog.read(retryFile)) : nil
+        let retry = try MeetingPipelineState.load(dir).deliveryRetry
+        guard retry == nil || retry?.transcriptSHA256 == AudioRetention.digest(transcriptData) else { throw MeetingPipelineState.invalidState }
         if let recovery = try NotesRecovery.active(dir, retry: retry, transcriptData: transcriptData) { meta["notes_recovery"] = recovery.json }
         // Verify before transmitting speech. Receipted local-export recovery
         // above remains usable offline and does not need this request.

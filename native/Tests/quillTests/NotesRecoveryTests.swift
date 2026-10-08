@@ -59,20 +59,43 @@ final class NotesRecoveryTests: XCTestCase {
         XCTAssertFalse(ArchiveBacklog.inspect(directory).pending)
         XCTAssertThrowsError(try NotesRecovery.prepare(directory, kind: .retryAI, activityLockPath: root.appendingPathComponent("lease")))
     }
-    func testInterruptedIntentPublicationKeepsOldRequestAndStaleSourcesFailClosed() throws {
+    func testLegacyInterruptedIntentPublicationKeepsOldRequestAndStaleSourcesFailClosed() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let directory = try session(root)
-        let first = try NotesRecovery.prepare(directory, kind: .retryAI, now: 1100, activityLockPath: root.appendingPathComponent("lease"))
-        let oldRetry = try ArchiveBacklog.read(directory.appendingPathComponent("archive-retry.json"))
-        try ArchiveBacklog.recordFailure(DeliveryFailure(code: "ai_invalid_output", detail: "Synthetic", retryable: false, completionAttempted: true), directory: directory)
-        _ = try NotesRecovery.prepare(directory, kind: .transcriptOnly, now: 1200, activityLockPath: root.appendingPathComponent("lease"))
-        try oldRetry.write(to: directory.appendingPathComponent("archive-retry.json"))
+        let first = NotesRecovery.Request(kind: .retryAI, id: UUID().uuidString)
+        let second = NotesRecovery.Request(kind: .transcriptOnly, id: UUID().uuidString)
         let transcript = try ArchiveBacklog.read(directory.appendingPathComponent("transcript.json"))
-        let retry = try JSONDecoder().decode(ArchiveBacklog.Retry.self, from: oldRetry)
+        let file = directory.appendingPathComponent("archive-retry.json")
+        var retry = try JSONDecoder().decode(ArchiveBacklog.Retry.self, from: ArchiveBacklog.read(file))
+        retry.recoveryID = first.id; retry.lastError = nil
+        try JSONEncoder().encode(retry).write(to: file)
+        let intent = NotesRecovery.Intent(schemaVersion: 1, recordingIdentity: try MeetingPipelineState.identity(directory),
+            transcriptSHA256: AudioRetention.digest(transcript), request: second, history: [], previousRequest: first)
+        try JSONEncoder().encode(intent).write(to: directory.appendingPathComponent("notes-recovery.json"))
         XCTAssertEqual(try NotesRecovery.active(directory, retry: retry, transcriptData: transcript), first)
+        var state = try MeetingPipelineState.load(directory)
+        try state.write(directory)
+        XCTAssertEqual(try NotesRecovery.active(directory, retry: state.deliveryRetry, transcriptData: transcript), first)
         try Data("Changed speech".utf8).write(to: directory.appendingPathComponent("transcript.json"))
         XCTAssertThrowsError(try NotesRecovery.active(directory, retry: retry, transcriptData: Data("Changed speech".utf8)))
+    }
+    func testRecoveryPublishesOneStateAndFreezesLegacyEvidence() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directory = try session(root), legacy = directory.appendingPathComponent("archive-retry.json")
+        let original = try ArchiveBacklog.read(legacy)
+        let request = try NotesRecovery.prepare(directory, kind: .retryAI, activityLockPath: root.appendingPathComponent("lease"))
+        let state = try MeetingPipelineState.load(directory)
+        XCTAssertEqual(state.notesRecovery?.request, request)
+        XCTAssertEqual(state.delivery.recoveryID, request.id)
+        XCTAssertEqual(state.delivery.completionAttempts, 1)
+        XCTAssertEqual(state.delivery.count, 1)
+        XCTAssertEqual(try ArchiveBacklog.read(legacy), original)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("notes-recovery.json").path))
+        try Data("{}".utf8).write(to: legacy)
+        XCTAssertThrowsError(try MeetingPipelineState.load(directory))
+        XCTAssertFalse(ArchiveBacklog.inspect(directory).pending)
     }
     func testClosedRequestAndSavedMeetingsCannotBeRearmed() throws {
         XCTAssertThrowsError(try NotesRecovery.Request.decode(["kind": "retry_ai", "id": UUID().uuidString, "audio": "forbidden"]))

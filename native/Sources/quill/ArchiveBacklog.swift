@@ -12,7 +12,7 @@ enum ArchiveBacklog {
         var retry: Retry?
         var pending: Bool { state == .archivePending || state == .exportPending }
     }
-    struct Retry: Codable, Sendable {
+    struct Retry: Codable, Equatable, Sendable {
         var attempts: Int
         var nextAttemptAt: TimeInterval
         var transcriptSHA256: String
@@ -79,18 +79,17 @@ enum ArchiveBacklog {
             let data = try read(transcriptURL)
             guard let transcript = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                   transcript["segments"] is [[String: Any]] else { return item(.needsReview, "Transcript is invalid") }
-            var retry: Retry?
-            let retryURL = dir.appendingPathComponent("archive-retry.json")
-            if FileManager.default.fileExists(atPath: retryURL.path) {
-                let saved = try JSONDecoder().decode(Retry.self, from: read(retryURL))
-                guard saved.attempts > 0, saved.nextAttemptAt.isFinite else { return item(.needsReview, "Retry metadata is invalid") }
-                if saved.transcriptSHA256 == AudioRetention.digest(data) {
-                    retry = saved
-                    let recovery = try NotesRecovery.active(dir, retry: saved, transcriptData: data)
-                    if saved.lastError?.retryable == false || ((saved.completionAttempts ?? 0) >= 3 && recovery?.kind != .transcriptOnly) {
-                        return Item(directory: dir, state: .needsReview, reason: saved.lastError?.detail ?? "AI notes stopped after three attempts", retry: retry)
-                    }
+            let state = try MeetingPipelineState.load(dir)
+            let retry = state.deliveryRetry
+            if let retry, retry.transcriptSHA256 != AudioRetention.digest(data) {
+                return item(.needsReview, "Transcript changed after a delivery attempt. Create a new revision before sending it again.")
+            }
+            func pendingDelivery(_ reason: String) throws -> Item {
+                let recovery = try NotesRecovery.active(dir, retry: retry, transcriptData: data)
+                if retry?.lastError?.retryable == false || ((retry?.completionAttempts ?? 0) >= 3 && recovery?.kind != .transcriptOnly) {
+                    return Item(directory: dir, state: .needsReview, reason: retry?.lastError?.detail ?? "AI notes stopped after three attempts", retry: retry)
                 }
+                return Item(directory: dir, state: .archivePending, reason: reason, retry: retry)
             }
             let savedReceipt = try? object(dir.appendingPathComponent("archive-receipt.json"))
             if let receipt = savedReceipt, receipt["localTranscriptSHA256"] == nil,
@@ -99,10 +98,10 @@ enum ArchiveBacklog {
             }
             guard let receipt = savedReceipt,
                   receiptMatches(receipt, transcriptData: data, meta: meta, directory: dir) else {
-                return Item(directory: dir, state: .archivePending, reason: "No verified receipt for this transcript", retry: retry)
+                return try pendingDelivery("No verified receipt for this transcript")
             }
             guard receipt["documents"] is [String: Any] else {
-                return Item(directory: dir, state: .archivePending, reason: "Gateway receipt has no meeting documents", retry: retry)
+                return try pendingDelivery("Gateway receipt has no meeting documents")
             }
             guard let text = try? String(data: read(dir.appendingPathComponent("notes-export-path.txt")), encoding: .utf8),
                   text.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("/") else {
@@ -132,13 +131,18 @@ enum ArchiveBacklog {
             .map { inspect($0, notesRoot: notesRoot) }
     }
     static func reserve(_ item: Item, now: TimeInterval) throws {
+        guard item.pending, inspect(item.directory).pending else { throw MeetingPipelineState.conflictingState }
+        var state = try MeetingPipelineState.load(item.directory)
         let data = try read(item.directory.appendingPathComponent("transcript.json"))
-        let attempts = min((item.retry?.attempts ?? 0) + 1, 1000)
-        let retry = Retry(attempts: attempts, nextAttemptAt: now + Retry.delay(attempt: attempts), transcriptSHA256: AudioRetention.digest(data),
-                          completionAttempts: item.retry?.completionAttempts, lastError: item.retry?.lastError, recoveryID: item.retry?.recoveryID)
-        let path = item.directory.appendingPathComponent("archive-retry.json")
-        try JSONEncoder().encode(retry).write(to: path, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+        guard state.deliveryRetry == item.retry,
+              state.delivery.transcriptSHA256 == nil || state.delivery.transcriptSHA256 == AudioRetention.digest(data),
+              state.delivery.count < 1000 else { throw MeetingPipelineState.conflictingState }
+        state.delivery.count += 1
+        state.delivery.nextAttemptAt = now + Retry.delay(attempt: state.delivery.count)
+        state.delivery.transcriptSHA256 = AudioRetention.digest(data)
+        if state.delivery.budgetUnverified != true, state.delivery.completionAttempts == nil { state.delivery.completionAttempts = 0 }
+        state.stage = .delivering; state.updatedAt = now
+        try state.write(item.directory)
     }
 
     /// Reconnection permits one authenticated send. Compatibility failures need
@@ -146,29 +150,30 @@ enum ArchiveBacklog {
     static func rearmConnection(_ item: Item, now: TimeInterval, capabilities: GatewayCapabilities? = nil) throws {
         let cause = item.retry?.lastError?.code
         guard cause == "sign_in_required" || (cause == "plugin_update_needed" && capabilities != nil) else { return }
-        let file = item.directory.appendingPathComponent("archive-retry.json")
-        let transcriptOnly = try NotesRecovery.active(item.directory, retry: item.retry,
+        var state = try MeetingPipelineState.load(item.directory)
+        guard state.deliveryRetry == item.retry else { throw MeetingPipelineState.conflictingState }
+        let transcriptOnly = try NotesRecovery.active(item.directory, retry: state.deliveryRetry,
             transcriptData: read(item.directory.appendingPathComponent("transcript.json")))?.kind == .transcriptOnly
-        guard (item.retry?.completionAttempts ?? 0) < 3 || transcriptOnly else { return }
-        var retry = try JSONDecoder().decode(Retry.self, from: read(file))
-        guard retry.lastError?.code == cause, retry.transcriptSHA256 == item.retry?.transcriptSHA256 else { return }
-        retry.lastError = nil
-        retry.nextAttemptAt = now
-        try JSONEncoder().encode(retry).write(to: file, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        guard (state.delivery.completionAttempts ?? 0) < 3 || transcriptOnly else { return }
+        guard state.delivery.budgetUnverified != true || transcriptOnly else { return }
+        state.delivery.lastError = nil; state.delivery.lastErrorAt = nil
+        state.delivery.nextAttemptAt = now; state.stage = .transcribed; state.updatedAt = now
+        try state.write(item.directory)
     }
 
     static func recordFailure(_ error: Error, directory: URL) throws {
-        let path = directory.appendingPathComponent("archive-retry.json")
-        var retry = try JSONDecoder().decode(Retry.self, from: read(path))
+        var state = try MeetingPipelineState.load(directory)
+        let data = try read(directory.appendingPathComponent("transcript.json"))
+        guard state.delivery.count > 0, state.delivery.transcriptSHA256 == AudioRetention.digest(data) else { throw MeetingPipelineState.invalidState }
         var failure = DeliveryFailure.classify(error)
-        if failure.completionAttempted { retry.completionAttempts = min((retry.completionAttempts ?? 0) + 1, 3) }
-        let transcriptOnly = try NotesRecovery.active(directory, retry: retry, transcriptData: read(directory.appendingPathComponent("transcript.json")))?.kind == .transcriptOnly
-        if (retry.completionAttempts ?? 0) >= 3 && !transcriptOnly {
+        if failure.completionAttempted { state.delivery.completionAttempts = min((state.delivery.completionAttempts ?? 0) + 1, 3) }
+        let transcriptOnly = try NotesRecovery.active(directory, retry: state.deliveryRetry, transcriptData: data)?.kind == .transcriptOnly
+        if (state.delivery.completionAttempts ?? 0) >= 3 && !transcriptOnly {
             failure = DeliveryFailure(code: "ai_retry_limit", detail: "AI notes stopped after three attempts. Review this meeting or save transcript-only notes.", retryable: false, completionAttempted: failure.completionAttempted)
         }
-        retry.lastError = failure
-        try JSONEncoder().encode(retry).write(to: path, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+        state.delivery.lastError = failure; state.delivery.lastErrorAt = Date().timeIntervalSince1970
+        state.stage = failure.retryable ? .transcribed : .needsAttention
+        state.updatedAt = state.delivery.lastErrorAt!
+        try state.write(directory)
     }
 }

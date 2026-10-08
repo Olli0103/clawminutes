@@ -119,7 +119,7 @@ final class RecordingSession {
         var initial: [String: Any] = ["started": ISO8601DateFormatter().string(from: startedAt), "audio_started_at": startedAt.timeIntervalSince1970, "backend": selectedBackend, "notes_mode": notesMode, "status": "recording", "files": ["mic": "mic.caf", "system": "system.caf"], "start_offset_ms": ["mic": 0, "system": 0]]
         addMeetingMetadata(&initial)
         try JSONSerialization.data(withJSONObject: initial).write(to: dir.appendingPathComponent("meta.json"), options: .atomic)
-        let state = try MeetingPipelineState.load(dir)
+        var state = try MeetingPipelineState.load(dir)
         try state.write(dir)
         roster = ParticipantRoster(audio_started_at: startedAt.timeIntervalSince1970)
         if let roster { try JSONEncoder().encode(roster).write(to: dir.appendingPathComponent("participants.json"), options: .atomic) }

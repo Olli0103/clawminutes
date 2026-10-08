@@ -1,7 +1,7 @@
 import Foundation
 
 /// Persistable recovery instructions. Details never contain auth headers or raw responses.
-struct DeliveryFailure: Error, Codable, Sendable, CustomStringConvertible {
+struct DeliveryFailure: Error, Codable, Equatable, Sendable, CustomStringConvertible {
     let code: String
     let detail: String
     let retryable: Bool

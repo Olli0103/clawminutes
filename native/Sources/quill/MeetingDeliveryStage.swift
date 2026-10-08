@@ -17,26 +17,27 @@ actor MeetingDeliveryStage {
     func deliver(_ dir: URL, now: TimeInterval) async -> Result {
         guard !busy, ArchiveBacklog.isFinished(dir) else { return .skipped }
         busy = true; defer { busy = false }
+        var reserved = false
         do {
             let lease = try HelperWorkLease.acquire(at: activityLockPath)
             defer { withExtendedLifetime(lease) {} }
             let item = ArchiveBacklog.inspect(dir)
             guard item.pending else { return .skipped }
             try ArchiveBacklog.reserve(item, now: now)
-            var state = try MeetingPipelineState.load(dir, inspected: item, now: now)
-            state.stage = .delivering; state.updatedAt = now; try state.write(dir)
+            reserved = true
             try await saveArchive(dir)
-            try? FileManager.default.removeItem(at: dir.appendingPathComponent("archive-retry.json"))
             MeetingLog.append(dir, "Gateway Meetings archive saved and read back")
             let saved = ArchiveBacklog.inspect(dir)
             if saved.state == .saved || (saved.state == .needsReview && saved.reason.hasPrefix("Notes and transcript saved")) {
                 let meeting = RecentMeeting.make(saved)
                 onSaved(meeting)
             }
+            var state = try MeetingPipelineState.load(dir)
+            state.reconcile(saved, now: now); try state.write(dir)
             MeetingRetention.apply(dir)
             return .saved
         } catch {
-            do { try ArchiveBacklog.recordFailure(error, directory: dir) }
+            do { if reserved { try ArchiveBacklog.recordFailure(error, directory: dir) } }
             catch { MeetingLog.append(dir, "Could not persist the save failure. Local files preserved.") }
             let failure = DeliveryFailure.classify(error)
             MeetingLog.append(dir, "archive failed [\(failure.code)]: \(failure.detail); recording and transcript preserved. \(failure.retryable ? "Automatic retry scheduled." : "Review required before another attempt.")")
