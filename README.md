@@ -25,6 +25,8 @@ flowchart LR
 - Uses clean `yyyy.MM.dd-HHmm_Meeting-title` folder names, grouped by year and month for notes.
 - Captures meeting titles and participant observations when Teams exposes them. Unsupported speaker names remain `Unknown speaker`.
 - Offers icon-only or descriptive menu bar mode, with light and dark icons.
+
+The supplied lobster-and-microphone logos follow the Mac's appearance in the pop-up, Settings and running app icon. The menu bar uses a transparent version of the central mark, with a coloured activity dot while working. Both original light and dark PNGs are included in helper builds.
 - Can delete finished audio after checking transcript validity, archive readback, exported notes, and recording coverage. Failed or incomplete checks keep audio.
 
 ## Status and requirements

@@ -9,6 +9,7 @@ final class MenuBarController: NSObject, ObservableObject {
     private let keychain: ElevenLabsKeychain
     private let statusItem: NSStatusItem
     private var appearanceObserver: NSKeyValueObservation?
+    private var applicationAppearanceObserver: NSKeyValueObservation?
     private let popover = NSPopover()
     private var templateWindow: NSWindow?
     private var settingsWindow: NSWindow?
@@ -97,6 +98,11 @@ final class MenuBarController: NSObject, ObservableObject {
         self.keychain = keychain
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
+        if let app = NSApp {
+            applicationAppearanceObserver = app.observe(\.effectiveAppearance, options: [.initial, .new]) { _, _ in
+                Task { @MainActor in NSApp.applicationIconImage = HelperAppIcon.image() }
+            }
+        }
         popover.behavior = .transient
         popover.animates = true
         popover.contentViewController = NSHostingController(rootView: HelperPopover(controller: self))

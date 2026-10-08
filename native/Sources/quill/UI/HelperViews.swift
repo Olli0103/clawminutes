@@ -4,15 +4,12 @@ import SwiftUI
 struct HelperPopover: View {
     @Environment(\.colorScheme) private var colorScheme
     @ObservedObject var controller: MenuBarController
-    private var accent: Color { controller.recording ? .red : (controller.isFailure ? .orange : .accentColor) }
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack(spacing: 12) {
-                Image(nsImage: MenuBarController.clawMicImage(active: controller.activity.isWorking,
-                    appearance: NSAppearance(named: colorScheme == .dark ? .darkAqua : .aqua)!,
-                    activeColor: controller.recording ? .systemRed : .controlAccentColor))
-                    .resizable().scaledToFit().frame(width: 30, height: 30)
-                    .padding(11).background(accent.opacity(0.12), in: RoundedRectangle(cornerRadius: 14))
+                Image(nsImage: HelperAppIcon.image(appearance: NSAppearance(named: colorScheme == .dark ? .darkAqua : .aqua)!))
+                    .resizable().scaledToFit().frame(width: 52, height: 52)
+                    .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 3) {
                     Text("ocmh").font(.caption).foregroundStyle(.secondary)
                     Text(controller.activity.title).font(.title2.weight(.semibold))
@@ -103,9 +100,16 @@ struct HelperPopover: View {
 
 @MainActor
 struct HelperSettings: View {
+    @Environment(\.colorScheme) private var colorScheme
     @ObservedObject var controller: MenuBarController
     var body: some View {
         Form {
+            HStack(spacing: 12) {
+                Image(nsImage: HelperAppIcon.image(appearance: NSAppearance(named: colorScheme == .dark ? .darkAqua : .aqua)!))
+                    .resizable().scaledToFit().frame(width: 52, height: 52)
+                    .accessibilityHidden(true)
+                Text("ClawMinutes").font(.title2.weight(.semibold))
+            }
             Section {
                 Button("Open recording controls", action: controller.openMenu)
                 Picker("Menu bar", selection: Binding(get: { controller.style }, set: controller.chooseStyle)) {

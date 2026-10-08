@@ -18,7 +18,7 @@ let package = Package(
                 .product(name: "FluidAudio", package: "FluidAudio"),
             ],
             exclude: ["Info.plist"],
-            resources: [.copy("Resources/ocmh-dark.png")]
+            resources: [.copy("Resources/ocmh-light.png"), .copy("Resources/ocmh-dark.png")]
 
         ),
     ]

@@ -124,3 +124,9 @@ Call-end regressions reproduced missed German Teams controls and end text, and l
 On 7 October, 97 focused native tests, 25 JavaScript tests against each supported SDK release, and 9 installer tests passed. Both supported SDK archives used the local installed development dependencies. These checks used isolated fixture stores and did not call a live AI provider or mutate the Gateway. A read-only scan of the real recordings found eight verified deliveries, three legacy receipts requiring content verification, two finished recordings without transcripts, and one active recording. It found no confirmed upload backlog.
 
 The candidate is not activated. The active recorder was left running, and no Gateway configuration, installation, reload or restart was performed. Live call-end acceptance and retry after a real connection outage remain `needs_evidence` until the update is deployed and exercised.
+
+### Updated logos, 8 October
+
+Both supplied lobster-and-microphone PNGs are retained byte-for-byte in the source resources and included by SwiftPM and app packaging. The pop-up, Settings and runtime app icon select the matching appearance. Packaging exports the light app icon by default. For the menu bar, the dark artwork's central mark is cropped and its luminance becomes alpha; the opaque black background cannot become a solid template rectangle. Idle icons use AppKit template rendering and working icons retain their coloured status dot.
+
+The native debug build passed. Light and dark full-logo and transparent-mark exports were visually inspected. Pixel checks confirmed transparent mark corners, black foreground in light mode and white foreground in dark mode. The packaging script parsed successfully. No running helper was replaced, and no Gateway operation was performed. A live desktop appearance toggle remains `needs_evidence`.

@@ -11,7 +11,8 @@ shutil.copy2(root/'native/.build/release/ocmh',app/'Contents/MacOS/ocmh')
 subprocess.run(['/usr/bin/strip','-S',str(app/'Contents/MacOS/ocmh')],check=True)
 if str(root).encode() in (app/'Contents/MacOS/ocmh').read_bytes():
     raise SystemExit('Packaged helper still contains the private build directory.')
-shutil.copy2(root/'native/Sources/quill/Resources/ocmh-dark.png',app/'Contents/Resources/ocmh-dark.png')
+for name in ['ocmh-light.png', 'ocmh-dark.png']:
+    shutil.copy2(root/'native/Sources/quill/Resources'/name,app/'Contents/Resources'/name)
 cloudflared_path=os.environ.get('OPENCLAW_TEAMS_CLOUDFLARED') or shutil.which('cloudflared')
 if not cloudflared_path:
     raise SystemExit('Install cloudflared or set OPENCLAW_TEAMS_CLOUDFLARED to its executable path.')
