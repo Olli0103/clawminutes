@@ -10,7 +10,8 @@ final class AudioRetentionTests: XCTestCase {
                                   "ended": "2026-10-02T10:01:00Z", "start_offset_ms": ["mic": 0, "system": 0]]
         try put(meta, "meta.json", dir)
         let transcript: [String: Any] = ["engine": "parakeet", "model": "fixture", "created_at": "2026-10-02T10:01:01Z",
-                                        "segments": [["speaker": "me", "start_ms": 0, "end_ms": 1000, "text": "Fixture words"]]]
+                                        "segments": [["speaker": "me", "start_ms": 0, "end_ms": 1000, "text": "Fixture words"],
+                                                     ["speaker": "them", "source": "system", "start_ms": 1000, "end_ms": 2000, "text": "Remote fixture words"]]]
         try put(transcript, "transcript.json", dir)
         try Data("Fixture words".utf8).write(to: dir.appendingPathComponent("transcript.md"))
         let folder = dir.appendingPathComponent("notes")
@@ -20,7 +21,7 @@ final class AudioRetentionTests: XCTestCase {
         let id = "teams-" + String(repeating: "a", count: 24)
         try put(["sessionId": id], "metadata.json", folder)
         try Data(folder.path.utf8).write(to: dir.appendingPathComponent("notes-export-path.txt"))
-        let receipt: [String: Any] = ["saved": true, "sessionId": id, "utteranceCount": 1,
+        let receipt: [String: Any] = ["saved": true, "sessionId": id, "utteranceCount": 2,
                                      "localTranscriptSHA256": AudioRetention.digest(try Data(contentsOf: dir.appendingPathComponent("transcript.json"))),
                                      "documents": ["notesMarkdown": "Saved notes", "transcriptMarkdown": "Saved transcript", "metadata": ["sessionId": id]]]
         try put(receipt, "archive-receipt.json", dir)
@@ -116,5 +117,17 @@ final class AudioRetentionTests: XCTestCase {
             try file.write(from: buffer)
         }
         XCTAssertEqual(try AudioRetention.deleteAfterVerification(dir), 2)
+    }
+}
+
+
+extension AudioRetentionTests {
+    func testNoTeamsSpeechKeepsAudioEvenWithMatchingNotesAndDurations() throws {
+        let dir = try fixture(); defer { try? FileManager.default.removeItem(at: dir) }
+        try change(dir, file: "transcript.json", key: "segments", value: [["speaker": "me", "start_ms": 0, "end_ms": 1000, "text": "Only my microphone"]])
+        try change(dir, file: "archive-receipt.json", key: "utteranceCount", value: 1)
+        try change(dir, file: "archive-receipt.json", key: "localTranscriptSHA256", value: AudioRetention.digest(Data(contentsOf: dir.appendingPathComponent("transcript.json"))))
+        XCTAssertThrowsError(try AudioRetention.deleteAfterVerification(dir, measure: { _ in 60 }))
+        assertKept(dir)
     }
 }

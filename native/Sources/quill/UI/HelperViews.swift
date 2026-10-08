@@ -169,10 +169,10 @@ struct HelperSettings: View {
                     Button("Choose notes folder…", action: controller.chooseNotesFolder)
                     Button("Open notes folder", action: controller.openNotesFolder)
                 }
-                Text("Year / month / timestamp and meeting title. Each meeting contains notes.md, transcript.md and metadata.json.")
+                Text("Year / month / timestamp and meeting title. This default applies to future exports. Existing notes stay in their original folder, including your edits.")
                     .font(.caption).foregroundStyle(.secondary)
-                Toggle("Delete audio after verified notes", isOn: Binding(get: { controller.deletesVerifiedAudio }, set: controller.setAudioRetention))
-                Text("Checks transcript timestamps, saved notes and audio coverage first. Failed or incomplete recordings keep their audio. Transcripts and notes remain.")
+                Toggle("Delete future audio after verified notes", isOn: Binding(get: { controller.deletesVerifiedAudio }, set: controller.setAudioRetention))
+                Text("Applies only to recordings started after enabling this setting. Older recordings stay untouched. Checks transcript, saved notes and audio coverage first. Audio with gaps is kept for review.")
                     .font(.caption).foregroundStyle(.secondary)
             } header: { Text("Note templates & files") }
             Section {

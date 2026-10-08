@@ -47,6 +47,9 @@ test('concurrent saves of the same meeting share one AI completion and receipt',
     const changedTemplate=structuredClone(payload);changedTemplate.meta.note_template.context='Changed instructions';
     await assert.rejects(saveEnvelope(changedTemplate,options),/Archived meeting metadata differs/);
     assert.equal(calls,1,'A conflicting retry must preserve saved notes');
+    const longer=structuredClone(payload);longer.transcript.segments.push({source:'system',start_ms:1000,end_ms:2000,text:'Additional speech.'});
+    await assert.rejects(saveEnvelope(longer,options),/new revision/, 'A completed summary cannot become a partial-save recovery');
+    assert.equal(calls,1,'A longer transcript must preserve saved notes without another completion');
   } finally {release();await fs.rm(stateDir,{recursive:true,force:true});}
 });
 
@@ -67,4 +70,34 @@ test('a retry completes a partial archive rather than claiming delivery',async()
     assert.match(receipt.documents.transcriptMarkdown,/Second fixture utterance/);
     assert.equal((await store.readUtterancesForSession(record.session)).length,2);
   } finally {await fs.rm(stateDir,{recursive:true,force:true});}
+});
+
+test('invalid model output stops automatic completions durably',async()=>{
+  const stateDir=await fs.mkdtemp(path.join(os.tmpdir(),'clawminutes-invalid-notes-'));
+  try {
+    const payload={recordingId:'invalid-fixture',meta:{started:'2026-10-07T10:00:00Z',ended:'2026-10-07T10:01:00Z',audio_started_at:1791367200,status:'stopped',fixture:true,notes_mode:'ai',note_template:{id:'test',name:'Test',context:'Fixture',sections:[{title:'Summary',instructions:'Summarize'}]}},transcript:{engine:'parakeet',model:'parakeet-tdt-0.6b-v3-coreml',created_at:'2026-10-07T10:02:00Z',execution_machine:'fixture',execution_location:'recording_mac',segments:[{start_ms:0,end_ms:1000,text:'Synthetic speech.'}]}};
+    let calls=0;
+    for(let n=0;n<4;n++){
+      const options={stateDir,openclawDir:process.env.OPENCLAW_TEAMS_SDK_TEST_DIR||installedRuntimeDirectory(),complete:async()=>{calls++;return {text:'{"sections":[]}',provider:'fixture',model:'test'};}};
+      await assert.rejects(saveEnvelope(structuredClone(payload),options),e=>e.code==='ai_invalid_output'&&e.retryable===false);
+    }
+    assert.equal(calls,1,'Permanent invalid output must survive retries without another paid completion');
+  } finally{await fs.rm(stateDir,{recursive:true,force:true});}
+});
+
+test('retry after a canonical summary write failure reuses persisted model output',async()=>{
+  const stateDir=await fs.mkdtemp(path.join(os.tmpdir(),'clawminutes-summary-failure-'));
+  const openclawDir=process.env.OPENCLAW_TEAMS_SDK_TEST_DIR||installedRuntimeDirectory();
+  const Store=await archiveAdapter(openclawDir),original=Store.prototype.writeSummary;
+  let fail=true,calls=0;
+  try{
+    Store.prototype.writeSummary=async function(...args){if(fail){fail=false;throw Error('Synthetic archive write failure');}return original.apply(this,args);};
+    const payload={recordingId:'summary-write-fixture',meta:{started:'2026-10-08T10:00:00Z',ended:'2026-10-08T10:01:00Z',audio_started_at:1791453600,status:'stopped',fixture:true,notes_mode:'ai',note_template:{id:'test',name:'Test',context:'Fixture',sections:[{title:'Summary',instructions:'Summarize'}]}},transcript:{engine:'parakeet',model:'parakeet-tdt-0.6b-v3-coreml',created_at:'2026-10-08T10:02:00Z',execution_machine:'fixture',execution_location:'recording_mac',segments:[{start_ms:0,end_ms:1000,text:'Synthetic speech.'}]}};
+    const options={stateDir,openclawDir,complete:async()=>{calls++;return {provider:'fixture',model:'fixture-model',text:JSON.stringify({sections:[{title:'Summary',body:'Preserved model result'}]})};}};
+    await assert.rejects(saveEnvelope(payload,options),/Synthetic archive write failure/);
+    const recovered=await saveEnvelope(payload,options);
+    assert.equal(recovered.saved,true);
+    assert.match(recovered.documents.notesMarkdown,/Preserved model result/);
+    assert.equal(calls,1,'Canonical archive retries must not repeat a successful paid generation');
+  }finally{Store.prototype.writeSummary=original;await fs.rm(stateDir,{recursive:true,force:true});}
 });

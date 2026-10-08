@@ -34,7 +34,7 @@ struct Quill: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "ocmh",
         abstract: "Meeting recorder + transcriber. Records mic and system audio, then transcribes locally or with ElevenLabs.",
-        subcommands: [Run.self, Doctor.self, Meetings.self, Transcribe.self, Transcription.self, SetupLocal.self, CaptureFixture.self, RecoverSessions.self, GatewayStatus.self, ArchiveSession.self, ArchiveBacklogCommand.self, VerifyAudioRetention.self, NameRecordingFolder.self, NameNotesFolder.self, ExportIcon.self],
+        subcommands: [Run.self, Doctor.self, Meetings.self, Transcribe.self, Transcription.self, SetupLocal.self, CaptureFixture.self, RecoverSessions.self, GatewayStatus.self, ArchiveSession.self, ArchiveBacklogCommand.self, VerifyAudioRetention.self, NameRecordingFolder.self, NameNotesFolder.self, MigrateNotesFolder.self, ExportIcon.self],
         defaultSubcommand: Run.self
     )
 }
@@ -164,7 +164,7 @@ struct Run: AsyncParsableCommand {
         app.mainMenu = ApplicationMenu.make()
         app.applicationIconImage = HelperAppIcon.image()
 
-        let controller = AppController(root: root, showMenuOnLaunch: showMenu, promptFixture: promptFixture)
+        let controller = AppController(root: root, startupOwner: runLock, showMenuOnLaunch: showMenu, promptFixture: promptFixture)
         app.delegate = controller
         Task {
             do { try await NativeNotifications.shared.authorize() }
@@ -215,12 +215,13 @@ final class AppController: NSObject, NSApplicationDelegate {
     private var session: RecordingSession?
     private var ticker: Timer?
     private var backlogTask: Task<Void, Never>?
+    private var startupReady = false
     private var starting = false
     private var stopping = false
     private let showMenuOnLaunch: Bool
     private let promptFixture: Bool
 
-    init(root: URL, showMenuOnLaunch: Bool = false, promptFixture: Bool = false) {
+    init(root: URL, startupOwner: AppRunLock, showMenuOnLaunch: Bool = false, promptFixture: Bool = false) {
         self.root = root
         self.showMenuOnLaunch = showMenuOnLaunch
         self.promptFixture = promptFixture
@@ -245,7 +246,6 @@ final class AppController: NSObject, NSApplicationDelegate {
         meetings.onMeetingContext = { [weak self] context in self?.session?.updateMeetingContext(context) }
         meetings.onMeetingTitle = { [weak self] title in self?.menuBar.setMeetingSubject(title) }
         meetings.onSpeakers = { [weak self] observation in self?.session?.recordSpeakers(observation) }
-        meetings.start()
 
         backlogTask = Task { [weak self, transcription, root] in
             await transcription.setBacklogHandler { [weak self] count in
@@ -256,7 +256,13 @@ final class AppController: NSObject, NSApplicationDelegate {
                     self?.showTranscription(status)
                 }
             }
-            await transcription.resumePending(root: root)
+            while !Task.isCancelled {
+                if await transcription.resumePending(root: root, startupOwner: startupOwner) { break }
+                do { try await Task.sleep(for: .seconds(5)) } catch { return }
+            }
+            guard !Task.isCancelled, let self else { return }
+            self.startupReady = true
+            self.meetings.start()
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(60)) }
                 catch { break }
@@ -291,9 +297,11 @@ final class AppController: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         if showMenuOnLaunch { menuBar.showSettings() }
         if promptFixture {
-            NSApp.activate(ignoringOtherApps: true)
-            let response = MeetingConsentPrompt.make(fixture: true).runModal()
-            FileHandle.standardError.write(Data("Prompt fixture response: \(response.rawValue). No fixture audio is started by this UI-only diagnostic.\n".utf8))
+            Task {
+                let panel = MeetingConsentPanel(fixture: true)
+                let response = await panel.present()
+                FileHandle.standardError.write(Data("Prompt fixture accepted: \(response). No fixture audio is started by this UI-only diagnostic.\n".utf8))
+            }
         }
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -305,7 +313,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         Task { _ = await startSession() }
     }
     @discardableResult private func startSession() async -> Bool {
-        guard !starting, session == nil else { return false }
+        guard startupReady, !starting, session == nil else { return false }
         starting = true
         menuBar.setStartingRecording(true)
         defer { starting = false; menuBar.setStartingRecording(false) }
@@ -321,7 +329,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         }
 
         menuBar.update(recording: true, elapsed: "0:00")
-        ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        ticker = HousekeepingTimer.schedule(every: 1) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
         meetings.recordingStarted()

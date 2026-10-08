@@ -3,6 +3,7 @@ import CryptoKit
 
 /// Sends a closed text-only envelope. Never reads or sends audio files.
 enum GatewayArchive {
+    static var userAgent: String { "ClawMinutes/\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "development") CFNetwork" }
     enum ConnectionIssue: Error, CustomStringConvertible {
         case routeUnavailable
         var description: String { "The Teams transcription endpoint returned HTTP 404. Check the plugin route, enabled state, version, and proxy destination on the Gateway. This response does not establish whether the plugin is installed. Captured audio and transcripts are preserved on this Mac." }
@@ -67,13 +68,13 @@ enum GatewayArchive {
         let token = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard task.terminationStatus == 0, token.count > 16, token.count < 16000,
               token.allSatisfy({ !$0.isWhitespace }), token.split(separator: ".").count == 3
-        else { throw TranscriptionFailure("Gateway sign-in is missing or expired. Choose Connect Gateway. Recording preserved.") }
+        else { throw DeliveryFailure.signInRequired }
         let payload = token.split(separator: ".")[1]
         var base64 = String(payload).replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
         base64 += String(repeating: "=", count: (4 - base64.count % 4) % 4)
         guard let claims = Data(base64Encoded: base64).flatMap({ try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }),
               let expiry = claims["exp"] as? Double, expiry > Date().timeIntervalSince1970 + 30 else {
-            throw TranscriptionFailure("Gateway session expired. Sign in again.")
+            throw DeliveryFailure.signInRequired
         }
         return token
     }
@@ -97,13 +98,13 @@ enum GatewayArchive {
         request.timeoutInterval = body == nil ? 30 : 150
         request.httpMethod = body == nil ? "GET" : "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("ClawMinutes/0.2.8 CFNetwork", forHTTPHeaderField: "User-Agent")
+        request.setValue(userAgent, forHTTPHeaderField: "User-Agent")
         if config["authentication"] == "cloudflare" {
             let token = try await Task.detached { try cloudflareToken(url) }.value
             request.setValue("CF_Authorization=" + token, forHTTPHeaderField: "Cookie")
         } else {
             guard let token = try await Task.detached(operation: { try tokenStore(url).read() }).value else {
-                throw TranscriptionFailure("Gateway token missing. Choose Connect Gateway.")
+                throw DeliveryFailure.signInRequired
             }
             request.setValue("Bearer " + token, forHTTPHeaderField: "Authorization")
         }
@@ -116,13 +117,7 @@ enum GatewayArchive {
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw TranscriptionFailure("Gateway returned no HTTP response") }
         guard http.statusCode == 200, http.value(forHTTPHeaderField: "Content-Type")?.hasPrefix("application/json") == true else {
-            if http.statusCode == 400, let result = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-               let message = result["error"] as? String, !message.isEmpty, message.count <= 512 {
-                throw TranscriptionFailure(message)
-            }
-            if http.statusCode == 404 { throw ConnectionIssue.routeUnavailable }
-            if [301, 302, 303, 307, 308, 401, 403].contains(http.statusCode) { throw TranscriptionFailure("Gateway sign-in required or access denied. Recording preserved.") }
-            throw TranscriptionFailure("Gateway plugin unavailable or incompatible, HTTP \(http.statusCode). Recording preserved.")
+            throw DeliveryFailure.response(status: http.statusCode, data: data)
         }
         return data
     }
@@ -143,6 +138,7 @@ enum GatewayArchive {
         }
         defer { withExtendedLifetime(archiveLease) {} }
         guard ArchiveBacklog.isFinished(dir) else { throw TranscriptionFailure("Active or incomplete recording left untouched.") }
+        let exportRoot = try MeetingDocuments.exportRoot(recording: dir, fallbackRoot: MeetingNotesSettings.folder)
         var meta = try ArchiveBacklog.object(dir.appendingPathComponent("meta.json"))
         let transcriptData = try ArchiveBacklog.read(dir.appendingPathComponent("transcript.json"))
         let transcript = try JSONSerialization.jsonObject(with: transcriptData) as? [String: Any] ?? [:]
@@ -150,8 +146,8 @@ enum GatewayArchive {
            let receipt = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any], receipt["saved"] as? Bool == true,
            ArchiveBacklog.receiptMatches(receipt, transcriptData: transcriptData, meta: meta, directory: dir),
            receipt["documents"] != nil {
-            let destination = try MeetingDocuments.export(receipt: receipt, root: MeetingNotesSettings.folder, recording: dir)
-            try Data(destination.path.utf8).write(to: dir.appendingPathComponent("notes-export-path.txt"), options: .atomic)
+            let destination = try MeetingDocuments.export(receipt: receipt, root: exportRoot, recording: dir)
+            try MeetingDocuments.rememberExport(destination, root: exportRoot, recording: dir, sessionID: receipt["sessionId"] as! String)
             return
         }
         if let rosterData = try? Data(contentsOf: dir.appendingPathComponent("participants.json")),
@@ -180,8 +176,8 @@ enum GatewayArchive {
         }
         try JSONSerialization.data(withJSONObject: receipt).write(to: dir.appendingPathComponent("archive-receipt.json"), options: .atomic)
         if receipt["documents"] != nil {
-            let destination = try MeetingDocuments.export(receipt: receipt, root: MeetingNotesSettings.folder, recording: dir)
-            try Data(destination.path.utf8).write(to: dir.appendingPathComponent("notes-export-path.txt"), options: .atomic)
+            let destination = try MeetingDocuments.export(receipt: receipt, root: exportRoot, recording: dir)
+            try MeetingDocuments.rememberExport(destination, root: exportRoot, recording: dir, sessionID: receipt["sessionId"] as! String)
         }
     }
 }

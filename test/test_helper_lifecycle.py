@@ -81,6 +81,20 @@ class LifecycleTests(unittest.TestCase):
         self.assertIn('recording is active or unfinished', self.errors)
         self.assertEqual(self.commands, [])
 
+    def test_protected_idle_helper_can_update_with_orphan_metadata(self):
+        shutil.copytree(self.source, self.state / helper.NAME)
+        session = self.recordings / 'orphan'
+        session.mkdir()
+        (session / 'meta.json').write_text('{"status":"recording"}')
+        before = (session / 'meta.json').read_bytes()
+        self.assertEqual(self.invoke('update'), 0)
+        self.assertEqual((session / 'meta.json').read_bytes(), before)
+        agent = self.home / 'Library/LaunchAgents' / f'{helper.LABEL}.plist'
+        plist = plistlib.loads(agent.read_bytes())
+        self.assertEqual(plist['ProgramArguments'][0], str(self.state / helper.NAME / 'Contents/MacOS/ocmh'))
+        self.assertEqual(plist['KeepAlive'], {'SuccessfulExit': False})
+        self.assertGreaterEqual(plist['ThrottleInterval'], 10)
+
     def test_update_refuses_live_processing_without_recording_metadata(self):
         with (self.state / 'lifecycle.lock').open('a+b') as lease:
             fcntl.flock(lease.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)

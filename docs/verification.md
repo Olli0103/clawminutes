@@ -130,3 +130,16 @@ The candidate is not activated. The active recorder was left running, and no Gat
 Both supplied lobster-and-microphone PNGs are retained byte-for-byte in the source resources and included by SwiftPM and app packaging. The pop-up, Settings and runtime app icon select the matching appearance. Packaging exports the light app icon by default. For the menu bar, the dark artwork's central mark is cropped and its luminance becomes alpha; the opaque black background cannot become a solid template rectangle. Idle icons use AppKit template rendering and working icons retain their coloured status dot.
 
 The native debug build passed. Light and dark full-logo and transparent-mark exports were visually inspected. Pixel checks confirmed transparent mark corners, black foreground in light mode and white foreground in dark mode. The packaging script parsed successfully. No running helper was replaced, and no Gateway operation was performed. A live desktop appearance toggle remains `needs_evidence`.
+
+
+## Opus review implementation, 8 October 2026
+
+This source-only follow-up is tracked in [review-plan.md](review-plan.md). It has not been installed or activated. Neither the running helper nor the Gateway was restarted. Teams remains the only enabled meeting provider.
+
+Regression tests reproduce and cover completed-save mutation, repeated unusable AI output, retry budgets across relaunch, modal timer starvation, malformed settings, stale capture metadata, wrong export-root retries, missing/corrupt audio tracks, absent remote speech during retention, false call-end inference and sign-in recovery. Successful AI output is cached before archive writes; an injected canonical summary-write failure recovers without another model callback. Provider text is not exposed in HTTP failures.
+
+Local full-suite evidence is 278 native tests, 12 opt-in skips, and no failures. JavaScript validation uses the real supported SDKs; native HTTP validation uses the real JS handler and SDK store over loopback, with synthetic model output and a temporary state root. Ten installer tests run with isolated homes and mocked launchctl/signals. These checks do not prove live focus behavior, process-supervision timing, capture during device changes, provider completion performance, Cloudflare timeout behavior or permission continuity.
+
+The complete review is still open. Durable transcription retry, process-incarnation consent, versioned per-meeting state, revision workflows, the broader pop-up/settings redesign, diagnostics, device recovery and incremental transcription are not yet complete. Developer ID notarization and all live activation/acceptance remain separate gates.
+
+Consent persistence now uses the Teams process launch time, a title hash and previously observed WindowServer IDs. The full isolated native run after this change executed 278 tests with 12 opt-in tests skipped and zero failures. All 31 Gateway tests pass on each supported SDK. Light/dark offscreen consent renders were inspected. Same-title, same-window reuse while the helper is absent cannot establish call identity and remains an acceptance limitation. No live processes were restarted or activated.

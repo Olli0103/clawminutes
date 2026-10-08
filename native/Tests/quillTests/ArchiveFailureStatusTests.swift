@@ -27,7 +27,7 @@ final class ArchiveFailureStatusTests: XCTestCase, @unchecked Sendable {
         try Data().write(to: dir.appendingPathComponent("mic.caf"))
         let engine = ArchiveFixtureEngine()
         let coordinator = TranscriptionCoordinator(activityLockPath: dir.appendingPathComponent("lifecycle.lock"),
-            saveArchive: { _ in throw GatewayArchive.ConnectionIssue.routeUnavailable }, makeEngine: { _, _ in engine })
+            audioDuration: { _ in 1 }, saveArchive: { _ in throw GatewayArchive.ConnectionIssue.routeUnavailable }, makeEngine: { _, _ in engine })
         let done = expectation(description: "Pipeline reports completion or an issue")
         done.assertForOverFulfill = false
         let evidence = StatusEvidence()

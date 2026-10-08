@@ -24,6 +24,7 @@ struct Transcribe: AsyncParsableCommand {
         }
         if offline { ModelHub.offlineMode = true }
         let original = URL(fileURLWithPath: (recording as NSString).expandingTildeInPath).standardizedFileURL
+        guard ArchiveBacklog.isFinished(original) else { throw ValidationError("Finish the recording before transcription. Active audio was left untouched.") }
         let sessionMeta = try SessionMeta.read(from: original)
         let dir: URL
         let fm = FileManager.default
@@ -44,7 +45,7 @@ struct Transcribe: AsyncParsableCommand {
             }
         }
         try await TranscriptionCoordinator().transcribe(dir, detectSpeakers: !noSpeakers, remoteSpeakerCount: remoteSpeakers,
-                                                        engineOverride: engine, offline: offline, learnVoiceMemory: output == nil)
+                                                        engineOverride: engine, offline: offline, learnVoiceMemory: output == nil, allowAudioLinks: output != nil)
         print(dir.appendingPathComponent("transcript.md").path)
     }
 }

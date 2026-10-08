@@ -14,12 +14,14 @@ actor TranscriptionCoordinator {
         case postprocessing(session: String, queued: Int)
         case failed(session: String)
         case archivePending(session: String)
+        case needsReview(session: String, reason: String)
     }
 
     private var queue: [URL] = []
     private var draining = false
     private var engine: TranscriptionEngine?
     private var engineOffline = false
+    private let audioDuration: @Sendable (URL) throws -> Double
     private let makeEngine: @Sendable (TranscriptionEngineKind, Bool) -> any TranscriptionEngine
     private var lastIssue: Status?
     private var statusHandler: (@Sendable (Status) -> Void)?
@@ -27,6 +29,7 @@ actor TranscriptionCoordinator {
     private let saveArchive: @Sendable (URL) async throws -> Void
     private var archiving = false
     private var checkingBacklog = false
+    private var backlogIndex = ArchiveBacklogIndex()
     private var backlogHandler: (@Sendable (Int) -> Void)?
 
     struct BacklogReport: Codable, Sendable {
@@ -46,25 +49,33 @@ actor TranscriptionCoordinator {
         checkingBacklog = true
         defer { checkingBacklog = false }
         var report = BacklogReport()
-        let items = try ArchiveBacklog.scan(root: root)
+        if force {
+            for item in try backlogIndex.scan(root: root) { try ArchiveBacklog.rearmSignIn(item, now: now) }
+        }
+        let items = try backlogIndex.scan(root: root)
         for item in items where item.pending && report.attempted < 5 {
             guard !archiving else { break }
             if !force, let retry = item.retry, retry.nextAttemptAt > now { continue }
             if await runHook(for: item.directory, now: now) { report.attempted += 1 }
         }
-        let remaining = try ArchiveBacklog.scan(root: root)
+        let remaining = try backlogIndex.scan(root: root)
         report.pending = remaining.filter(\.pending).count
         report.transcriptionPending = remaining.filter { $0.state == .transcriptionPending }.count
         report.needsReview = remaining.filter { $0.state == .needsReview }.count
         backlogHandler?(report.pending)
-        if let pending = remaining.first(where: \.pending) {
+        if let review = remaining.first(where: { $0.state == .needsReview }) {
+            lastIssue = .needsReview(session: review.directory.lastPathComponent, reason: review.reason)
+        } else if let pending = remaining.first(where: \.pending) {
             lastIssue = .archivePending(session: pending.directory.lastPathComponent)
-        } else if case .archivePending = lastIssue { lastIssue = nil }
+        } else {
+            switch lastIssue { case .archivePending, .needsReview: lastIssue = nil; default: break }
+        }
         if !draining { publish(lastIssue ?? .idle) }
         return report
     }
 
     init(activityLockPath: URL = HelperWorkLease.path,
+         audioDuration: @escaping @Sendable (URL) throws -> Double = AudioRetention.duration,
          saveArchive: @escaping @Sendable (URL) async throws -> Void = { try await GatewayArchive.save($0) },
          makeEngine: @escaping @Sendable (TranscriptionEngineKind, Bool) -> any TranscriptionEngine = { kind, offline in
         switch kind {
@@ -73,6 +84,7 @@ actor TranscriptionCoordinator {
         }
     }) {
         self.activityLockPath = activityLockPath
+        self.audioDuration = audioDuration
         self.saveArchive = saveArchive
         self.makeEngine = makeEngine
     }
@@ -96,7 +108,7 @@ actor TranscriptionCoordinator {
     /// Scan the recordings root for sessions that finished (meta.json exists)
     /// but were never transcribed. Folder names sort chronologically, so
     /// oldest-first is a name sort.
-    func resumePending(root: URL) async {
+    @discardableResult func resumePending(root: URL, startupOwner: AppRunLock? = nil) async -> Bool {
         var workLease: HelperWorkLease?
         // The installer can still hold its lease when launchctl starts this
         // process. Wait briefly so startup recovery is not silently skipped.
@@ -107,12 +119,20 @@ actor TranscriptionCoordinator {
         guard let workLease else {
             publish(.failed(session: "Pending meeting recovery"))
             FileHandle.standardError.write(Data("Could not resume pending meetings while helper lifecycle work is active. Files remain pending for the next launch.\n".utf8))
-            return
+            return false
         }
         defer { withExtendedLifetime(workLease) {} }
+        if let startupOwner {
+            do { _ = try InterruptedRecordingRecovery.recover(root: root, owner: startupOwner, activityLockPath: activityLockPath) }
+            catch {
+                publish(.failed(session: "Interrupted meeting recovery"))
+                FileHandle.standardError.write(Data("Interrupted meeting recovery failed. Files preserved; new capture remains paused.\n".utf8))
+                return false
+            }
+        }
         guard let entries = try? FileManager.default.contentsOfDirectory(
             at: root, includingPropertiesForKeys: nil
-        ) else { return }
+        ) else { return true }
 
         let fm = FileManager.default
         let pending = entries
@@ -140,6 +160,7 @@ actor TranscriptionCoordinator {
             ))
         }
         drainIfIdle()
+        return true
     }
 
     // MARK: -
@@ -190,9 +211,12 @@ actor TranscriptionCoordinator {
     }
 
     func transcribe(_ dir: URL, detectSpeakers: Bool = Config.speakerDetection(), remoteSpeakerCount: Int? = nil,
-                    engineOverride: TranscriptionEngineKind? = nil, offline: Bool = false, learnVoiceMemory: Bool = true) async throws {
+                    engineOverride: TranscriptionEngineKind? = nil, offline: Bool = false, learnVoiceMemory: Bool = true, allowAudioLinks: Bool = false) async throws {
         let workLease = try HelperWorkLease.acquire(at: activityLockPath)
         defer { withExtendedLifetime(workLease) {} }
+        guard !FileManager.default.fileExists(atPath: dir.appendingPathComponent("archive-receipt.json").path) else {
+            throw DeliveryFailure(code: "revision_conflict", detail: "This meeting has an archive receipt. Use a new revision or a separate preview; saved transcripts are preserved.", retryable: false, completionAttempted: false)
+        }
         let meta = try SessionMeta.read(from: dir)
         // Snapshot the selection for both tracks. Menu changes affect the next job.
         let rawMeta = try JSONSerialization.jsonObject(with: Data(contentsOf: dir.appendingPathComponent("meta.json"))) as? [String: Any]
@@ -209,14 +233,22 @@ actor TranscriptionCoordinator {
         }
         for observation in observations { roster.observe(observation, localName: meta.localSpeakerName) }
 
+        var captureGaps = meta.captureGaps
         var merged: [Transcript.Segment] = []
         var analysis = SpeakerAnalysis(turns: [], names: [:])
         var speakerStatus: [String: String] = [:]
         var successfulTracks = 0
         for track in meta.tracks {
             let audio = dir.appendingPathComponent(track.file)
-            guard FileManager.default.fileExists(atPath: audio.path) else {
-                throw TranscriptionFailure("Missing expected track \(track.file). Recording preserved; recovery needs review.")
+            let attributes = try? audio.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            let linkAllowed = allowAudioLinks && attributes?.isSymbolicLink == true
+            let duration = (attributes?.isRegularFile == true && attributes?.isSymbolicLink != true) || linkAllowed ? try? audioDuration(audio) : nil
+            guard let duration, duration.isFinite, duration > 0 else {
+                let offset = max(0, track.offsetMs)
+                let end = max(offset, Int((meta.recordingDuration ?? Double(offset) / 1000) * 1000))
+                captureGaps.append(CaptureGap(source: track.source, start_ms: offset, end_ms: end, reason: "track_unavailable"))
+                log(dir, "Track unavailable [\(track.source)]: \(track.file). Its speech is missing; remaining tracks will be recovered.")
+                continue
             }
             log(dir, "transcribing \(track.file) (\(engine.name))")
             // One bad track (empty, truncated) shouldn't cost us the other's
@@ -288,7 +320,7 @@ actor TranscriptionCoordinator {
                 )
             }
         }
-        guard successfulTracks > 0 else {
+        guard successfulTracks > 0, merged.contains(where: { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) else {
             throw TranscriptionFailure("No audio track could be transcribed. See transcribe.log; the session remains pending.")
         }
         merged.sort { $0.start_ms < $1.start_ms }
@@ -306,7 +338,7 @@ actor TranscriptionCoordinator {
             participant_roster: roster
         )
         var output = transcript
-        output.capture_gaps = meta.captureGaps.isEmpty ? nil : meta.captureGaps
+        output.capture_gaps = captureGaps.isEmpty ? nil : captureGaps
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(analysis).write(to: dir.appendingPathComponent("speaker-analysis.json"), options: .atomic)
@@ -347,15 +379,18 @@ actor TranscriptionCoordinator {
             if case .archivePending(let pending) = lastIssue, pending == dir.lastPathComponent { lastIssue = nil }
             if !draining { publish(lastIssue ?? .idle) }
         } catch {
+            do { try ArchiveBacklog.recordFailure(error, directory: dir) }
+            catch { log(dir, "Could not persist the save failure. Local files preserved.") }
             lastIssue = .archivePending(session: dir.lastPathComponent)
             if !draining { publish(.archivePending(session: dir.lastPathComponent)) }
-            log(dir, "archive failed: \(error); recording and transcript preserved. Automatic retry scheduled.")
+            let failure = DeliveryFailure.classify(error)
+            log(dir, "archive failed [\(failure.code)]: \(failure.detail); recording and transcript preserved. \(failure.retryable ? "Automatic retry scheduled." : "Review required before another attempt.")")
         }
         return true
     }
 
     private func applyRetention(_ dir: URL) {
-        guard Config.deleteAudioAfterVerification(), !AudioRetention.explicitlyRemoved(dir) else { return }
+        guard Config.mayAutomaticallyDeleteAudio(dir), !AudioRetention.explicitlyRemoved(dir) else { return }
         do {
             let count = try AudioRetention.deleteAfterVerification(dir)
             if count > 0 { log(dir, "Audio retention: verified text and notes; removed \(count) audio track(s)") }
@@ -395,6 +430,7 @@ struct SessionMeta {
     let sharedMicrophone: Bool
     var participantRoster: ParticipantRoster? = nil
     var captureGaps: [CaptureGap] = []
+    var recordingDuration: Double? = nil
 
     enum MetaError: Error, CustomStringConvertible {
         case unreadable(URL)
@@ -425,9 +461,8 @@ struct SessionMeta {
                 guard let source = segment["source"] as? String, ["mic", "system"].contains(source),
                       let file = segment["file"] as? String, validTrackFile(file), names.insert(file).inserted,
                       let offset = segment["offset_ms"] as? Int, offset >= 0 else { throw MetaError.unreadable(url) }
-                // A cleanly stopped segment with no written frames contains no speech.
-                // Interrupted sessions still inspect their PCM files rather than trust a stale checkpoint.
-                if json["status"] as? String == "stopped", segment["frames_written"] as? Int == 0 { continue }
+                // Inspect actual PCM, including zero-frame checkpoints. They may
+                // be stale after a crash, and missing tracks must become explicit gaps.
                 tracks.append(Track(file: file, speaker: source == "mic" ? "me" : "them", offsetMs: offset))
             }
         } else {
@@ -444,7 +479,13 @@ struct SessionMeta {
         guard gaps.allSatisfy({ ["mic", "system"].contains($0.source) && $0.start_ms >= 0 && $0.end_ms >= $0.start_ms }) else { throw MetaError.unreadable(url) }
         return SessionMeta(tracks: tracks, audioStartedAt: json["audio_started_at"] as? Double,
                            localSpeakerName: SpeakerAttribution.cleanName(json["local_speaker_name"] as? String),
-                           sharedMicrophone: json["shared_microphone"] as? Bool ?? false, participantRoster: roster, captureGaps: gaps)
+                           sharedMicrophone: json["shared_microphone"] as? Bool ?? false, participantRoster: roster, captureGaps: gaps,
+                           recordingDuration: (json["ended"] as? String).flatMap { ended in
+                               guard let started = json["audio_started_at"] as? Double,
+                                     let end = ISO8601DateFormatter().date(from: ended) else { return nil }
+                               let duration = end.timeIntervalSince1970 - started
+                               return duration.isFinite && duration >= 0 && duration <= 7 * 24 * 3600 ? duration : nil
+                           })
     }
     static func validTrackFile(_ file: String) -> Bool {
         file.range(of: #"^(mic|system)(-[0-9]+)?\.caf$"#, options: .regularExpression) != nil

@@ -32,7 +32,7 @@ final class TranscriptionEngineSwitchTests: XCTestCase, @unchecked Sendable {
     func testSwitchReleasesPreviousEngineAndPreservesProvenanceAndOffsets() async throws {
         let parakeet = StubTranscriptionEngine(.parakeet), elevenlabs = StubTranscriptionEngine(.elevenLabs)
         let dir = try session()
-        let coordinator = TranscriptionCoordinator(activityLockPath: dir.appendingPathComponent("lifecycle.lock"), makeEngine: { kind, _ in kind == .parakeet ? parakeet : elevenlabs })
+        let coordinator = TranscriptionCoordinator(activityLockPath: dir.appendingPathComponent("lifecycle.lock"), audioDuration: { _ in 1 }, makeEngine: { kind, _ in kind == .parakeet ? parakeet : elevenlabs })
         defer { try? FileManager.default.removeItem(at: dir) }
         for kind in [TranscriptionEngineKind.parakeet, .elevenLabs, .parakeet] {
             try await coordinator.transcribe(dir, detectSpeakers: false, engineOverride: kind)
@@ -49,7 +49,7 @@ final class TranscriptionEngineSwitchTests: XCTestCase, @unchecked Sendable {
     func testAllTrackFailuresRemainPendingWithoutFallback() async throws {
         let elevenlabs = StubTranscriptionEngine(.elevenLabs, failing: true)
         let dir = try session()
-        let coordinator = TranscriptionCoordinator(activityLockPath: dir.appendingPathComponent("lifecycle.lock"), makeEngine: { _, _ in elevenlabs })
+        let coordinator = TranscriptionCoordinator(activityLockPath: dir.appendingPathComponent("lifecycle.lock"), audioDuration: { _ in 1 }, makeEngine: { _, _ in elevenlabs })
         defer { try? FileManager.default.removeItem(at: dir) }
         do {
             try await coordinator.transcribe(dir, detectSpeakers: false, engineOverride: .elevenLabs)
@@ -62,7 +62,7 @@ final class TranscriptionEngineSwitchTests: XCTestCase, @unchecked Sendable {
     func testCloudSecondTrackFailureDoesNotPublishPartialTranscript() async throws {
         let engine = StubTranscriptionEngine(.elevenLabs, failOnSystem: true)
         let dir = try session()
-        let coordinator = TranscriptionCoordinator(activityLockPath: dir.appendingPathComponent("lifecycle.lock"), makeEngine: { _, _ in engine })
+        let coordinator = TranscriptionCoordinator(activityLockPath: dir.appendingPathComponent("lifecycle.lock"), audioDuration: { _ in 1 }, makeEngine: { _, _ in engine })
         defer { try? FileManager.default.removeItem(at: dir) }
         do {
             try await coordinator.transcribe(dir, detectSpeakers: false, engineOverride: .elevenLabs)
@@ -82,12 +82,79 @@ final class TranscriptionEngineSwitchTests: XCTestCase, @unchecked Sendable {
         try JSONSerialization.data(withJSONObject: meta).write(to: dir.appendingPathComponent("meta.json"))
         try Data().write(to: dir.appendingPathComponent("mic-2.caf"))
         let engine = StubTranscriptionEngine(.parakeet)
-        let coordinator = TranscriptionCoordinator(activityLockPath: dir.appendingPathComponent("lifecycle.lock"), makeEngine: { _, _ in engine })
+        let coordinator = TranscriptionCoordinator(activityLockPath: dir.appendingPathComponent("lifecycle.lock"), audioDuration: { _ in 1 }, makeEngine: { _, _ in engine })
         try await coordinator.transcribe(dir, detectSpeakers: false, engineOverride: .parakeet)
         let transcript = try JSONDecoder().decode(Transcript.self, from: Data(contentsOf: dir.appendingPathComponent("transcript.json")))
         XCTAssertEqual(transcript.segments.map(\.start_ms), [600, 700, 30500])
         XCTAssertEqual(transcript.segments.map(\.source), ["mic", "system", "mic"])
         XCTAssertEqual(transcript.capture_gaps?.first?.start_ms, 20000)
         XCTAssertTrue(try String(contentsOf: dir.appendingPathComponent("transcript.md"), encoding: .utf8).contains("## Capture gaps"))
+    }
+}
+
+
+extension TranscriptionEngineSwitchTests {
+    func testMissingTrackPublishesExplicitlyPartialTranscriptAndKeepsGoodSpeech() async throws {
+        let dir = try session(); defer { try? FileManager.default.removeItem(at: dir) }
+        try FileManager.default.removeItem(at: dir.appendingPathComponent("system.caf"))
+        let engine = StubTranscriptionEngine(.parakeet)
+        let coordinator = TranscriptionCoordinator(activityLockPath: dir.appendingPathComponent("lease"),
+            audioDuration: { _ in 1 }, makeEngine: { _, _ in engine })
+        try await coordinator.transcribe(dir, detectSpeakers: false, engineOverride: .parakeet)
+        let transcript = try JSONDecoder().decode(Transcript.self, from: Data(contentsOf: dir.appendingPathComponent("transcript.json")))
+        XCTAssertEqual(transcript.segments.count, 1)
+        XCTAssertEqual(transcript.capture_gaps?.last?.source, "system")
+        XCTAssertEqual(transcript.capture_gaps?.last?.reason, "track_unavailable")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("mic.caf").path))
+    }
+    func testUnreadableTrackIsNotPassedToModelAndIsMarkedAsMissingSpeech() async throws {
+        let dir = try session(); defer { try? FileManager.default.removeItem(at: dir) }
+        let engine = StubTranscriptionEngine(.parakeet)
+        let coordinator = TranscriptionCoordinator(activityLockPath: dir.appendingPathComponent("lease"),
+            audioDuration: { file in
+                if file.lastPathComponent == "system.caf" { throw TranscriptionFailure("Corrupt audio") }
+                return 1
+            }, makeEngine: { _, _ in engine })
+        try await coordinator.transcribe(dir, detectSpeakers: false, engineOverride: .parakeet)
+        let transcript = try JSONDecoder().decode(Transcript.self, from: Data(contentsOf: dir.appendingPathComponent("transcript.json")))
+        XCTAssertEqual(transcript.segments.count, 1)
+        XCTAssertEqual(transcript.capture_gaps?.last?.reason, "track_unavailable")
+    }
+}
+
+
+extension TranscriptionEngineSwitchTests {
+    func testSavedMeetingCannotBeRetranscribedInPlace() async throws {
+        let dir = try session(); defer { try? FileManager.default.removeItem(at: dir) }
+        let original = Data("Saved transcript".utf8)
+        try original.write(to: dir.appendingPathComponent("transcript.json"))
+        try Data(#"{"saved":true}"#.utf8).write(to: dir.appendingPathComponent("archive-receipt.json"))
+        let engine = StubTranscriptionEngine(.parakeet)
+        let coordinator = TranscriptionCoordinator(activityLockPath: dir.appendingPathComponent("lease"),
+            audioDuration: { _ in 1 }, makeEngine: { _, _ in engine })
+        do {
+            try await coordinator.transcribe(dir, detectSpeakers: false, engineOverride: .parakeet)
+            XCTFail("Saved transcripts require a new revision")
+        } catch { XCTAssertEqual((error as? DeliveryFailure)?.code, "revision_conflict") }
+        let prepares = await engine.prepares
+        XCTAssertEqual(prepares, 0)
+        XCTAssertEqual(try Data(contentsOf: dir.appendingPathComponent("transcript.json")), original)
+    }
+    func testExplicitPreviewMayReadLinkedAudioWithoutChangingSource() async throws {
+        let dir = try session(); defer { try? FileManager.default.removeItem(at: dir) }
+        let source = dir.appendingPathComponent("original.caf")
+        try Data("original".utf8).write(to: source)
+        for name in ["mic.caf", "system.caf"] {
+            let audio = dir.appendingPathComponent(name)
+            try FileManager.default.removeItem(at: audio)
+            try FileManager.default.createSymbolicLink(at: audio, withDestinationURL: source)
+        }
+        let engine = StubTranscriptionEngine(.parakeet)
+        let coordinator = TranscriptionCoordinator(activityLockPath: dir.appendingPathComponent("lease"),
+            audioDuration: { _ in 1 }, makeEngine: { _, _ in engine })
+        try await coordinator.transcribe(dir, detectSpeakers: false, engineOverride: .parakeet, allowAudioLinks: true)
+        let transcript = try JSONDecoder().decode(Transcript.self, from: Data(contentsOf: dir.appendingPathComponent("transcript.json")))
+        XCTAssertEqual(transcript.segments.count, 2)
+        XCTAssertEqual(try Data(contentsOf: source), Data("original".utf8))
     }
 }

@@ -87,6 +87,13 @@ enum AudioRetention {
               !readable(try read(dir.appendingPathComponent("transcript.md"))).isEmpty else {
             throw TranscriptionFailure("Transcript verification failed; audio kept")
         }
+        if names.contains(where: { $0.hasPrefix("system") }),
+           !transcript.segments.contains(where: { segment in
+               (segment.source == "system" || segment.speaker == "them" || segment.speaker.hasPrefix("system_"))
+                   && !segment.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+           }) {
+            throw TranscriptionFailure("No Teams speech was transcribed. This may be a silent call or missing remote audio; review before deleting audio.")
+        }
         let receipt = try object(dir.appendingPathComponent("archive-receipt.json"))
         guard receipt["saved"] as? Bool == true, receipt["utteranceCount"] as? Int == transcript.segments.count,
               receipt["localTranscriptSHA256"] as? String == digest(transcriptData),

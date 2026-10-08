@@ -19,9 +19,10 @@ final class MeetingAssistant {
     private let recordingNotification: (String, String) -> Void
     private var automaticStart: DetectedMeeting?
     private var consentPromptInProgress = false
+    private var consentPanel: MeetingConsentPanel?
     private var enabled = Config.meetingDetection()
     private var lastStatus: String?
-    private var consent = ConsentPromptState(prompted: Set(UserDefaults.standard.stringArray(forKey: "teamsPromptedMeetingIDs") ?? []))
+    private var consent = ConsentPromptState(saved: UserDefaults.standard.data(forKey: "teamsPromptedCallsV2"))
     private var needsZoomScreenPermission = false
 
     init(recordingNotification: @escaping (String, String) -> Void = notifyUser) {
@@ -30,16 +31,18 @@ final class MeetingAssistant {
 
     func start() {
         _ = policy.setAutomationEnabled(enabled)
-        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+        timer = HousekeepingTimer.schedule(every: 2) { [weak self] _ in
             MainActor.assumeIsolated { self?.poll() }
         }
         poll()
-        speakerTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+        speakerTimer = HousekeepingTimer.schedule(every: 0.25) { [weak self] _ in
             MainActor.assumeIsolated { self?.sampleSpeakers() }
         }
     }
 
     func shutdown() {
+        consentPanel?.dismiss(start: false)
+        consentPanel = nil
         timer?.invalidate()
         timer = nil
         speakerTimer?.invalidate()
@@ -80,7 +83,7 @@ final class MeetingAssistant {
     func recordingStarted() {
         recordingContextID = contextForStart?.meeting_id
         if let id = recordingContextID {
-            _ = consent.observe(DetectedMeeting(id: id, app: "Teams", service: "Microsoft Teams"))
+            _ = consent.observe(availableMeetings[id] ?? DetectedMeeting(id: id, app: "Teams", service: "Microsoft Teams"))
             persistConsent()
         }
         recordingGeneration += 1
@@ -109,6 +112,7 @@ final class MeetingAssistant {
     var onMeetingTitle: ((String?) -> Void)?
     private var contexts: [String: MeetingContext] = [:]
     private var availableMeetingIDs: [String] = []
+    private var availableMeetings: [String: DetectedMeeting] = [:]
     private var recordingContextID: String?
     var contextForStart: MeetingContext? {
         let candidate = automaticStart.flatMap { contexts[$0.id] }
@@ -141,6 +145,7 @@ final class MeetingAssistant {
             self.scanning = false
             guard self.enabled else { return }
             for (id, context) in scan.contexts { self.contexts[id] = context }
+            self.availableMeetings = scan.observations.compactMapValues { if case .present(let meeting) = $0 { return meeting }; return nil }
             self.availableMeetingIDs = scan.observations.compactMap { id, value in if case .present = value { return id }; return nil }.sorted()
             if self.policy.recording, self.recordingContextID == nil, self.availableMeetingIDs.count == 1 { self.recordingContextID = self.availableMeetingIDs[0] }
             if self.policy.recording, let id = self.recordingContextID, let context = scan.contexts[id] { self.onMeetingContext?(context) }
@@ -201,15 +206,18 @@ final class MeetingAssistant {
     }
 
     private func persistConsent() {
-        UserDefaults.standard.set(Array(consent.prompted).sorted(), forKey: "teamsPromptedMeetingIDs")
+        if let data = try? consent.savedData() {
+            UserDefaults.standard.set(data, forKey: "teamsPromptedCallsV2")
+        }
     }
 
     private func requestConsent(for meeting: DetectedMeeting) async {
         consentPromptInProgress = true
         defer { consentPromptInProgress = false }
-        NSApp.activate(ignoringOtherApps: true)
-        let alert = MeetingConsentPrompt.make(title: contexts[meeting.id]?.title)
-        if alert.runModal() == .alertFirstButtonReturn {
+        let panel = MeetingConsentPanel(title: contexts[meeting.id]?.title)
+        consentPanel = panel
+        defer { consentPanel = nil }
+        if await panel.present(), enabled {
             automaticStart = meeting
             _ = await onStart?()
             automaticStart = nil

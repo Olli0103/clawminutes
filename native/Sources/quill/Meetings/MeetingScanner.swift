@@ -5,6 +5,7 @@ struct MeetingApp: Sendable {
     let pid: pid_t
     let name: String
     let service: String?
+    var processStartedAt: Double? = nil
 
     @MainActor static func running() -> [MeetingApp] {
         NSWorkspace.shared.runningApplications.compactMap { app in
@@ -13,7 +14,7 @@ struct MeetingApp: Sendable {
             guard service == "Microsoft Teams" else { return nil }
             // Helper processes do not own the meeting's windows.
             guard app.activationPolicy == .regular else { return nil }
-            return MeetingApp(pid: app.processIdentifier, name: app.localizedName ?? "Browser", service: service)
+            return MeetingApp(pid: app.processIdentifier, name: app.localizedName ?? "Browser", service: service, processStartedAt: app.launchDate?.timeIntervalSince1970)
         }
     }
 }
@@ -43,6 +44,7 @@ actor MeetingScanner {
         var document: AXUIElement?
         let code: String?
         let isBrowser: Bool
+        var cgWindowID: UInt32? = nil
     }
     private struct Node {
         let element: AXUIElement
@@ -287,8 +289,12 @@ actor MeetingScanner {
                         if let title { context.title = title; context.title_source = "teams_window" }
                         contexts[id] = context
                         result.contexts[id] = context
-                        known[id] = Known(meeting: DetectedMeeting(id: id, app: app.name, service: service),
-                                          pid: app.pid, window: window.element, tab: nil, document: nil, code: nil, isBrowser: false)
+                        let windowID = existing?.cgWindowID ?? windowNumber(pid: app.pid, window: window.element)
+                        let consentIdentity = app.processStartedAt.map { MeetingConsentIdentity(
+                            processID: app.pid, processStartedAt: $0, windowID: windowID, title: title) }
+                        known[id] = Known(meeting: DetectedMeeting(id: id, app: app.name, service: service, consentIdentity: consentIdentity),
+                                          pid: app.pid, window: window.element, tab: nil, document: nil, code: nil, isBrowser: false,
+                                          cgWindowID: windowID)
                     }
                     continue
                 }
@@ -352,10 +358,13 @@ actor MeetingScanner {
 
             for entry in known.values where entry.pid == app.pid {
                 guard let window = windows.first(where: { CFEqual($0.element, entry.window) }) else {
-                    // A closed call window is a positive end signal. If another native
-                    // call window appeared, keep recording through layout transitions.
+                    // AXWindows can omit windows on another Space or during
+                    // fullscreen transitions. Require destroyed AX plus absence
+                    // from the independent all-Spaces WindowServer inventory.
                     let anotherCall = app.service != nil && windows.contains { hasCallControls($0, service: app.service) }
-                    result.observations[entry.meeting.id] = anotherCall ? .present(entry.meeting) : .ended
+                    result.observations[entry.meeting.id] = MeetingEvidence.missingWindow(
+                        meeting: entry.meeting, replacementCall: anotherCall, destroyed: isDestroyed(entry.window),
+                        knownWindowID: entry.cgWindowID, currentWindowIDs: windowNumbers(pid: entry.pid))
                     continue
                 }
                 let leave = hasCallControls(window, service: app.service)
@@ -668,6 +677,31 @@ actor MeetingScanner {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success else { return false }
         return (value as? NSNumber)?.boolValue ?? false
+    }
+
+    private func windowInventory() -> [[String: Any]]? {
+        guard let rows = CGWindowListCopyWindowInfo(.optionAll, kCGNullWindowID) as? [[String: Any]],
+              !rows.isEmpty else { return nil }
+        return rows
+    }
+    private func windowNumbers(pid: pid_t) -> Set<UInt32>? {
+        windowInventory().map { rows in Set(rows.compactMap { row in
+            guard (row[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid else { return nil }
+            return (row[kCGWindowNumber as String] as? NSNumber)?.uint32Value
+        }) }
+    }
+    private func windowNumber(pid: pid_t, window: AXUIElement) -> UInt32? {
+        guard let rect = frame(window), let rows = windowInventory() else { return nil }
+        let matches: [UInt32] = rows.compactMap { row in
+            guard (row[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == pid,
+                  (row[kCGWindowLayer as String] as? NSNumber)?.intValue == 0,
+                  let bounds = row[kCGWindowBounds as String] as? NSDictionary,
+                  let other = CGRect(dictionaryRepresentation: bounds),
+                  abs(other.minX - rect.minX) < 2, abs(other.minY - rect.minY) < 2,
+                  abs(other.width - rect.width) < 2, abs(other.height - rect.height) < 2 else { return nil }
+            return (row[kCGWindowNumber as String] as? NSNumber)?.uint32Value
+        }
+        return matches.count == 1 ? matches[0] : nil
     }
 
     private func isDestroyed(_ element: AXUIElement) -> Bool {

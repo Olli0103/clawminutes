@@ -83,6 +83,12 @@ final class ArchiveBacklogTests: XCTestCase, @unchecked Sendable {
         for name in ["notes.md", "transcript.md"] { try Data("Fixture".utf8).write(to: export.appendingPathComponent(name)) }
         try JSONSerialization.data(withJSONObject: ["sessionId": id]).write(to: export.appendingPathComponent("metadata.json"))
         XCTAssertEqual(ArchiveBacklog.inspect(dir, notesRoot: notes).state, .saved)
+        let changedRoot = root.appendingPathComponent("new-notes-folder")
+        let changed = ArchiveBacklog.inspect(dir, notesRoot: changedRoot)
+        XCTAssertEqual(changed.state, .needsReview, "A legacy unbound export must require an explicit migration, not copy history")
+        try MeetingDocuments.rememberExport(export, root: notes, recording: dir, sessionID: String(id))
+        XCTAssertEqual(ArchiveBacklog.inspect(dir, notesRoot: changedRoot).state, .saved, "A bound export remains saved after changing defaults")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: changedRoot.path))
         try Data(#"{"segments":[{"text":"Changed speech","start_ms":0,"end_ms":1000}]}"#.utf8).write(to: dir.appendingPathComponent("transcript.json"))
         XCTAssertEqual(ArchiveBacklog.inspect(dir, notesRoot: notes).state, .archivePending)
     }
@@ -133,4 +139,63 @@ private actor SaveGate {
         await withCheckedContinuation { continuation = $0 }
     }
     func open() { opened = true; continuation?.resume(); continuation = nil }
+}
+
+extension ArchiveBacklogTests {
+    func testPermanentModelErrorStopsAutomaticBacklogRetries() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        _ = try session(root)
+        let saves = SaveCounter()
+        let coordinator = TranscriptionCoordinator(activityLockPath: root.appendingPathComponent("lease"), saveArchive: { dir in
+            await saves.save(dir)
+            throw DeliveryFailure(code: "ai_invalid_output", detail: "Unusable model output", retryable: false, completionAttempted: true)
+        })
+        _ = try await coordinator.retryArchiveBacklog(root: root, now: 100)
+        let report = try await coordinator.retryArchiveBacklog(root: root, now: 10000)
+        let count = await saves.count
+        XCTAssertEqual(count, 1)
+        XCTAssertEqual(report.needsReview, 1)
+        XCTAssertEqual(report.pending, 0)
+        _ = try await coordinator.retryArchiveBacklog(root: root, force: true, now: 10001)
+        let forcedCount = await saves.count
+        XCTAssertEqual(forcedCount, 1, "Explicit Retry must not bypass a permanent AI error")
+    }
+
+    func testTransientModelFailuresAreCappedAcrossCoordinatorRelaunch() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        _ = try session(root)
+        let saves = SaveCounter()
+        for now in [100.0, 1000, 10000, 100000] {
+            let coordinator = TranscriptionCoordinator(activityLockPath: root.appendingPathComponent("lease"), saveArchive: { dir in
+                await saves.save(dir)
+                throw DeliveryFailure(code: "ai_completion_failed", detail: "Model timed out", retryable: true, completionAttempted: true)
+            })
+            _ = try await coordinator.retryArchiveBacklog(root: root, now: now)
+        }
+        let count = await saves.count
+        XCTAssertEqual(count, 3)
+        XCTAssertEqual(try ArchiveBacklog.scan(root: root).first?.state, .needsReview)
+    }
+}
+
+extension ArchiveBacklogTests {
+    func testExplicitRetryRearmsSignInFailureWithoutRearmingInvalidAIOutput() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        _ = try session(root)
+        let saves = SaveCounter()
+        let coordinator = TranscriptionCoordinator(activityLockPath: root.appendingPathComponent("lease"), saveArchive: { dir in
+            await saves.save(dir)
+            throw DeliveryFailure(code: "sign_in_required", detail: "Sign in again", retryable: false, completionAttempted: false)
+        })
+        _ = try await coordinator.retryArchiveBacklog(root: root, now: 100)
+        _ = try await coordinator.retryArchiveBacklog(root: root, now: 1000)
+        let before = await saves.count
+        XCTAssertEqual(before, 1)
+        _ = try await coordinator.retryArchiveBacklog(root: root, force: true, now: 1001)
+        let after = await saves.count
+        XCTAssertEqual(after, 2, "Successful sign-in invokes this explicit retry path")
+    }
 }

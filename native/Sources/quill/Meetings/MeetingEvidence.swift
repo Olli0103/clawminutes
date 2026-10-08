@@ -21,6 +21,13 @@ struct MeetingEndState {
 }
 
 enum MeetingEvidence {
+    static func missingWindow(meeting: DetectedMeeting, replacementCall: Bool, destroyed: Bool,
+                              knownWindowID: UInt32?, currentWindowIDs: Set<UInt32>?) -> MeetingObservation {
+        if replacementCall { return .present(meeting) }
+        guard destroyed, let knownWindowID, let currentWindowIDs,
+              !currentWindowIDs.contains(knownWindowID) else { return .unknown }
+        return .ended
+    }
     static func nativeService(bundleID: String) -> String? {
         switch bundleID.lowercased() {
         case "us.zoom.xos": return "Zoom"

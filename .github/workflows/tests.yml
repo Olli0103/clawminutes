@@ -24,5 +24,13 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode_27.2_beta.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm install --ignore-scripts --package-lock=false --no-audit --no-fund
       - run: swift --version
-      - run: swift test --package-path native -j 4 --filter 'ConsentPromptTests|MeetingPolicyTests|MeetingEvidenceTests|MeetingNotesTests|RecordingIdentityTests|AudioRetentionTests|GatewayArchiveTests|ArchiveBacklogTests|MenuPresentationTests|CaptureRecoveryTests|TranscriptionEngineSwitchTests|HelperWorkLeaseTests|AppRunLockTests|ArchiveFailureStatusTests'
+      - name: Full isolated native suite
+        run: |
+          export OPENCLAW_TEAMS_HOME="$RUNNER_TEMP/clawminutes-test-home"
+          mkdir -p "$OPENCLAW_TEAMS_HOME"
+          swift test --package-path native -j 4

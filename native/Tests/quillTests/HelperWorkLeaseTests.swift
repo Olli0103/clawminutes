@@ -103,7 +103,7 @@ final class HelperWorkLeaseTests: XCTestCase, @unchecked Sendable {
         let dir = try session(root)
         for fail in [false, true] {
             let engine = LeaseProbeEngine(path: path, fail: fail)
-            let coordinator = TranscriptionCoordinator(activityLockPath: path, makeEngine: { _, _ in engine })
+            let coordinator = TranscriptionCoordinator(activityLockPath: path, audioDuration: { _ in 1 }, makeEngine: { _, _ in engine })
             do {
                 try await coordinator.transcribe(dir, detectSpeakers: false, engineOverride: .parakeet, learnVoiceMemory: false)
                 XCTAssertFalse(fail, "Coordinator swallowed the inference failure")
@@ -120,7 +120,7 @@ final class HelperWorkLeaseTests: XCTestCase, @unchecked Sendable {
         let (task, input) = try installer(path)
         defer { try? input.fileHandleForWriting.close(); task.waitUntilExit() }
         let engine = LeaseProbeEngine(path: path)
-        let coordinator = TranscriptionCoordinator(activityLockPath: path, makeEngine: { _, _ in engine })
+        let coordinator = TranscriptionCoordinator(activityLockPath: path, audioDuration: { _ in 1 }, makeEngine: { _, _ in engine })
         do {
             try await coordinator.transcribe(dir, detectSpeakers: false, engineOverride: .parakeet)
             XCTFail("Inference started while the installer was active")

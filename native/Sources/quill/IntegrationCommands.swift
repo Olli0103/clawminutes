@@ -101,15 +101,11 @@ struct RecoverSessions: AsyncParsableCommand {
         guard let lock = try AppRunLock.acquire() else { throw ValidationError("Stop the helper before recovery. A capture or helper is active.") }
         let root = URL(fileURLWithPath: out)
         let coordinator = TranscriptionCoordinator()
+        _ = try InterruptedRecordingRecovery.recover(root: root, owner: lock)
         let entries = try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
         for dir in entries {
             let metaURL = dir.appendingPathComponent("meta.json")
-            guard let data = try? Data(contentsOf: metaURL), var meta = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
-            if meta["status"] as? String == "recording" {
-                meta["status"] = "interrupted"
-                meta["recovery"] = ["last_second_may_be_missing": true, "checkpoint_at": meta["checkpoint_at"] ?? NSNull()]
-                try JSONSerialization.data(withJSONObject: meta).write(to: metaURL, options: .atomic)
-            }
+            guard let data = try? Data(contentsOf: metaURL), let meta = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
             if !FileManager.default.fileExists(atPath: dir.appendingPathComponent("transcript.json").path) {
                 guard let kind = TranscriptionEngineKind(rawValue: meta["backend"] as? String ?? "parakeet") else { throw ValidationError("Unknown backend. Recording preserved.") }
                 do { try await coordinator.transcribe(dir, engineOverride: kind, offline: kind == .parakeet) }
@@ -118,5 +114,22 @@ struct RecoverSessions: AsyncParsableCommand {
         }
         withExtendedLifetime(lock) {}
         print("Recovery scan complete on \(ProcessInfo.processInfo.hostName).")
+    }
+}
+
+
+struct MigrateNotesFolder: ParsableCommand {
+    static let configuration = CommandConfiguration(commandName: "migrate-notes-folder", abstract: "Explicitly copy a finished meeting's notes, including edits, into a new root. Keeps the original; never contacts the Gateway.")
+    @Option var directory: String
+    @Option var destination: String
+    mutating func run() throws {
+        let work = try HelperWorkLease.acquire()
+        defer { withExtendedLifetime(work) {} }
+        let recording = URL(fileURLWithPath: directory)
+        guard let lock = try AppRunLock.acquire(at: recording.appendingPathComponent("archive.lock")) else {
+            throw ValidationError("This meeting is being saved. Retry after it finishes.")
+        }
+        defer { withExtendedLifetime(lock) {} }
+        print(try MeetingDocuments.migrateExport(recording: recording, to: URL(fileURLWithPath: destination, isDirectory: true)).path)
     }
 }

@@ -5,7 +5,9 @@ import {createHash} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {isDeepStrictEqual} from 'node:util';
 import {archiveAdapter,meetingRecord,assertArchiveReadback,assertUtteranceCompatibility} from './archive.mjs';
-import {validateTemplate,validateContext,validateParticipants,generateNotes,documents} from './notes.mjs';
+import {validateTemplate,validateContext,validateParticipants,generateNotes,documents,restoreGeneratedNotes} from './notes.mjs';
+import {DeliveryError,deliveryError} from './delivery-errors.mjs';
+import {withNotesAttempt} from './notes-attempts.mjs';
 export function validateEnvelope(value){
   if(!value || typeof value!=='object' || Array.isArray(value) || Object.keys(value).some(k=>!['meta','transcript','recordingId'].includes(k)))throw Error('Only transcript metadata is accepted. Raw audio is forbidden.');
   if(typeof value.recordingId!=='string'||!/^[-\w.]{1,128}$/.test(value.recordingId))throw Error('Invalid recording identity');
@@ -30,7 +32,7 @@ export function validateEnvelope(value){
     if(!Array.isArray(t.capture_gaps)||t.capture_gaps.length>32)throw Error('Invalid capture gaps');
     for(const gap of t.capture_gaps){
       if(!gap||typeof gap!=='object'||Array.isArray(gap)||Object.keys(gap).some(k=>!['source','start_ms','end_ms','reason'].includes(k))||
-         !['mic','system'].includes(gap.source)||!['capture_failed','buffers_stalled','frame_coverage_shortfall','incomplete_at_stop'].includes(gap.reason)||
+         !['mic','system'].includes(gap.source)||!['capture_failed','buffers_stalled','frame_coverage_shortfall','incomplete_at_stop','helper_interrupted','track_unavailable'].includes(gap.reason)||
          !Number.isSafeInteger(gap.start_ms)||!Number.isSafeInteger(gap.end_ms)||gap.start_ms<0||gap.end_ms<gap.start_ms||gap.end_ms>7*24*3600*1000)throw Error('Invalid capture gap evidence');
     }
   }
@@ -45,13 +47,16 @@ export function validateEnvelope(value){
   if(m.participants!==undefined)validateParticipants(m.participants);
   return {recordingId:value.recordingId,meta:{started:m.started,ended:m.ended,audio_started_at:m.audio_started_at,status:m.status,fixture:m.fixture===true,notes_mode:m.notes_mode||'simple',note_template:m.note_template,meeting_context:m.meeting_context,participants:m.participants},transcript:{engine:t.engine,model:t.model,created_at:t.created_at,execution_machine:t.execution_machine,execution_location:t.execution_location,segments:t.segments,capture_gaps:t.capture_gaps}};
 }
-const pendingSaves=new Map();
+// Share in-flight ownership across module reloads in the same Gateway process.
+const savesKey=Symbol.for('clawminutes.teams-transcribe.pending-saves.v1');
+const pendingSaves=globalThis[savesKey]??=new Map();
 export async function saveEnvelope(envelope,options={}){
-  const e=validateEnvelope(envelope);
+  let e;
+  try{e=validateEnvelope(envelope);}catch(error){throw new DeliveryError('invalid_payload',error.message);}
   const key=JSON.stringify([path.resolve(options.stateDir),e.meta.started,e.recordingId]);
   const pending=pendingSaves.get(key);
   if(pending){
-    if(!isDeepStrictEqual(pending.envelope,e)||pending.complete!==options.complete)throw Error('A different save of this meeting is in progress. Retry after it finishes.');
+    if(!isDeepStrictEqual(pending.envelope,e)||pending.complete!==options.complete)throw new DeliveryError('save_in_progress','A different save of this meeting is in progress. Retry after it finishes.',{retryable:true,status:409});
     return pending.promise;
   }
   const promise=persistEnvelope(e,options);
@@ -67,22 +72,33 @@ async function persistEnvelope(envelope,{openclawDir,stateDir,complete}={}){
     const rows=await store.readUtterancesForSession(existing);
     assertUtteranceCompatibility(record,rows);
     const snapshot=await store.readSummary(existing);
-    if(rows.length===record.utterances.length&&snapshot?.summary){
+    if(snapshot?.summary){
+      if(rows.length!==record.utterances.length)throw new DeliveryError('revision_conflict','Archived transcript differs. Save changes as a new revision; saved notes are preserved.',{status:409});
       // The previous HTTP response may have been lost after a successful commit.
       // Return the persisted documents without another model call or store write.
       const same=(a,b)=>isDeepStrictEqual(JSON.parse(JSON.stringify(a??null)),JSON.parse(JSON.stringify(b??null)));
       const summary=snapshot.summary;
-      if(summary.sessionId!==id||summary.utteranceCount!==rows.length||!same(summary.transcript,record.summary.transcript))throw Error('Canonical archive readback mismatch');
+      if(summary.sessionId!==id||summary.utteranceCount!==rows.length||!same(summary.transcript,record.summary.transcript))throw new DeliveryError('archive_integrity','Canonical archive readback mismatch',{status:409});
       const notesBackend=e.meta.notes_mode==='ai'?'gateway-model':record.session.metadata.notes.backend;
       if(['title','startedAt','stoppedAt','source'].some(k=>!same(existing[k],record.session[k]))||
          ['stt','meetingContext','participants','captureStatus','captureGaps','fixture'].some(k=>!same(existing.metadata?.[k],record.session.metadata[k]))||
-         existing.metadata?.notes?.backend!==notesBackend||!same(summary.template,e.meta.note_template))throw Error('Archived meeting metadata differs. Save changes as a new revision; saved notes are preserved.');
+         existing.metadata?.notes?.backend!==notesBackend||!same(summary.template,e.meta.note_template))throw new DeliveryError('revision_conflict','Archived meeting metadata differs. Save changes as a new revision; saved notes are preserved.',{status:409});
       const saved={session:existing,utterances:rows,summary};
       assertArchiveReadback(saved,rows,snapshot);
       return archiveReceipt(saved,rows);
     }
   }
-  await generateNotes(record,e.meta,complete);
+  if(e.meta.notes_mode==='ai'){
+    const generated=await withNotesAttempt(stateDir,id,e,async()=>{
+      await generateNotes(record,e.meta,complete);
+      return {notes:record.session.metadata.notes,sections:record.summary.sections,template:record.summary.template};
+    },{cacheResult:true});
+    try{
+      if(!isDeepStrictEqual(generated.template,e.meta.note_template))throw Error('Cached template differs');
+      restoreGeneratedNotes(record,generated);
+    }catch{throw new DeliveryError('notes_state_conflict','Generated notes cache is incompatible. Saved text is preserved.',{status:409});}
+  }
+  else await generateNotes(record,e.meta,complete);
   await store.writeSession(record.session);
   for(const utterance of record.utterances)await store.appendUtteranceForSession(record.session,utterance);
   await store.writeSummary(record.summary,record.session);
@@ -96,16 +112,21 @@ function archiveReceipt(record,rows){
 export function gatewayHandler(options){
   return async(req,res)=>{
     res.setHeader('Content-Type','application/json');
-    if(req.method==='GET'){res.writeHead(200);res.end(JSON.stringify({plugin:'teams-transcribe',gatewayMachine:os.hostname(),rawAudioAccepted:false,notesModelConfigured:options?.notesModel||null}));return true;}
+    if(req.method==='GET'){res.writeHead(200);res.end(JSON.stringify({plugin:'teams-transcribe',gatewayMachine:os.hostname(),rawAudioAccepted:false,notesModelConfigured:options?.notesModel||null,capabilities:{structuredErrors:1,idempotentCompletedSave:true,cappedNotesAttempts:3,revisions:false}}));return true;}
     if(req.method!=='POST'){res.writeHead(405);res.end(JSON.stringify({error:'POST required'}));return true;}
     if(!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type']||'')){res.writeHead(415);res.end(JSON.stringify({error:'JSON transcript metadata only'}));return true;}
     let size=0;const chunks=[];
     try{
-      for await(const chunk of req){size+=chunk.length;if(size>16*1024*1024)throw Error('Transcript package too large');chunks.push(chunk);}
-      const envelope=JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      for await(const chunk of req){size+=chunk.length;if(size>16*1024*1024)throw new DeliveryError('payload_too_large','Transcript package too large',{status:413});chunks.push(chunk);}
+      let envelope;
+      try{envelope=JSON.parse(Buffer.concat(chunks).toString('utf8'));}catch{throw new DeliveryError('invalid_payload','The meeting package is not valid JSON.');}
       const receipt=await saveEnvelope(envelope,options);
       res.writeHead(200);res.end(JSON.stringify(receipt));
-    }catch(error){res.writeHead(400);res.end(JSON.stringify({saved:false,error:error.message,recordingPreserved:true}));}
+    }catch(error){
+      const failure=deliveryError(error);
+      res.writeHead(failure.status);res.end(JSON.stringify({saved:false,code:failure.code,retryable:failure.retryable,completionAttempted:failure.completionAttempted,detail:failure.message,error:failure.message,recordingPreserved:true}));
+      options?.onFailure?.({code:failure.code,retryable:failure.retryable,completionAttempted:failure.completionAttempted});
+    }
     return true;
   };
 }

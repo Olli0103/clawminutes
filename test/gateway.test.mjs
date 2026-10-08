@@ -24,3 +24,11 @@ test('capture gaps stay text-only and reject arbitrary evidence',()=>{
   assert.throws(()=>validateEnvelope({...payload,transcript:{...payload.transcript,capture_gaps:[invalid]}}),/capture gap/);
  }
 });
+
+test('Gateway errors have a machine-readable permanent validation outcome',async()=>{
+ const req={method:'POST',headers:{'content-type':'application/json'},async *[Symbol.asyncIterator](){yield Buffer.from('{"audio":"forbidden"}');}};
+ const response={setHeader(){},writeHead(code){this.code=code;},end(body){this.body=JSON.parse(body);}};
+ await gatewayHandler({})(req,response);
+ assert.equal(response.code,422);assert.equal(response.body.code,'invalid_payload');
+ assert.equal(response.body.retryable,false);assert.equal(response.body.completionAttempted,false);
+});

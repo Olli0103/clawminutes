@@ -43,7 +43,7 @@ enum MenuPresentation {
         switch status {
         case .idle: return .ready
         case .transcribing, .postprocessing: return .transcribing
-        case .failed: return .failed
+        case .failed, .needsReview: return .failed
         case .archivePending: return .archivePending
         }
     }
@@ -52,6 +52,7 @@ enum MenuPresentation {
         case .idle: return nil
         case .transcribing(let name, let queued): return "Transcribing \(name)" + (queued > 0 ? " · \(queued) waiting" : "")
         case .postprocessing(let name, _): return "Finishing \(name)"
+        case .needsReview(let name, let reason): return "\(name): \(reason)"
         case .failed(let name): return "Transcription did not finish for \(name). Audio is retained. See transcribe.log for the failed step."
         case .archivePending(let name): return "Transcript ready on this Mac. Saving \(name) to the Gateway is pending. Check the Gateway connection and retry pending saves. Audio is retained."
         }

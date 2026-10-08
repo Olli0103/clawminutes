@@ -16,6 +16,8 @@ enum ArchiveBacklog {
         var attempts: Int
         var nextAttemptAt: TimeInterval
         var transcriptSHA256: String
+        var completionAttempts: Int? = nil
+        var lastError: DeliveryFailure? = nil
         static func delay(attempt: Int) -> TimeInterval {
             [30.0, 120, 600, 1800][max(0, min(attempt - 1, 3))]
         }
@@ -70,7 +72,12 @@ enum ArchiveBacklog {
             if FileManager.default.fileExists(atPath: retryURL.path) {
                 let saved = try JSONDecoder().decode(Retry.self, from: read(retryURL))
                 guard saved.attempts > 0, saved.nextAttemptAt.isFinite else { return item(.needsReview, "Retry metadata is invalid") }
-                if saved.transcriptSHA256 == AudioRetention.digest(data) { retry = saved }
+                if saved.transcriptSHA256 == AudioRetention.digest(data) {
+                    retry = saved
+                    if saved.lastError?.retryable == false || (saved.completionAttempts ?? 0) >= 3 {
+                        return Item(directory: dir, state: .needsReview, reason: saved.lastError?.detail ?? "AI notes stopped after three attempts", retry: retry)
+                    }
+                }
             }
             let savedReceipt = try? object(dir.appendingPathComponent("archive-receipt.json"))
             if let receipt = savedReceipt, receipt["localTranscriptSHA256"] == nil,
@@ -89,6 +96,7 @@ enum ArchiveBacklog {
                 return Item(directory: dir, state: .exportPending, reason: "Meeting documents not exported", retry: retry)
             }
             let destination = URL(fileURLWithPath: text.trimmingCharacters(in: .whitespacesAndNewlines))
+            let notesRoot = try MeetingDocuments.exportRoot(recording: dir, fallbackRoot: notesRoot)
             let base = notesRoot.standardizedFileURL.resolvingSymlinksInPath().path + "/"
             guard destination.standardizedFileURL.path.hasPrefix(notesRoot.standardizedFileURL.path + "/"),
                   destination.resolvingSymlinksInPath().path.hasPrefix(base),
@@ -97,6 +105,9 @@ enum ArchiveBacklog {
                   let metadata = try? object(destination.appendingPathComponent("metadata.json")),
                   metadata["sessionId"] as? String == receipt["sessionId"] as? String else {
                 return Item(directory: dir, state: .exportPending, reason: "Export files missing or do not match the saved meeting", retry: retry)
+            }
+            if let gaps = transcript["capture_gaps"] as? [Any], !gaps.isEmpty {
+                return item(.needsReview, "Notes and transcript saved with capture gaps. Review missing speech; audio is retained.")
             }
             return item(.saved, "Transcript receipt and local export verified")
         } catch { return item(.needsReview, "Recording or retry metadata could not be verified") }
@@ -110,8 +121,35 @@ enum ArchiveBacklog {
     static func reserve(_ item: Item, now: TimeInterval) throws {
         let data = try read(item.directory.appendingPathComponent("transcript.json"))
         let attempts = min((item.retry?.attempts ?? 0) + 1, 1000)
-        let retry = Retry(attempts: attempts, nextAttemptAt: now + Retry.delay(attempt: attempts), transcriptSHA256: AudioRetention.digest(data))
+        let retry = Retry(attempts: attempts, nextAttemptAt: now + Retry.delay(attempt: attempts), transcriptSHA256: AudioRetention.digest(data),
+                          completionAttempts: item.retry?.completionAttempts, lastError: item.retry?.lastError)
         let path = item.directory.appendingPathComponent("archive-retry.json")
+        try JSONEncoder().encode(retry).write(to: path, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
+    }
+
+    /// Reconnection or an explicit Retry permits one new authenticated send.
+    /// Invalid output, conflicts and paid-attempt limits remain blocked.
+    static func rearmSignIn(_ item: Item, now: TimeInterval) throws {
+        guard item.retry?.lastError?.code == "sign_in_required", (item.retry?.completionAttempts ?? 0) < 3 else { return }
+        let file = item.directory.appendingPathComponent("archive-retry.json")
+        var retry = try JSONDecoder().decode(Retry.self, from: read(file))
+        guard retry.lastError?.code == "sign_in_required", retry.transcriptSHA256 == item.retry?.transcriptSHA256 else { return }
+        retry.lastError = nil
+        retry.nextAttemptAt = now
+        try JSONEncoder().encode(retry).write(to: file, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+    }
+
+    static func recordFailure(_ error: Error, directory: URL) throws {
+        let path = directory.appendingPathComponent("archive-retry.json")
+        var retry = try JSONDecoder().decode(Retry.self, from: read(path))
+        var failure = DeliveryFailure.classify(error)
+        if failure.completionAttempted { retry.completionAttempts = min((retry.completionAttempts ?? 0) + 1, 3) }
+        if (retry.completionAttempts ?? 0) >= 3 {
+            failure = DeliveryFailure(code: "ai_retry_limit", detail: "AI notes stopped after three attempts. Review this meeting or save transcript-only notes.", retryable: false, completionAttempted: failure.completionAttempted)
+        }
+        retry.lastError = failure
         try JSONEncoder().encode(retry).write(to: path, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path.path)
     }

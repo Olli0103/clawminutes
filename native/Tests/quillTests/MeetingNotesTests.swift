@@ -125,3 +125,26 @@ final class MeetingNotesTests: XCTestCase {
         template.sections = []; XCTAssertThrowsError(try template.validate())
     }
 }
+
+
+extension MeetingNotesTests {
+    func testExplicitMigrationCopiesEditedNotesAndKeepsOriginal() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let recording = root.appendingPathComponent("raw")
+        try FileManager.default.createDirectory(at: recording, withIntermediateDirectories: true)
+        var receipt = exportReceipt(id: "a", title: "Meeting")
+        receipt["saved"] = true
+        try JSONSerialization.data(withJSONObject: receipt).write(to: recording.appendingPathComponent("archive-receipt.json"))
+        try Data(#"{"status":"stopped","ended":"2026-10-02T12:00:00Z"}"#.utf8).write(to: recording.appendingPathComponent("meta.json"))
+        let oldRoot = root.appendingPathComponent("old"), newRoot = root.appendingPathComponent("new")
+        let old = try MeetingDocuments.export(receipt: receipt, root: oldRoot, recording: recording)
+        try MeetingDocuments.rememberExport(old, root: oldRoot, recording: recording, sessionID: receipt["sessionId"] as! String)
+        try Data("User edits".utf8).write(to: old.appendingPathComponent("notes.md"))
+        let copied = try MeetingDocuments.migrateExport(recording: recording, to: newRoot)
+        XCTAssertEqual(try Data(contentsOf: copied.appendingPathComponent("notes.md")), Data("User edits".utf8))
+        XCTAssertEqual(try Data(contentsOf: old.appendingPathComponent("notes.md")), Data("User edits".utf8))
+        XCTAssertEqual(try MeetingDocuments.exportRoot(recording: recording, fallbackRoot: oldRoot).path, newRoot.path)
+        XCTAssertEqual(try MeetingDocuments.migrateExport(recording: recording, to: newRoot), copied)
+    }
+}

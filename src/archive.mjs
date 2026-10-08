@@ -3,13 +3,14 @@ import path from 'node:path';
 import os from 'node:os';
 import {pathToFileURL} from 'node:url';
 import {createHash} from 'node:crypto';
+import {DeliveryError} from './delivery-errors.mjs';
 // Verified SDK releases expose no public completed-record import.
 // Use its real canonical store and lease machinery, never write guessed SQLite rows.
 const verifiedArchiveVersions = ['2026.9.7','2026.9.8'];
 export async function archiveAdapter(openclawDir) {
   if(!openclawDir) throw Error('needs_evidence: installed OpenClaw directory is required for the Meetings archive adapter.');
   const pkg=JSON.parse(await fs.readFile(path.join(openclawDir,'package.json'),'utf8'));
-  if(!verifiedArchiveVersions.includes(pkg.version)) throw Error(`Archive adapter verified only for OpenClaw ${verifiedArchiveVersions.join(' or ')}, found ${pkg.version}. Recording preserved.`);
+  if(!verifiedArchiveVersions.includes(pkg.version)) throw new DeliveryError('plugin_update_needed',`Archive adapter verified only for OpenClaw ${verifiedArchiveVersions.join(' or ')}, found ${pkg.version}. Recording preserved.`,{status:503});
   const dist=path.join(openclawDir,'dist');
   for(const f of (await fs.readdir(dist)).filter(f=>/^store-.*\.mjs$/.test(f))) {
     const source=await fs.readFile(path.join(dist,f),'utf8');
@@ -18,7 +19,7 @@ export async function archiveAdapter(openclawDir) {
     const Store=Object.values(module).find(v=>typeof v==='function' && typeof v.prototype?.appendUtteranceForSession==='function');
     if(Store) return Store;
   }
-  throw Error('needs_evidence: OpenClaw transcript store implementation changed. Recording preserved.');
+  throw new DeliveryError('plugin_update_needed','needs_evidence: OpenClaw transcript store implementation changed. Recording preserved.',{status:503});
 }
 export function meetingRecord(meta,transcript,id) {
   if(!Array.isArray(transcript.segments) || !transcript.engine || !transcript.model) throw Error('Invalid transcript provenance');
@@ -59,7 +60,7 @@ export function assertUtteranceCompatibility(record,rows) {
   const seen=new Set();
   for(const row of rows) {
     const u=expected.get(row.id);
-    if(!u||seen.has(row.id)||row.text!==u.text||row.startedAt!==u.startedAt||row.endedAt!==u.endedAt||row.speaker?.label!==u.speaker?.label||['source','start_ms','end_ms','attribution','rawSpeaker','nameEvidence'].some(k=>row.metadata?.[k]!==u.metadata?.[k]))throw Error('Archived transcript differs. Save the correction as a new revision; the original archive is preserved.');
+    if(!u||seen.has(row.id)||row.text!==u.text||row.startedAt!==u.startedAt||row.endedAt!==u.endedAt||row.speaker?.label!==u.speaker?.label||['source','start_ms','end_ms','attribution','rawSpeaker','nameEvidence'].some(k=>row.metadata?.[k]!==u.metadata?.[k]))throw new DeliveryError('revision_conflict','Archived transcript differs. Save the correction as a new revision; the original archive is preserved.',{status:409});
     seen.add(row.id);
   }
 }

@@ -66,3 +66,24 @@ final class MeetingEvidenceTests: XCTestCase {
         XCTAssertFalse(MeetingEvidence.hasCallControls(["Mute notifications", "Chat"]))
     }
 }
+
+
+extension MeetingEvidenceTests {
+    func testAXWindowOmissionIsNotEvidenceOfCallEnd() {
+        let meeting = DetectedMeeting(id: "123:1", app: "Teams", service: "Microsoft Teams")
+        for destroyed in [true, false] {
+            XCTAssertEqual(MeetingEvidence.missingWindow(meeting: meeting, replacementCall: false,
+                destroyed: destroyed, knownWindowID: 10, currentWindowIDs: [10]), .unknown)
+            XCTAssertEqual(MeetingEvidence.missingWindow(meeting: meeting, replacementCall: false,
+                destroyed: destroyed, knownWindowID: 10, currentWindowIDs: nil), .unknown)
+        }
+        XCTAssertEqual(MeetingEvidence.missingWindow(meeting: meeting, replacementCall: false,
+            destroyed: false, knownWindowID: 10, currentWindowIDs: []), .unknown)
+        XCTAssertEqual(MeetingEvidence.missingWindow(meeting: meeting, replacementCall: false,
+            destroyed: true, knownWindowID: nil, currentWindowIDs: []), .unknown)
+        XCTAssertEqual(MeetingEvidence.missingWindow(meeting: meeting, replacementCall: false,
+            destroyed: true, knownWindowID: 10, currentWindowIDs: []), .ended)
+        XCTAssertEqual(MeetingEvidence.missingWindow(meeting: meeting, replacementCall: true,
+            destroyed: true, knownWindowID: 10, currentWindowIDs: []), .present(meeting))
+    }
+}

@@ -25,8 +25,8 @@ def main():
     if args.action == 'run':
         perform(args, root, settings, parser)
     else:
-        with installation_lease(root, settings, parser):
-            perform(args, root, settings, parser)
+        with installation_lease(root, settings, parser) as allow_orphans:
+            perform(args, root, settings, parser, allow_orphans=allow_orphans)
 
 
 def owned_pids(app):
@@ -40,7 +40,7 @@ def owned_pids(app):
     return result
 
 
-def check_recording_metadata(root, settings, parser):
+def check_recording_metadata(root, settings, parser, *, allow_orphans=False):
     folders = {root/'recordings'}
     if settings.get('recordings_dir'):
         folders.add(pathlib.Path(settings['recordings_dir']).expanduser())
@@ -51,7 +51,7 @@ def check_recording_metadata(root, settings, parser):
                 if not isinstance(status, dict): raise ValueError('Metadata must be an object')
             except (OSError, ValueError):
                 parser.error('Could not verify recording status. Helper left running.')
-            if status.get('status') == 'recording':
+            if status.get('status') == 'recording' and not allow_orphans:
                 parser.error('A recording is active or unfinished. Finish or recover it before updating or removing the helper. Recording left running.')
 
 
@@ -64,7 +64,7 @@ def installation_lease(root, settings, parser):
             fcntl.flock(lease.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             parser.error('Recording, transcription, archiving or another installer is active. Try again after it finishes. Helper left running.')
-        check_recording_metadata(root, settings, parser)
+        allow_orphans = False
         # Older helpers cannot participate in this lock. Refuse to interrupt a
         # running copy whose idle state cannot be established by this protocol.
         for app in [root/NAME, root/'OpenClaw Teams Transcription.app']:
@@ -73,14 +73,19 @@ def installation_lease(root, settings, parser):
                 info = plistlib.loads((app/'Contents/Info.plist').read_bytes())
                 if info.get('CFBundleIdentifier') != LABEL: parser.error('An unrelated application occupies the helper path. It was left untouched.')
                 supports_lease = info.get('OCMHUsesLifecycleLock') is True
+                allow_orphans = allow_orphans or supports_lease
             except (OSError, ValueError):
                 parser.error('Could not verify installed helper capabilities. Helper left running.')
             if not supports_lease and owned_pids(app):
                 parser.error('This running helper predates lifecycle protection. Once recording and transcription finish, quit it before this first protected update or removal.')
-        yield
+        # An exclusive work lease proves that protected captures/processing
+        # have ended. Stale metadata alone must not prevent a recovery update.
+        # Without a known protected install, retain the conservative legacy gate.
+        check_recording_metadata(root, settings, parser, allow_orphans=allow_orphans)
+        yield allow_orphans
 
 
-def perform(args, root, settings, parser):
+def perform(args, root, settings, parser, *, allow_orphans=False):
     app, agent = root/NAME, pathlib.Path.home()/'Library/LaunchAgents'/f'{LABEL}.plist'
     legacy = root/'OpenClaw Teams Transcription.app'
     if legacy.exists():
@@ -142,7 +147,7 @@ def perform(args, root, settings, parser):
     shutil.copytree(source, staged)
     command('/usr/bin/codesign', '--verify', '--strict', str(staged))
     # The exclusive lease also prevents a new native operation after this check.
-    check_recording_metadata(root, settings, parser)
+    check_recording_metadata(root, settings, parser, allow_orphans=allow_orphans)
     command('/bin/launchctl', 'bootout', domain, str(agent), check=False)
     stop_owned_app()
     previous = root/(NAME+'.previous')
@@ -153,8 +158,8 @@ def perform(args, root, settings, parser):
     temp = config.with_suffix('.json.next')
     temp.write_text(json.dumps(settings, indent=2)); temp.chmod(0o600); temp.replace(config)
     agent.parent.mkdir(parents=True, exist_ok=True)
-    plist = {'Label': LABEL, 'ProgramArguments': ['/usr/bin/open', '-W', '-g', '-a', str(app), '--args', 'run', '--out', settings['recordings_dir']],
-             'EnvironmentVariables': {'OPENCLAW_TEAMS_HOME': str(root)}, 'RunAtLoad': True, 'KeepAlive': False,
+    plist = {'Label': LABEL, 'ProgramArguments': [str(app/'Contents/MacOS/ocmh'), 'run', '--out', settings['recordings_dir']],
+             'EnvironmentVariables': {'OPENCLAW_TEAMS_HOME': str(root)}, 'RunAtLoad': True, 'KeepAlive': {'SuccessfulExit': False}, 'ThrottleInterval': 10,
              'StandardErrorPath': str(root/'helper.log'), 'StandardOutPath': str(root/'helper.stdout.log')}
     agent.write_bytes(plistlib.dumps(plist)); agent.chmod(0o600)
     try:

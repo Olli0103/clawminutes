@@ -50,7 +50,8 @@ final class MenuBarController: NSObject, ObservableObject {
     @Published private(set) var deletesVerifiedAudio = Config.deleteAudioAfterVerification()
     func setAudioRetention(_ enabled: Bool) {
         do {
-            try MeetingNotesSettings.update(["audio_retention": enabled ? "delete_after_verification" : "keep"])
+            try MeetingNotesSettings.update(["audio_retention": enabled ? "delete_after_verification" : "keep",
+                                             "audio_retention_opted_in_at": Date().timeIntervalSince1970])
             deletesVerifiedAudio = enabled
         } catch { showError("Could not save audio retention: \(error)") }
     }
@@ -388,7 +389,7 @@ final class MenuBarController: NSObject, ObservableObject {
     func updateTranscriptionStatus(_ status: TranscriptionCoordinator.Status) {
         pipelineStatus = status
         switch status {
-        case .transcribing(let name, _), .postprocessing(let name, _), .failed(let name), .archivePending(let name):
+        case .transcribing(let name, _), .postprocessing(let name, _), .failed(let name), .archivePending(let name), .needsReview(let name, _):
             let metaURL = Config.resolveRoot(cliOverride: nil).appendingPathComponent(name).appendingPathComponent("meta.json")
             let data = try? Data(contentsOf: metaURL)
             if let data, let meta = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
