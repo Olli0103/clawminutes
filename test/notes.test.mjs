@@ -47,7 +47,21 @@ test('AI notes and both exports explicitly retain missing capture intervals',asy
  assert.deepEqual(JSON.parse(request.user).facts.captureGaps,gaps);
  assert.match(request.system,/speech is missing/);
  for(const text of [documents(record).notesMarkdown,documents(record).transcriptMarkdown]){
-  assert.match(text,/## Capture gaps/);assert.match(text,/system: 10000 to 20000 ms/);
+  assert.ok(text.includes('## Capture gaps\n\nMissing speech is not recoverable from this transcript.\n\n'));assert.match(text,/system: 10000 to 20000 ms/);
+ }
+});
+
+test('unreconciled boundary words remain review warnings without claiming capture interruption',async()=>{
+ const gaps=[{source:'mic',start_ms:29000,end_ms:61000,reason:'boundary_context_unverified'}];
+ const record=meetingRecord(meta,{...transcript,capture_gaps:gaps},'teams-boundary');
+ let request;
+ await generateNotes(record,meta,async value=>{request=value;return {text:JSON.stringify({sections:[{title:'Decisions',body:'- needs_evidence'}]}),provider:'fixture',model:'test'};});
+ assert.deepEqual(JSON.parse(request.user).facts.captureGaps,gaps);
+ assert.match(request.system,/does not establish interrupted capture/);
+ for(const text of [documents(record).notesMarkdown,documents(record).transcriptMarkdown]){
+  assert.match(text,/## Transcription boundary review/);
+  assert.doesNotMatch(text,/## Capture gaps/);
+  assert.match(text,/Original recognition and audio are retained/);
  }
 });
 

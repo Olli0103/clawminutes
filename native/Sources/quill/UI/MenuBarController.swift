@@ -611,7 +611,8 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
             if let data, let meta = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                 transcriptionBackend = meta["backend"] as? String
             }
-            captureWarning = MenuPresentation.restoredCaptureWarning(recording: recording, current: captureWarning, metadata: data)
+            let transcript = recording ? nil : try? ArchiveBacklog.read(metaURL.deletingLastPathComponent().appendingPathComponent("transcript.json"))
+            captureWarning = MenuPresentation.restoredCaptureWarning(recording: recording, current: captureWarning, metadata: data, transcript: transcript)
         case .idle: transcriptionBackend = nil
         }
         detail = MenuPresentation.pipelineDetail(status)

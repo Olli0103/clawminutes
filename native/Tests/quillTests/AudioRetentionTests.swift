@@ -57,6 +57,21 @@ final class AudioRetentionTests: XCTestCase {
         let dir = try fixture(ended: "2026-10-02T10:01:00.000Z"); defer { try? FileManager.default.removeItem(at: dir) }
         XCTAssertEqual(try AudioRetention.deleteAfterVerification(dir, measure: { _ in 60 }), 2)
     }
+    func testUnverifiedBoundaryWordsKeepAudioDespiteMatchingSavedTextProof() throws {
+        let dir = try fixture(); defer { try? FileManager.default.removeItem(at: dir) }
+        try change(dir, file: "transcript.json", key: "capture_gaps", value: [
+            ["source": "mic", "start_ms": 29000, "end_ms": 31000, "reason": "boundary_context_unverified"]])
+        let transcript = try Data(contentsOf: dir.appendingPathComponent("transcript.json"))
+        var receipt = try ArchiveBacklog.object(dir.appendingPathComponent("archive-receipt.json"))
+        receipt["localTranscriptSHA256"] = AudioRetention.digest(transcript)
+        receipt["localEnvelopeSHA256"] = try GatewayArchive.sourceFingerprint(dir,
+            meta: ArchiveBacklog.object(dir.appendingPathComponent("meta.json")), transcriptData: transcript)
+        try put(receipt, "archive-receipt.json", dir)
+        XCTAssertThrowsError(try AudioRetention.deleteAfterVerification(dir, measure: { _ in 60 })) { error in
+            XCTAssertTrue(String(describing: error).contains("file boundaries require review"))
+        }
+        assertKept(dir)
+    }
     func testMissingSourceProofAndChangedMeetingDetailsKeepAudio() throws {
         for legacy in [false, true] {
             let dir = try fixture(); defer { try? FileManager.default.removeItem(at: dir) }

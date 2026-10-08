@@ -26,9 +26,19 @@ Optional `state.json.recognitionChunks` records one speculative attempt per file
 
 `.speech-<capture filename>.json` contains timed speech and word spans, recording identity/revision, source filename/offset/duration, audio SHA-256, and actual engine/model. It has private file permissions and an 8 MB limit. It contains no inferred participant names. A successful file write followed by a failed state commit leaves an untrusted orphan. Existing orphans and linked files are preserved rather than adopted or overwritten.
 
-The final job visits every declared capture file. It reuses checkpoint spans only when their exact bytes match the authoritative state reference and their identity, revision, filename, offset, duration, engine, model, audio hash and timing bounds match the current source. Missing, malformed, changed or incompatible checkpoints fall back to normal recognition. Independent final source-identity checks reject audio changed during the pass.
+The final job first recognizes every declared capture file, then reconciles confirmed continuous boundaries, then applies speaker evidence. It reuses checkpoint spans only when their exact bytes match the authoritative state reference and their identity, revision, filename, offset, duration, engine, model, audio hash and timing bounds match the current source. Missing, malformed, changed or incompatible checkpoints fall back to normal recognition. Independent final source-identity checks reject audio changed during the pass.
 
 Final speaker alignment uses the completed session's observations, roster and configured personal microphone name. Missing tracks and capture gaps remain explicit. Final publication, Gateway text delivery, notes generation and audio verification retain their existing separate checks. A checkpoint alone cannot create `transcript.json`, deliver a meeting, generate notes or authorize audio removal. No checkpoint text or audio is sent to the Gateway.
+
+## Speech context at continuous boundaries
+
+Final local recognition now joins up to six seconds from each side of a confirmed healthy boundary into one private temporary PCM file. The same prepared Parakeet engine recognizes it. Each side retains its source clock; microphone and Teams samples are never mixed. Admission requires matching actual file durations, a continuous manifest clock and unchanged source identities. Recovery gaps, uncertain timing, linked files and cloud overrides cannot enter this context path.
+
+Two timed word matches anchor each side of the replacement. They must be unique within a 750 ms timing tolerance and stay outside the immediate seam. Original speech outside those anchors remains unchanged. Complete short files can use their natural ends. Speech without matching word timings, ambiguous anchors, invalid output or reversed timing cannot replace the original. A word crossing the boundary appears once with its complete text and time, before normal speaker alignment. Durable per-file caches remain unchanged; this pass changes only the final result.
+
+An unverified boundary preserves original recognition and creates `boundary_context_unverified` in the existing text-warning field. Repeated failures are bounded to one review range per source, spanning the affected boundaries. The helper, Markdown exports and AI instructions distinguish these words from missing audio. No capture interruption is inferred. Matching archive receipts still cannot authorize deletion while the transcript has this warning. Cancellation and changed source audio prevent final publication.
+
+Temporary files and folders use private permissions and are removed after successful, failed or cancelled context recognition only when their identity and contents still match. Unexpected replacements are preserved. A hard crash can leave a private temporary context file of at most twelve seconds. Automatic crash-leftover cleanup remains open; this code does not claim secure erasure or power-loss durability.
 
 ## Scheduling and backpressure
 
@@ -42,9 +52,8 @@ Synthetic PCM tests compare every sample across concurrent writer handoffs, exer
 
 Still open:
 
-- Reconcile speech crossing file boundaries with shared context before treating this as complete incremental transcription. Independent per-file inference can clip a word at a seam.
 - Measure capture continuity, recognition latency, memory, event-loop delay and battery use on the installed helper over a meaningful live interval.
 - Verify actual Parakeet output at segment boundaries and speaker alignment across segments. Synthetic engine results establish control flow only.
-- Evaluate FluidAudio's pinned streaming support separately. No streaming or provisional Gateway notes are enabled.
+- Measure the candidate streaming path described in [the pinned-engine assessment](streaming-assessment.md). No streaming or provisional Gateway notes are enabled.
 
 No helper/Gateway installation, activation, restart, reload or real recording was performed for this checkpoint.

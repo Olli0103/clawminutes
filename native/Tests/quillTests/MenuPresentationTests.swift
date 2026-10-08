@@ -2,6 +2,14 @@ import XCTest
 @testable import quill
 
 final class MenuPresentationTests: XCTestCase {
+    func testBoundaryReviewDoesNotClaimInterruptedCapture() throws {
+        let metadata = Data("{\"capture_gaps\":[{\"source\":\"mic\",\"start_ms\":29000,\"end_ms\":31000,\"reason\":\"boundary_context_unverified\"}]}".utf8)
+        let warning = try XCTUnwrap(MenuPresentation.restoredCaptureWarning(recording: false, current: nil, metadata: metadata))
+        XCTAssertTrue(warning.contains("boundaries need review")); XCTAssertFalse(warning.contains("interrupted"))
+        XCTAssertEqual(MenuPresentation.restoredCaptureWarning(recording: false, current: nil,
+            metadata: Data("{\"capture_gaps\":[]}".utf8), transcript: metadata), warning,
+            "Final transcription warnings must be read separately from the capture manifest")
+    }
     func testPendingMeetingRestoresItsSavedCaptureReviewWarning() throws {
         let metadata = Data("{\"capture_gaps\":[{\"source\":\"mic\",\"start_ms\":3459,\"end_ms\":554883,\"reason\":\"frame_coverage_shortfall\"}]}".utf8)
         let warning = try XCTUnwrap(MenuPresentation.restoredCaptureWarning(recording: false, current: nil, metadata: metadata))

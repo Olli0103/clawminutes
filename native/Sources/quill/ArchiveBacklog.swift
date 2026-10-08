@@ -149,6 +149,9 @@ enum ArchiveBacklog {
             }
             verifiedText = .exported
             if let gaps = transcript["capture_gaps"] as? [Any], !gaps.isEmpty {
+                if gaps.contains(where: { ($0 as? [String: Any])?["reason"] as? String == "boundary_context_unverified" }) {
+                    return item(.needsReview, "Notes and transcript saved with audio or transcription warnings. Review marked boundary words and any capture gaps; audio is retained.")
+                }
                 return item(.needsReview, "Notes and transcript saved with capture gaps. Review missing speech; audio is retained.")
             }
             return item(.saved, "Transcript receipt and local export verified")

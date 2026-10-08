@@ -8,6 +8,7 @@ struct SessionMeta {
         let speaker: String
         let offsetMs: Int
         var timingUncertain = false
+        var continuousFromPrevious = false
         var source: String { speaker == "me" ? "mic" : "system" }
     }
 
@@ -51,7 +52,8 @@ struct SessionMeta {
                 // Inspect actual PCM, including zero-frame checkpoints. They may
                 // be stale after a crash, and missing tracks must become explicit gaps.
                 tracks.append(Track(file: file, speaker: source == "mic" ? "me" : "them", offsetMs: offset,
-                    timingUncertain: segment["rotation_pending"] as? Bool == true || segment["timing_uncertain"] as? Bool == true))
+                    timingUncertain: segment["rotation_pending"] as? Bool == true || segment["timing_uncertain"] as? Bool == true,
+                    continuousFromPrevious: segment["continuous_clock"] as? Bool == true))
             }
         } else {
             for source in ["mic", "system"] {
@@ -130,11 +132,17 @@ struct Transcript: Codable, Sendable {
     private func rendered(title: String) -> String {
         var lines = ["# \(title)", "", "engine: \(engine) (\(model))", ""]
         if let gaps = capture_gaps, !gaps.isEmpty {
-            lines += ["## Capture gaps", "", "Audio is incomplete in these intervals. Missing speech cannot be recovered from the transcript.", ""]
-            for gap in gaps {
-                lines.append("- \(gap.source): \(Self.clock(gap.start_ms)) to \(Self.clock(gap.end_ms)) · \(gap.reason)")
+            for boundary in [false, true] {
+                let group = gaps.filter { ($0.reason == "boundary_context_unverified") == boundary }
+                guard !group.isEmpty else { continue }
+                lines += [boundary ? "## Transcription boundary review" : "## Capture gaps", "",
+                    boundary ? "Words at file boundaries in these ranges need review. Original recognition and audio are retained. This does not establish interrupted capture."
+                        : "Audio is incomplete or its timing is uncertain in these intervals. Missing speech cannot be recovered from the transcript.", ""]
+                for gap in group {
+                    lines.append("- \(gap.source): \(Self.clock(gap.start_ms)) to \(Self.clock(gap.end_ms)) · \(gap.reason)")
+                }
+                lines.append("")
             }
-            lines.append("")
         }
         if let roster = participant_roster, !roster.participants.isEmpty {
             lines += ["## Participants", ""]

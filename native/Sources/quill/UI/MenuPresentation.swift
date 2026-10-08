@@ -25,14 +25,18 @@ enum HelperActivity: Equatable {
 }
 
 enum MenuPresentation {
-    static func restoredCaptureWarning(recording: Bool, current: String?, metadata: Data?) -> String? {
+    static func restoredCaptureWarning(recording: Bool, current: String?, metadata: Data?, transcript: Data? = nil) -> String? {
         // A pending older meeting must not replace the live capture's warning.
         guard !recording else { return current }
         struct Evidence: Decodable { let capture_gaps: [CaptureGap]? }
-        guard let metadata, let evidence = try? JSONDecoder().decode(Evidence.self, from: metadata) else {
-            return current
+        let captured = metadata.flatMap { try? JSONDecoder().decode(Evidence.self, from: $0) }
+        let recognized = transcript.flatMap { try? JSONDecoder().decode(Evidence.self, from: $0) }
+        guard captured != nil || recognized != nil else { return current }
+        let gaps = (captured?.capture_gaps ?? []) + (recognized?.capture_gaps ?? [])
+        guard !gaps.isEmpty else { return nil }
+        if gaps.allSatisfy({ $0.reason == "boundary_context_unverified" }) {
+            return "Words at audio file boundaries need review. Original recognition and audio are retained."
         }
-        guard let gaps = evidence.capture_gaps, !gaps.isEmpty else { return nil }
         if gaps.contains(where: { $0.reason == "frame_coverage_shortfall" || $0.reason == "incomplete_at_stop" }) {
             return "Audio timing needs review. The transcript marks timing uncertainty after a capture frame shortfall. Audio is retained."
         }

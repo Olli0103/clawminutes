@@ -3,6 +3,11 @@ import Foundation
 /// Owns recognition engines and track alignment. It cannot upload to the
 /// Gateway, export notes or remove source audio.
 actor RecordingTranscriber {
+    private struct RecognizedTrack {
+        let track: SessionMeta.Track
+        let duration: Double
+        var segments: [TranscriptSegment]
+    }
     private var engine: TranscriptionEngine?
     private var engineOffline = false
     private var busy = false
@@ -78,6 +83,7 @@ actor RecordingTranscriber {
         var speakerStatus: [String: String] = [:]
         var successfulTracks = 0
         var sourceSignatures: [(URL, AudioRetention.FileIdentity)] = []
+        var recognized: [RecognizedTrack] = []
         for track in meta.tracks {
             let audio = dir.appendingPathComponent(track.file)
             let attributes = try? audio.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
@@ -114,6 +120,12 @@ actor RecordingTranscriber {
                 // Successful tracks have their own cache for the next attempt.
                 throw error
             }
+            recognized.append(RecognizedTrack(track: track, duration: duration, segments: segments))
+        }
+        try await reconcileBoundaries(&recognized, directory: dir, engine: engine, gaps: &captureGaps, allowAudioLinks: allowAudioLinks)
+        for item in recognized {
+            let track = item.track, segments = item.segments
+            let audio = dir.appendingPathComponent(track.file)
             let offset = TimeInterval(track.offsetMs) / 1000
             if !track.timingUncertain && detectSpeakers && (track.speaker == "them" || meta.sharedMicrophone) && !segments.isEmpty {
                 do {
@@ -200,6 +212,49 @@ actor RecordingTranscriber {
         try encoder.encode(analysis).write(to: dir.appendingPathComponent("speaker-analysis.json"), options: .atomic)
         try output.write(to: dir)
         MeetingLog.append(dir, "done — \(merged.count) segments")
+    }
+
+    private func reconcileBoundaries(_ items: inout [RecognizedTrack], directory: URL, engine: any TranscriptionEngine,
+                                     gaps: inout [CaptureGap], allowAudioLinks: Bool) async throws {
+        for source in ["mic", "system"] {
+            let indices = items.indices.filter { items[$0].track.source == source }
+                .sorted { items[$0].track.offsetMs < items[$1].track.offsetMs }
+            for (left, right) in zip(indices, indices.dropFirst()) {
+                let first = items[left], second = items[right]
+                guard second.track.continuousFromPrevious, !first.track.timingUncertain, !second.track.timingUncertain else { continue }
+                let boundary = second.track.offsetMs
+                do {
+                    guard engine.name == "parakeet", !allowAudioLinks,
+                          abs(Double(boundary - first.track.offsetMs) / 1000 - first.duration) <= 0.002 else {
+                        throw MeetingPipelineState.invalidState
+                    }
+                    try Task.checkCancellation()
+                    let clip = try BoundaryRecognition.makeClip(left: directory.appendingPathComponent(first.track.file),
+                        right: directory.appendingPathComponent(second.track.file))
+                    defer { clip.remove() }
+                    guard abs(clip.leftDuration - first.duration) <= 0.002,
+                          abs(clip.rightDuration - second.duration) <= 0.002 else { throw MeetingPipelineState.conflictingState }
+                    let context = try await engine.transcribe(clip.file)
+                    try Task.checkCancellation()
+                    guard let pair = BoundaryRecognition.reconcile(left: first.segments, right: second.segments, context: context,
+                        leftStart: clip.leftStart, leftDuration: clip.leftDuration, rightSeconds: clip.rightSeconds,
+                        rightDuration: clip.rightDuration) else { throw MeetingPipelineState.invalidState }
+                    items[left].segments = pair.left; items[right].segments = pair.right
+                    MeetingLog.append(directory, "Local speech context reconciled at a continuous \(source) file boundary.")
+                } catch {
+                    try Task.checkCancellation()
+                    let reason = "boundary_context_unverified"
+                    if let index = gaps.firstIndex(where: { $0.source == source && $0.reason == reason }) {
+                        let earlier = gaps[index]
+                        gaps[index] = CaptureGap(source: source, start_ms: min(earlier.start_ms, max(0, boundary - 1000)),
+                            end_ms: max(earlier.end_ms, boundary + 1000), reason: reason)
+                    } else {
+                        gaps.append(CaptureGap(source: source, start_ms: max(0, boundary - 1000), end_ms: boundary + 1000, reason: reason))
+                    }
+                    MeetingLog.append(directory, "Speech context at a \(source) file boundary, \(boundary) ms, needs review. Original edge text and audio are preserved.")
+                }
+            }
+        }
     }
 
     private func preparedEngine(kind override: TranscriptionEngineKind?, offline: Bool) async throws -> TranscriptionEngine {

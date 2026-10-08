@@ -143,6 +143,9 @@ enum AudioRetention {
         let transcriptData = try checkedRead(dir.appendingPathComponent("transcript.json"))
         let transcript = try JSONDecoder().decode(Transcript.self, from: transcriptData)
         guard transcript.capture_gaps?.isEmpty ?? true else {
+            if transcript.capture_gaps?.allSatisfy({ $0.reason == "boundary_context_unverified" }) == true {
+                throw TranscriptionFailure("Words at audio file boundaries require review; audio kept")
+            }
             throw TranscriptionFailure("Transcript records capture gaps; audio kept")
         }
         guard !transcript.segments.isEmpty, transcript.segments.contains(where: { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }),
