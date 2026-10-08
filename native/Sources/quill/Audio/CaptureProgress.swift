@@ -47,6 +47,8 @@ struct CaptureSegment: Codable, Sendable {
     var frames_written: Int64 = 0
     var duration_seconds: Double = 0
     var offset_ms: Int = 0
+    /// Set only after the recorder closes the file, never when recovery is merely requested.
+    var closed: Bool? = nil
 }
 
 struct CaptureGap: Codable, Sendable {
@@ -123,6 +125,15 @@ struct CaptureRecovery {
         nextAttempt[source] = boundary + 15
         active.removeValue(forKey: source)
         return "\(source)-\(count + 1).caf"
+    }
+    mutating func sealClosedSegments(source: String) -> [String] {
+        var files: [String] = []
+        for index in segments.indices where segments[index].source == source
+            && segments[index].ended_at != nil && segments[index].closed != true {
+            segments[index].closed = true
+            if segments[index].frames_written > 0 { files.append(segments[index].file) }
+        }
+        return files
     }
     mutating func finish(source: String, progress: CaptureProgress.Snapshot, at date: Date) {
         observe(source: source, progress: progress)

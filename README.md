@@ -130,6 +130,8 @@ Call-end detection recognizes English and German Teams end messages and call con
 
 Capture recovery monitors successful disk writes, including silent PCM. After ten seconds without progress, a failed stream, or a cumulative frame shortfall, it tries a new segment for the affected audio source. It keeps the other source running and limits retries to three with at least fifteen seconds between attempts. The transcript and Gateway notes retain gap evidence. Automatic audio deletion stays off for that recording when a gap is recorded. These protections have deterministic tests; live device-change recovery still needs verification.
 
+Acknowledged closed recovery segments can now produce local Parakeet recognition checkpoints while recording continues. The final pass verifies each checkpoint, processes every remaining track and applies speaker evidence before publishing the transcript. Background work has a bounded queue and a separate attempt reservation, with no cloud fallback or Gateway delivery. Healthy five-minute rotation is still unfinished. See [incremental recognition](docs/incremental-transcription.md). This source candidate is unactivated.
+
 ## Update and remove
 
 Use a newly built helper archive signed with the same identity. The installer refuses to replace an active recorder.

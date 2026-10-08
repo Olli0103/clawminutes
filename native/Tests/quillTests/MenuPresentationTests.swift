@@ -80,4 +80,13 @@ final class MenuPresentationTests: XCTestCase {
             " Audio check · 10s · Audio stays here")
     }
 
+    func testChunkRecognitionIsVisibleWithoutReplacingActiveRecording() throws {
+        let status = TranscriptionCoordinator.Status.recognizingChunk(session: "meeting", queued: 2)
+        XCTAssertEqual(MenuPresentation.activity(recording: true, elapsed: "5:00", status: status), .recording("5:00"))
+        XCTAssertEqual(MenuPresentation.activity(recording: false, elapsed: "5:00", status: status), .transcribing)
+        let detail = try XCTUnwrap(MenuPresentation.pipelineDetail(status))
+        XCTAssertTrue(detail.contains("on this Mac"))
+        XCTAssertTrue(detail.contains("final transcript is still pending"))
+    }
+
 }

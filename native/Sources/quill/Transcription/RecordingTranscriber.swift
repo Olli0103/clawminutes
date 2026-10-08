@@ -19,6 +19,36 @@ actor RecordingTranscriber {
         await engine?.release(); engine = nil
     }
 
+    /// Speculative local work over one acknowledged closed file. It never
+    /// touches final transcript artifacts, delivery, notes or audio retention.
+    func transcribeClosedChunk(_ dir: URL, file: String) async throws {
+        guard !busy else { throw MeetingPipelineState.conflictingState }
+        busy = true; defer { busy = false }
+        _ = try MeetingPipelineState.identity(dir)
+        let lease = try HelperWorkLease.acquire(at: activityLockPath)
+        guard let lock = try AppRunLock.acquire(at: dir.appendingPathComponent("archive.lock")) else {
+            throw MeetingPipelineState.conflictingState
+        }
+        defer { withExtendedLifetime((lease, lock)) {} }
+        let metadata = try ArchiveBacklog.object(dir.appendingPathComponent("meta.json"))
+        guard metadata["status"] as? String == "recording" else { return }
+        var state = try MeetingPipelineState.load(dir)
+        guard state.recognitionChunks?[file] == nil,
+              (state.recognitionChunks?.count ?? 0) < 256 else { return }
+        let source = try ClosedChunkRecognition.source(dir, file: file, measure: audioDuration)
+        var info = stat()
+        guard lstat(ClosedChunkRecognition.path(dir, file: file).path, &info) != 0, errno == ENOENT else { return }
+        state.recognitionChunks = (state.recognitionChunks ?? [:]).merging([file: .init(count: 1)]) { old, _ in old }
+        try state.write(dir) // Reserve before prepare/inference; relaunch cannot repeat it.
+        let engine = try await preparedEngine(kind: .parakeet, offline: true)
+        guard engine.name == "parakeet" else { throw MeetingPipelineState.invalidState }
+        try Task.checkCancellation()
+        let segments = try await engine.transcribe(dir.appendingPathComponent(file))
+        try Task.checkCancellation()
+        try ClosedChunkRecognition.publish(segments, source: source, dir: dir, engine: engine.name, model: engine.model)
+        MeetingLog.append(dir, "Local recognition checkpoint saved for \(file). Final reconciliation is still required.")
+    }
+
     func transcribe(_ dir: URL, detectSpeakers: Bool = Config.speakerDetection(), remoteSpeakerCount: Int? = nil,
                     engineOverride: TranscriptionEngineKind? = nil, offline: Bool = false, learnVoiceMemory: Bool = true, allowAudioLinks: Bool = false) async throws {
         guard !busy else { throw TranscriptionFailure("Speech recognition is already processing another meeting. Audio is retained.") }
@@ -47,6 +77,7 @@ actor RecordingTranscriber {
         var analysis = SpeakerAnalysis(turns: [], names: [:])
         var speakerStatus: [String: String] = [:]
         var successfulTracks = 0
+        var sourceSignatures: [(URL, AudioRetention.FileIdentity)] = []
         for track in meta.tracks {
             let audio = dir.appendingPathComponent(track.file)
             let attributes = try? audio.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
@@ -59,12 +90,19 @@ actor RecordingTranscriber {
                 MeetingLog.append(dir, "Track unavailable [\(track.source)]: \(track.file). Its speech is missing; remaining tracks will be recovered.")
                 continue
             }
+            if !linkAllowed { sourceSignatures.append((audio, try AudioRetention.FileIdentity.read(audio))) }
             MeetingLog.append(dir, "transcribing \(track.file) (\(engine.name))")
             // One bad track (empty, truncated) shouldn't cost us the other's
             // transcript — log it and keep going.
             let segments: [TranscriptSegment]
             do {
-                segments = try await engine.transcribe(audio)
+                if !allowAudioLinks, let cached = ClosedChunkRecognition.cached(dir, file: track.file, offsetMs: track.offsetMs,
+                        seconds: duration, engine: engine.name, model: engine.model) {
+                    segments = cached
+                    MeetingLog.append(dir, "Using verified local recognition checkpoint for \(track.file)")
+                } else {
+                    segments = try await engine.transcribe(audio)
+                }
                 successfulTracks += 1
             } catch {
                 // Cloud failures must not publish a partial meeting as complete.
@@ -151,6 +189,9 @@ actor RecordingTranscriber {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try ownership.validateUnchanged()
+        for (audio, signature) in sourceSignatures {
+            guard try AudioRetention.FileIdentity.read(audio) == signature else { throw MeetingPipelineState.conflictingState }
+        }
         try encoder.encode(analysis).write(to: dir.appendingPathComponent("speaker-analysis.json"), options: .atomic)
         try output.write(to: dir)
         MeetingLog.append(dir, "done — \(merged.count) segments")

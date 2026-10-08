@@ -43,7 +43,7 @@ enum MenuPresentation {
         if preparing { return .preparing }
         switch status {
         case .idle: return .ready
-        case .transcribing, .postprocessing: return .transcribing
+        case .recognizingChunk, .transcribing, .postprocessing: return .transcribing
         case .failed, .needsReview: return .failed
         case .archivePending: return .archivePending
         }
@@ -51,6 +51,7 @@ enum MenuPresentation {
     static func pipelineDetail(_ status: TranscriptionCoordinator.Status) -> String? {
         switch status {
         case .idle: return nil
+        case .recognizingChunk(let name, _): return "Recognizing closed audio for \(name) on this Mac. The final transcript is still pending."
         case .transcribing(let name, let queued): return "Transcribing \(name)" + (queued > 0 ? " · \(queued) waiting" : "")
         case .postprocessing(let name, _): return "Finishing \(name)"
         case .needsReview(let name, let reason): return "\(name): \(reason)"

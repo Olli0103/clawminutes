@@ -17,6 +17,12 @@ struct MeetingPipelineState: Codable, Sendable {
         var recoveryID: String? = nil
         var budgetUnverified: Bool? = nil
     }
+    /// Recognition checkpoints never prove final transcription or delivery.
+    /// One background attempt per closed file. The final job retains its own budget.
+    struct ChunkAttempt: Codable, Sendable {
+        var count: Int
+        var checkpointSHA256: String? = nil
+    }
     struct ExportAttempt: Codable, Equatable, Sendable {
         var count = 0
         var nextAttemptAt: Double = 0
@@ -46,6 +52,7 @@ struct MeetingPipelineState: Codable, Sendable {
     var transcription = Attempt()
     var delivery = Attempt()
     var localExport: ExportAttempt? = nil
+    var recognitionChunks: [String: ChunkAttempt]? = nil
     var updatedAt: Double
     var generation: Int? = nil
     var legacySnapshot: LegacySnapshot? = nil
@@ -58,7 +65,7 @@ struct MeetingPipelineState: Codable, Sendable {
     }
     enum CodingKeys: String, CodingKey {
         case schemaVersion, recordingIdentity, revision, stage, transcription, delivery, updatedAt
-        case generation, legacySnapshot, notesRecovery, localExport
+        case generation, legacySnapshot, notesRecovery, localExport, recognitionChunks
     }
     var deliveryRetry: ArchiveBacklog.Retry? {
         guard delivery.count > 0, let hash = delivery.transcriptSHA256 else { return nil }
@@ -98,6 +105,12 @@ struct MeetingPipelineState: Codable, Sendable {
             guard (0...1000).contains(attempt.count), attempt.nextAttemptAt.isFinite,
                   attempt.lastErrorAt.map({ $0.isFinite }) ?? true,
                   Self.validFailure(attempt.lastError) else { throw Self.invalidState }
+        }
+        if let chunks = recognitionChunks {
+            guard chunks.count <= 256, chunks.allSatisfy({ file, attempt in
+                SessionMeta.validTrackFile(file) && attempt.count == 1
+                    && Self.validHash(attempt.checkpointSHA256)
+            }) else { throw Self.invalidState }
         }
         guard schemaVersion == 2, updatedAt.isFinite, (generation ?? 0) >= 0, (generation ?? 0) < Int.max,
               transcription.transcriptSHA256 == nil, transcription.completionAttempts == nil, transcription.recoveryID == nil,

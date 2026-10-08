@@ -343,6 +343,9 @@ final class AppController: NSObject, NSApplicationDelegate {
         await menuBar.stopCaptureCheck()
         do {
             let newSession = try RecordingSession(root: root, context: meetings.contextForStart)
+            newSession.onClosedChunk = { [transcription] directory, file in
+                Task { await transcription.enqueueClosedChunk(directory, file: file) }
+            }
             try await newSession.start()
             session = newSession
             FileHandle.standardError.write(Data("● recording → \(newSession.dir.path)\n".utf8))

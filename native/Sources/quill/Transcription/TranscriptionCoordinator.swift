@@ -11,18 +11,27 @@ actor TranscriptionCoordinator {
     enum Status: Sendable {
         case idle
         case transcribing(session: String, queued: Int)
+        case recognizingChunk(session: String, queued: Int)
         case postprocessing(session: String, queued: Int)
         case failed(session: String)
         case archivePending(session: String)
         case needsReview(session: String, reason: String)
     }
 
+    private struct ClosedChunkJob: Equatable, Sendable {
+        let directory: URL
+        let file: String
+        let identity: String
+    }
+    private var closedChunks: [ClosedChunkJob] = []
+    private var activeChunk: ClosedChunkJob?
     private var queue: [URL] = []
     private var draining = false
     private var activeTranscription: URL?
     private var activeRoot: URL?
     private let clock: @Sendable () -> Double
     private let localModelAvailable: @Sendable () -> Bool
+    private let detectSpeakers: @Sendable () -> Bool
     private let transcriber: RecordingTranscriber
     private var lastIssue: Status?
     private var statusHandler: (@Sendable (Status) -> Void)?
@@ -121,6 +130,7 @@ actor TranscriptionCoordinator {
     init(activityLockPath: URL = HelperWorkLease.path,
          clock: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 },
          localModelAvailable: @escaping @Sendable () -> Bool = { ParakeetEngine.modelsAvailable },
+         detectSpeakers: @escaping @Sendable () -> Bool = { Config.speakerDetection() },
          audioDuration: @escaping @Sendable (URL) throws -> Double = AudioRetention.duration,
          saveArchive: @escaping @Sendable (URL) async throws -> Void = { try await GatewayArchive.save($0) },
          makeEngine: @escaping @Sendable (TranscriptionEngineKind, Bool) -> any TranscriptionEngine = { kind, offline in
@@ -131,6 +141,7 @@ actor TranscriptionCoordinator {
     }) {
         self.clock = clock
         self.localModelAvailable = localModelAvailable
+        self.detectSpeakers = detectSpeakers
         self.activityLockPath = activityLockPath
         self.transcriber = RecordingTranscriber(activityLockPath: activityLockPath, audioDuration: audioDuration, makeEngine: makeEngine)
         self.delivery = MeetingDeliveryStage(activityLockPath: activityLockPath, saveArchive: saveArchive)
@@ -147,9 +158,27 @@ actor TranscriptionCoordinator {
             await runHook(for: sessionDir)
             return
         }
+        // Pending speculative requests can be dropped because the final job
+        // visits every declared audio file, with or without a checkpoint.
+        let identity = try? MeetingPipelineState.identity(sessionDir)
+        closedChunks.removeAll { $0.directory == sessionDir || $0.identity == identity }
         guard !queue.contains(sessionDir), activeTranscription != sessionDir else { return }
         activeRoot = sessionDir.deletingLastPathComponent()
         queue.append(sessionDir)
+        drainIfIdle()
+    }
+
+    /// Bounded speculative queue, sharing the finished-job engine. No cloud
+    /// recognition and no automatic model download during a meeting.
+    func enqueueClosedChunk(_ directory: URL, file: String) {
+        guard Config.transcriptionEnabled(), localModelAvailable(), SessionMeta.validTrackFile(file),
+              let identity = try? MeetingPipelineState.identity(directory),
+              !queue.contains(directory), activeTranscription != directory,
+              closedChunks.count < 16 else { return }
+        let job = ClosedChunkJob(directory: directory, file: file, identity: identity)
+        guard activeChunk != job, !closedChunks.contains(job) else { return }
+        activeRoot = directory.deletingLastPathComponent()
+        closedChunks.append(job)
         drainIfIdle()
     }
 
@@ -220,7 +249,7 @@ actor TranscriptionCoordinator {
     // MARK: -
 
     private func drainIfIdle() {
-        guard !draining, !queue.isEmpty else { return }
+        guard !draining, !queue.isEmpty || !closedChunks.isEmpty else { return }
         draining = true
         Task { await drain() }
     }
@@ -230,11 +259,29 @@ actor TranscriptionCoordinator {
         do { workLease = try HelperWorkLease.acquire(at: activityLockPath) }
         catch {
             draining = false
-            publish(.failed(session: queue.first?.lastPathComponent ?? "Pending meeting"))
+            closedChunks.removeAll()
+            if let first = queue.first { publish(.failed(session: first.lastPathComponent)) }
             return // Files remain pending for the next launch; never start inference during replacement.
         }
         defer { withExtendedLifetime(workLease) {} }
-        while !queue.isEmpty {
+        var processedFinished = false
+        while !queue.isEmpty || !closedChunks.isEmpty {
+            // Finished meetings take priority at inference boundaries. A chunk
+            // already in inference finishes; it cannot starve final processing.
+            if queue.isEmpty {
+                let job = closedChunks.removeFirst()
+                activeChunk = job
+                publish(.recognizingChunk(session: job.directory.lastPathComponent, queued: closedChunks.count))
+                do { try await transcriber.transcribeClosedChunk(job.directory, file: job.file) }
+                catch {
+                    // A bounded failed speculative attempt is not a final STT
+                    // failure. The source audio remains available to the final job.
+                    log(job.directory, "Local recognition checkpoint unavailable for \(job.file). Final transcription will inspect the audio.")
+                }
+                activeChunk = nil
+                continue
+            }
+            processedFinished = true
             let dir = queue.removeFirst()
             activeTranscription = dir
             var state: MeetingPipelineState?
@@ -249,7 +296,7 @@ actor TranscriptionCoordinator {
                 try current.write(dir)
                 state = current
                 publish(.transcribing(session: dir.lastPathComponent, queued: queue.count))
-                try await transcribe(dir)
+                try await transcribe(dir, detectSpeakers: detectSpeakers())
                 state?.stage = .transcribed; state?.transcription.lastError = nil; state?.transcription.lastErrorAt = nil; state?.updatedAt = clock()
                 try state?.write(dir)
                 let cleanupOptions = PostProcessingOptions(json: ["mode": "off"])
@@ -280,7 +327,9 @@ actor TranscriptionCoordinator {
             activeTranscription = nil
         }
         await transcriber.release()
-        if let root = activeRoot { try? await retryArchiveBacklog(root: root) }
+        if processedFinished {
+            if let root = activeRoot { try? await retryArchiveBacklog(root: root) }
+        }
         publish(lastIssue ?? .idle)
         draining = false
         // An enqueue that landed between the loop exiting and the release

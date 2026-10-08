@@ -12,6 +12,7 @@ final class RecordingSession {
     private let mic = MicRecorder()
     private let system = SystemAudioRecorder()
     private lazy var capture = CaptureRecovery(origin: startedAt.timeIntervalSince1970)
+    var onClosedChunk: (@Sendable (URL, String) -> Void)?
     private var healthTask: Task<Void, Never>?
     private var closing = false
     private var hasStarted = false
@@ -208,6 +209,11 @@ final class RecordingSession {
             // Persist the old segment before awaiting any capture operation.
             writeCheckpoint()
             if source == "mic" { mic.stop() } else { await system.stopAsync() }
+            let closed = capture.sealClosedSegments(source: source)
+            writeCheckpoint()
+            if selectedBackend == TranscriptionEngineKind.parakeet.rawValue && Config.transcriptionEnabled() {
+                for file in closed { onClosedChunk?(dir, file) }
+            }
             guard !closing, !Task.isCancelled else { return }
             capture.begin(source: source, file: filename, at: Date())
             writeCheckpoint()
@@ -245,6 +251,8 @@ final class RecordingSession {
         let ended = requestedEnd ?? Date()
         capture.finish(source: "mic", progress: mic.progress.snapshot, at: ended)
         capture.finish(source: "system", progress: system.progress.snapshot, at: ended)
+        _ = capture.sealClosedSegments(source: "mic")
+        _ = capture.sealClosedSegments(source: "system")
         let iso = ISO8601DateFormatter()
 
         // The tracks don't start on the same buffer; record how far each
