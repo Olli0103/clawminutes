@@ -73,7 +73,8 @@ enum MeetingEvidence {
         let normalized = buttons.map { $0.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) }
         let hasLeave = normalized.contains { text in ["leave", "end", "verlassen", "beenden"].contains { text == $0 || text.hasPrefix($0 + " (") || text.hasPrefix($0 + "(") } }
         let hasAudio = normalized.contains { $0.hasPrefix("mute") || $0.hasPrefix("unmute") || $0.hasPrefix("turn off microphone") || $0.hasPrefix("turn on microphone") || $0.hasPrefix("mikrofon stummschalten") || $0.hasPrefix("stummschaltung aufheben") }
-        return hasLeave && hasAudio
+        let hasShortGermanMute = normalized.contains { $0 == "stummschalten" || $0.hasPrefix("stummschalten (") || $0.hasPrefix("stummschalten(") }
+        return hasLeave && (hasAudio || hasShortGermanMute)
     }
 
     static func isEndMessage(_ text: String) -> Bool {

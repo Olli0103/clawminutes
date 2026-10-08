@@ -316,4 +316,3 @@ actor TranscriptionCoordinator {
         statusHandler?(status)
     }
 }
-

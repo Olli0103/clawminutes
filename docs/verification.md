@@ -155,3 +155,7 @@ New regressions cover durable transcription caps over three coordinator relaunch
 Source-only follow-up: 298 native tests, 286 passed and 12 opt-in tests skipped. Both real SDK suites pass 36 JavaScript tests. The stage extraction preserves the existing recovery, delivery and retention regressions. Privacy tests use synthetic secrets and local temporary files; no real configuration or recordings were exported. `docs/diagnostics.md` describes the exact report contents and remaining single-record migration.
 
 CI for `2de80a7` passed on the PR run. A separate push run failed before native execution on a missing hard-coded Xcode path. The workflow now discovers an installed compatible Xcode instead. No helper or Gateway was restarted or activated.
+
+## Meeting library and template exchange checkpoint
+
+Full native suite: 303 tests, 291 passed, 12 opt-in tests skipped. Six focused UI/library/template tests pass after render corrections; German call-control fixtures also pass. Library and template editor offscreen renders were inspected. Both CI runs for `56f903c` passed. These checks do not establish live menu interaction or German Teams detection. No real templates, recording contents, notes, configuration or clipboard were changed.

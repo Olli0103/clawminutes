@@ -32,3 +32,9 @@ Microphone startup is confirmed only after frames reach the audio file. If the e
 
 
 Changing the default notes folder affects future exports. Each new saved export records its original root and destination in `notes-export-location.json`. Backlog retries repair that original location. A legacy export outside the newly chosen root needs manual review rather than an automatic copy. For an explicit migration, use `ocmh migrate-notes-folder --directory <recording> --destination <new-root>`. It copies the actual edited files, keeps the original, refuses destination conflicts and updates the meeting's export binding. Folder migration does not contact the Gateway.
+
+## Template exchange and the local library
+
+Open Settings → Notes → Edit templates. Import adds a new draft from a ClawMinutes template JSON file. Review it and choose Save and use template before it changes your next recording. Export writes the selected draft, including its context and section instructions, to a new JSON file. Neither operation regenerates existing notes.
+
+See all in the popover opens the local meeting library. Search currently covers meeting titles. Use the attention filter to find failed or blocked work. Open reads the verified notes export; Details shows the meeting's cause and available remedy. Copy notes copies the local Markdown, including your edits, only after you choose that action. Revisions, regeneration and full-text search remain under development.

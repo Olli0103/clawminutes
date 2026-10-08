@@ -30,7 +30,10 @@ struct NoteTemplate: Codable, Equatable, Identifiable, Sendable {
     ]
     func validate() throws {
         guard !id.isEmpty, id.count <= 80, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, name.count <= 120,
-              context.count <= 12000, (1...30).contains(sections.count), sections.allSatisfy({ !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.title.count <= 120 && $0.instructions.count <= 4000 }) else {
+              context.count <= 12000,
+              [id, name] .allSatisfy({ !$0.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) }),
+              sections.allSatisfy({ !$0.title.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) }),
+              (1...30).contains(sections.count), sections.allSatisfy({ !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.title.count <= 120 && $0.instructions.count <= 4000 }) else {
             throw TranscriptionFailure("Give the template a name and at least one section. Keep section titles under 120 characters.")
         }
     }

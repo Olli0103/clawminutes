@@ -56,6 +56,7 @@ struct HelperPopover: View {
             HStack {
                 Text("Recent meetings").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 Spacer()
+                Button("See all", action: controller.showLibrary).buttonStyle(.link).font(.caption)
                 Button("Notes folder", action: controller.openNotesFolder).buttonStyle(.link).font(.caption)
             }
             if controller.recentMeetings.isEmpty {
@@ -106,7 +107,10 @@ struct MeetingDetailView: View {
                     if let date = meeting.started { Text(date, format: .dateTime).font(.caption).foregroundStyle(.secondary) }
                     Text(meeting.detail).font(.callout).textSelection(.enabled)
                     HStack {
-                        if let notes = meeting.notes { Button("Open notes") { controller.openDocument(notes) } }
+                        if let notes = meeting.notes {
+                            Button("Open notes") { controller.openDocument(notes) }
+                            Button("Copy notes") { controller.copyNotes(meeting) }
+                        }
                         if let transcript = meeting.transcript { Button("Open transcript") { controller.openDocument(transcript) } }
                     }
                     if meeting.issue?.code == "local_model_missing" { Button("Download local model…", action: controller.setupLocal) }

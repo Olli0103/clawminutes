@@ -97,3 +97,13 @@ Native readable transcripts, Gateway archive labels and AI input retain `meeting
 `ocmh diagnose` and Advanced Settings create a new redacted JSON report without capture, provider calls or recording locks. Allowlisted fields exclude speech, names, paths, credentials and raw errors. Bounded structured events record progress writes. Four regressions verify redaction, malformed state, linked inputs, bounded rotation and non-overwrite behavior. Lock ownership is explicitly unverified.
 
 Local verification: 298 native tests, 286 passed and 12 opt-in tests skipped; 36 JavaScript tests on each supported SDK. Previous checkpoint `2de80a7` has a passing PR CI run. Its push CI failed before native tests because a runner lacked the hard-coded Xcode filename. The workflow now selects the installed Xcode 27+ toolchain, and that selection was checked locally. CI must verify the new commit.
+
+### Library and template exchange checkpoint
+
+The meeting library lists local recordings with title search, an attention filter, Open, Details and Copy notes. It searches titles only; a full-text index is still open. Recent-meeting refresh now checks Markdown availability using file metadata rather than rereading full documents, preserving the backlog index's benefit.
+
+The template editor imports a closed, versioned JSON format as a new unsaved draft and exports to a new file. Imports cannot replace an existing template, and exports refuse to overwrite files. Size, schema, fields and headings are validated. Offscreen library and editor renders were inspected and their root backgrounds corrected.
+
+The full native suite ran 303 tests, with 291 passing and 12 opt-in tests skipped. Focused UI/template/library tests also pass after the render fixes. German short mute-label fixtures now include `Stummschalten` with or without a shortcut, while a notification mute label does not establish a call. Live German Teams remains `needs_evidence`. Both CI runs for `56f903c` pass after toolchain discovery replaced the hard-coded path.
+
+Remaining source work includes revisions and explicit capped-failure recovery, speaker correction, full-text search, legacy receipt reconciliation, the final single-record migration, capability probing, provider isolation, onboarding and storage/migration UI, incremental transcription, signing/package audit and approved live acceptance. New providers remain disabled.

@@ -13,6 +13,9 @@ final class MeetingEvidenceTests: XCTestCase {
     }
     func testTeamsLocalizedCallControlsAndEndScreens() {
         XCTAssertTrue(MeetingEvidence.hasCallControls(["Verlassen", "Mikrofon stummschalten"]))
+        XCTAssertTrue(MeetingEvidence.hasCallControls(["Verlassen", "Stummschalten (Befehl + Umschalt + M)"]))
+        XCTAssertTrue(MeetingEvidence.hasCallControls(["Verlassen", "Stummschalten"]))
+        XCTAssertFalse(MeetingEvidence.hasCallControls(["Verlassen", "Stummschalten von Benachrichtigungen"]))
         XCTAssertTrue(MeetingEvidence.isLeaveControl("Auflegen (Befehl + Umschalt + H)"))
         XCTAssertTrue(MeetingEvidence.isEndMessage("Sie haben die Besprechung verlassen. Wie war die Anrufqualität?"))
         XCTAssertTrue(MeetingEvidence.isEndMessage("You've left this meeting"))

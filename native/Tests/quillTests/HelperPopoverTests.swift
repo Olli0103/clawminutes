@@ -31,6 +31,20 @@ final class HelperPopoverTests: XCTestCase {
             try data.write(to: URL(fileURLWithPath: preview).appendingPathComponent("settings-" + page.id + ".png"))
             XCTAssertFalse(window.isVisible)
         }
+        for (name, content, size) in [
+            ("meeting-library", AnyView(MeetingLibraryView(controller: controller)), NSSize(width: 660, height: 560)),
+            ("template-editor", AnyView(NoteTemplateEditor(controller: controller)), NSSize(width: 780, height: 660))
+        ] {
+            let window = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled], backing: .buffered, defer: false)
+            window.appearance = NSAppearance(named: .aqua)
+            let view = NSHostingView(rootView: content.environment(\.colorScheme, .light))
+            window.contentView = view; view.layoutSubtreeIfNeeded()
+            let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                .write(to: URL(fileURLWithPath: preview).appendingPathComponent(name + ".png"))
+            XCTAssertFalse(window.isVisible)
+        }
         for dark in [false, true] {
             let name: NSAppearance.Name = dark ? .darkAqua : .aqua
             NSApp.appearance = NSAppearance(named: name)

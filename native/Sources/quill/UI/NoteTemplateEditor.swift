@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 @MainActor struct NoteTemplateEditor: View {
     @ObservedObject var controller: MenuBarController
@@ -12,6 +13,10 @@ import SwiftUI
                 Button("New template", systemImage: "plus") {
                     let item = NoteTemplate(id: UUID().uuidString, name: "New template", context: "", sections: [.init(title: "Summary", instructions: "Main points and outcomes.")])
                     drafts.append(item); selected = item.id; message = "Unsaved changes"
+                }.padding(.horizontal).padding(.top, 12)
+                HStack {
+                    Button("Import…", action: importTemplate).disabled(drafts.count >= 100)
+                    Button("Export…", action: exportTemplate).disabled(index == nil)
                 }.padding(.horizontal)
                 List(selection: $selected) { ForEach(drafts) { item in Text(item.name).tag(item.id) } }
                 HStack {
@@ -51,6 +56,34 @@ import SwiftUI
                 }.padding(20)
             }
         }.frame(minWidth: 740, minHeight: 600)
+            .foregroundStyle(.primary).background(Color(nsColor: .windowBackgroundColor))
             .onChange(of: drafts) { _, _ in message = "Unsaved changes" }
     }
+    private func importTemplate() {
+        let panel = NSOpenPanel(); panel.allowedContentTypes = [.json]; panel.allowsMultipleSelection = false
+        panel.message = "Import as a new draft. Existing templates stay unchanged until you save."
+        panel.begin { response in
+            guard response == .OK, let file = panel.url else { return }
+            do {
+                guard drafts.count < 100 else { throw TranscriptionFailure("Keep at most 100 templates.") }
+                let imported = try TemplateExchange.read(file)
+                drafts.append(imported); selected = imported.id; message = "Imported draft. Review it, then save."
+            } catch { message = "Could not import this template. Check its format and size." }
+        }
+    }
+    private func exportTemplate() {
+        guard let index else { return }
+        let template = drafts[index]
+        do { _ = try TemplateExchange.encode(template) }
+        catch { message = "Give this template a name and valid sections before exporting."; return }
+        let panel = NSSavePanel(); panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "ClawMinutes-template.json"
+        panel.message = "Export this template to a new file. This includes its context and section instructions."
+        panel.begin { response in
+            guard response == .OK, let file = panel.url else { return }
+            do { try TemplateExchange.write(template, to: file); message = "Template exported." }
+            catch { message = "Could not export. Choose a new file in a writable folder." }
+        }
+    }
+
 }

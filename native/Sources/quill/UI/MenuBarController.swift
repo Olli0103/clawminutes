@@ -20,6 +20,24 @@ final class MenuBarController: NSObject, ObservableObject {
         }
     }
     private var meetingWindow: NSWindow?
+    private var libraryWindow: NSWindow?
+    func showLibrary() {
+        popover.performClose(nil)
+        let window = libraryWindow ?? NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 560),
+            styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.title = "ClawMinutes meetings"; window.isReleasedWhenClosed = false
+        window.contentViewController = NSHostingController(rootView: MeetingLibraryView(controller: self))
+        if libraryWindow == nil { window.center() }
+        libraryWindow = window
+        NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
+    }
+    func copyNotes(_ meeting: RecentMeeting) {
+        guard let file = meeting.notes, let data = try? ArchiveBacklog.read(file),
+              let text = String(data: data, encoding: .utf8) else {
+            showError("These notes could not be read. Open the meeting details to check its files."); return
+        }
+        NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
+    }
     @Published private(set) var diagnosing = false
     func saveDiagnostics() {
         guard !diagnosing else { return }

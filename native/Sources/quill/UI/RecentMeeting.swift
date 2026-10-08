@@ -50,6 +50,11 @@ struct RecentMeeting: Identifiable, Sendable {
         return Self(directory: item.directory, title: title, started: started,
             stage: state?.stage ?? .needsAttention, issue: issue,
             detail: issue?.detail ?? item.reason, notes: notes,
-            transcript: (try? ArchiveBacklog.read(transcript)) != nil ? transcript : nil)
+            transcript: readableDocument(transcript) ? transcript : nil)
+    }
+    static func readableDocument(_ file: URL) -> Bool {
+        guard let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),
+              values.isRegularFile == true, values.isSymbolicLink != true else { return false }
+        return FileManager.default.isReadableFile(atPath: file.path)
     }
 }
