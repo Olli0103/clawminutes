@@ -28,13 +28,17 @@ export function meetingRecord(meta,transcript,id) {
   const unknown=s=> {
     if(!s.speaker_name)return 'Unknown speaker';
     if(s.attribution==='meeting_voice')return `${s.speaker_name} (voice match, uncertain)`;
-    return ['meeting_tile','meeting_ui','accessibility_active_speaker','meeting_tile_edge','local_microphone'].includes(s.attribution) ? s.speaker_name : 'Unknown speaker';
+    return ['meeting_tile','meeting_ui','accessibility_active_speaker','meeting_tile_edge','local_microphone','manual'].includes(s.attribution) ? s.speaker_name : 'Unknown speaker';
   };
   const fixture=meta.fixture===true||meta.status==='fixture';
   // Older helpers saved this Teams window label in the observed title. Keep the
   // original evidence in metadata while using only the subject for documents.
   const title=meta.meeting_context?.title?.replace(/^Meeting compact view \| /i,'').trim();
   const session={sessionId:id,title:title||(fixture?'Fixture: Teams transcription test':'Teams meeting'),source:{providerId:'teams-transcribe',kind:'recording'},startedAt:meta.started,stoppedAt:meta.ended||transcript.created_at,metadata:{stt:{backend:transcript.engine,model:transcript.model,executionMachine:transcript.execution_machine,executionLocation:transcript.execution_location},notes:{backend:meta.notes_mode==='transcript'?'transcript-only':'extractive-local',model:null,executionMachine:os.hostname()},meetingContext:meta.meeting_context||null,participants:meta.participants||null,captureStatus:meta.status||'unknown',captureGaps:transcript.capture_gaps||[],fixture,nameAttribution:'timestamped Teams Accessibility evidence; uncertain speech unknown'}};
+  if(meta.revision){
+    session.metadata.revision=meta.revision;
+    session.title+=` · v${meta.revision.number}`;
+  }
   const utterances=transcript.segments.map((s,i)=> {
     if(!Number.isFinite(s.start_ms)||!Number.isFinite(s.end_ms)||s.end_ms<s.start_ms||typeof s.text!=='string')throw Error('Invalid utterance');
     return {id:`${id}:${i}`,sessionId:id,startedAt:new Date(origin+s.start_ms).toISOString(),endedAt:new Date(origin+s.end_ms).toISOString(),speaker:{label:unknown(s)},text:s.text,final:true,metadata:{source:s.source,start_ms:s.start_ms,end_ms:s.end_ms,attribution:s.attribution,rawSpeaker:s.speaker,nameEvidence:s.speaker_name||null}};

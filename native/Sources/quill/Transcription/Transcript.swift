@@ -116,10 +116,10 @@ struct Transcript: Codable, Sendable {
     /// Write transcript.json and render transcript.md. Both writes are atomic
     /// (temp file + rename), so a partially written transcript never exists on
     /// disk — resumePending treats presence of transcript.json as "done".
-    func write(to dir: URL) throws {
+    func write(to dir: URL, title: String? = nil) throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try Data(rendered(title: dir.lastPathComponent).utf8)
+        try Data(rendered(title: title ?? dir.lastPathComponent).utf8)
             .write(to: dir.appendingPathComponent("transcript.md"), options: .atomic)
         try encoder.encode(self)
             .write(to: dir.appendingPathComponent("transcript.json"), options: .atomic)

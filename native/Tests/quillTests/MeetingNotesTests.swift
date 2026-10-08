@@ -118,6 +118,21 @@ final class MeetingNotesTests: XCTestCase {
         let sessionID = "teams-" + String(repeating: id, count: 24)
         return ["sessionId": sessionID, "saved": true, "documents": ["title": title, "startedAt": "2026-10-02T10:00:00Z", "notesMarkdown": "notes", "transcriptMarkdown": "transcript", "metadata": ["sessionId": sessionID]]]
     }
+    func testRevisionExportPreservesEditedOriginalNotes() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let receipt = exportReceipt(id: "a", title: "Weekly sync")
+        let original = try MeetingDocuments.export(receipt: receipt, root: root, recording: root)
+        let edited = Data("User edited original notes".utf8)
+        try edited.write(to: original.appendingPathComponent("notes.md"))
+        let childReceipt = exportReceipt(id: "b", title: "Weekly sync · v2")
+        let child = try MeetingDocuments.export(receipt: childReceipt, root: root, recording: root)
+        XCTAssertNotEqual(child, original)
+        XCTAssertTrue(child.lastPathComponent.hasSuffix("Weekly-sync-v2"))
+        XCTAssertEqual(try Data(contentsOf: original.appendingPathComponent("notes.md")), edited)
+        XCTAssertEqual(try MeetingDocuments.export(receipt: childReceipt, root: root, recording: root), child)
+        XCTAssertEqual(try Data(contentsOf: original.appendingPathComponent("notes.md")), edited)
+    }
     func testTemplateSnapshotAndValidation() throws {
         var template = NoteTemplate.defaults[0]; try template.validate()
         let snapshot = template.json; template.sections[0].title = "Changed"

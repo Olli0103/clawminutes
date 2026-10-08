@@ -80,7 +80,10 @@ enum GatewayArchive {
     }
 
     static func envelope(meta: [String: Any], transcript: [String: Any], recordingID: String) throws -> Data {
-        let metaKeys = ["started", "ended", "audio_started_at", "status", "fixture", "notes_mode", "note_template", "meeting_context", "participants"]
+        var verifiedMeta = meta
+        verifiedMeta["recording_id"] = recordingID
+        _ = try MeetingRevisions.descriptor(meta: verifiedMeta, directory: URL(fileURLWithPath: "/unused"))
+        let metaKeys = ["started", "ended", "audio_started_at", "status", "fixture", "notes_mode", "note_template", "meeting_context", "participants", "revision"]
         let transcriptKeys = ["engine", "model", "created_at", "execution_machine", "execution_location", "segments", "capture_gaps"]
         let segmentKeys: Set<String> = ["speaker", "start_ms", "end_ms", "text", "source", "speaker_name", "attribution"]
         var text = transcript.filter { transcriptKeys.contains($0.key) }

@@ -105,6 +105,8 @@ final class MenuBarController: NSObject, ObservableObject {
     var onSpeechCredentialsInstalled: (() async throws -> Void)?
     var onLocalModelInstalled: (() async throws -> Void)?
     var onRetryArchive: (() async throws -> String)?
+    var onVersionCreated: (() async throws -> Void)?
+    func queueNewVersion() async { try? await onVersionCreated?() }
     private var gatewayCancelled = false
     @Published private(set) var hasAPIKey = false
     @Published private(set) var localModelReady = AsrModels.modelsExist(at: AsrModels.defaultCacheDirectory(for: .v3), version: .v3)

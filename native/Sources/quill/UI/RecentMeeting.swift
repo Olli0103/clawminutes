@@ -11,6 +11,7 @@ struct RecentMeeting: Identifiable, Sendable {
     let detail: String
     let notes: URL?
     let transcript: URL?
+    var revision: Int = 1
     var id: String { directory.path }
     var ready: Bool { notes != nil }
     var needsAttention: Bool { stage == .needsAttention || stage == .waitingForModel }
@@ -50,7 +51,8 @@ struct RecentMeeting: Identifiable, Sendable {
         return Self(directory: item.directory, title: title, started: started,
             stage: state?.stage ?? .needsAttention, issue: issue,
             detail: issue?.detail ?? item.reason, notes: notes,
-            transcript: readableDocument(transcript) ? transcript : nil)
+            transcript: readableDocument(transcript) ? transcript : nil,
+            revision: state?.revision ?? 1)
     }
     static func readableDocument(_ file: URL) -> Bool {
         guard let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),

@@ -100,6 +100,8 @@ Internal archive IDs stay in metadata. Separate versions with the same timestamp
 
 For a personal microphone, set **Your voice → Your name**. Use Shared microphone when several local people can be captured. A roster entry or acoustic voice cluster alone does not prove a remote speaker's name.
 
+Saved meeting details offer **Identify speakers…** and **Regenerate notes…**. Both create separate versions and preserve the original notes. Select exact turns when confirming a speaker; local audio previews are available while audio is retained. See [meeting versions](docs/revisions.md) for the UI, identity contract and re-transcription commands. This source candidate has not been activated on a live helper or Gateway.
+
 ## Data flow and audio retention
 
 Parakeet keeps audio and speech recognition on the recording Mac. The Gateway receives transcript text and approved metadata, including captured meeting and participant observations. Its selected AI provider receives that text for note generation. The plugin's ingestion endpoint rejects raw audio.

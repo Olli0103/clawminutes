@@ -64,10 +64,30 @@ final class GatewayHTTPContractTests: XCTestCase, @unchecked Sendable {
         XCTAssertEqual(failure.code, "revision_conflict")
         XCTAssertFalse(failure.retryable)
         XCTAssertFalse(failure.completionAttempted)
+        var revisedMeta = meta
+        let descriptor = MeetingRevisions.Descriptor(number: 2, baseRecordingId: "http-fixture",
+            parentSessionId: try XCTUnwrap(saved["sessionId"] as? String), reason: "speaker_correction")
+        revisedMeta["revision"] = descriptor.json
+        transcript["segments"] = [["speaker": "system_unknown", "source": "system", "start_ms": 0, "end_ms": 1000,
+            "text": "Synthetic speech.", "speaker_name": "Fixture Alice", "attribution": "manual"]]
+        let revisionEnvelope = try GatewayArchive.envelope(meta: revisedMeta, transcript: transcript, recordingID: descriptor.recordingId)
+        let (revisionData, revisionStatus) = try await post(revisionEnvelope)
+        XCTAssertEqual(revisionStatus, 200)
+        let revision = try XCTUnwrap(JSONSerialization.jsonObject(with: revisionData) as? [String: Any])
+        XCTAssertNotEqual(revision["sessionId"] as? String, saved["sessionId"] as? String)
+        XCTAssertTrue((revision["documents"] as? [String: Any])?["transcriptMarkdown"] as? String != nil)
+        let (_, revisionRepeatStatus) = try await post(revisionEnvelope)
+        XCTAssertEqual(revisionRepeatStatus, 200)
+        let (originalAgain, originalAgainStatus) = try await post(envelope)
+        XCTAssertEqual(originalAgainStatus, 200)
+        XCTAssertEqual((try JSONSerialization.jsonObject(with: originalAgain) as? [String: Any])?["documents"] as? NSDictionary,
+                       saved["documents"] as? NSDictionary)
+        revisedMeta["revision"] = descriptor.json.merging(["audio": "/private/audio"], uniquingKeysWith: { _, new in new })
+        XCTAssertThrowsError(try GatewayArchive.envelope(meta: revisedMeta, transcript: transcript, recordingID: descriptor.recordingId))
         let (invalid, invalidStatus) = try await post(Data(#"{"audio":"forbidden"}"#.utf8))
         XCTAssertEqual(invalidStatus, 422)
         XCTAssertEqual(DeliveryFailure.response(status: invalidStatus, data: invalid).code, "invalid_payload")
         let (counts, _) = try await session.data(from: origin.appendingPathComponent("statistics"))
-        XCTAssertEqual((try JSONSerialization.jsonObject(with: counts) as? [String: Int])?["completions"], 1)
+        XCTAssertEqual((try JSONSerialization.jsonObject(with: counts) as? [String: Int])?["completions"], 2)
     }
 }

@@ -159,3 +159,7 @@ CI for `2de80a7` passed on the PR run. A separate push run failed before native 
 ## Meeting library and template exchange checkpoint
 
 Full native suite: 303 tests, 291 passed, 12 opt-in tests skipped. Six focused UI/library/template tests pass after render corrections; German call-control fixtures also pass. Library and template editor offscreen renders were inspected. Both CI runs for `56f903c` passed. These checks do not establish live menu interaction or German Teams detection. No real templates, recording contents, notes, configuration or clipboard were changed.
+
+## Revisions checkpoint
+
+The full native suite ran 309 tests with 297 passing and 12 opt-in tests skipped. All 38 JavaScript tests pass against each supported SDK. The HTTP contract test uses the actual Swift revision envelope, real Gateway handler and real SDK store with a synthetic model. Original and revision each make one completion; repeats and rejected saves make none. Parent checks, selected-turn changes, source preservation, local export preservation, linked-audio refusal and preview duration have isolated coverage. Offscreen light/dark correction and regeneration sheets were inspected. Real playback, model semantics and live acceptance remain unverified. Source changes are not activation approval.

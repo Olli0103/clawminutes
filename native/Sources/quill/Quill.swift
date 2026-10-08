@@ -34,7 +34,7 @@ struct Quill: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "ocmh",
         abstract: "Meeting recorder + transcriber. Records mic and system audio, then transcribes locally or with ElevenLabs.",
-        subcommands: [Run.self, Doctor.self, Meetings.self, Transcribe.self, Transcription.self, SetupLocal.self, CaptureFixture.self, RecoverSessions.self, GatewayStatus.self, ArchiveSession.self, ArchiveBacklogCommand.self, VerifyAudioRetention.self, NameRecordingFolder.self, NameNotesFolder.self, MigrateNotesFolder.self, Diagnose.self, ExportIcon.self],
+        subcommands: [Run.self, Doctor.self, Meetings.self, Transcribe.self, ReviseMeeting.self, Transcription.self, SetupLocal.self, CaptureFixture.self, RecoverSessions.self, GatewayStatus.self, ArchiveSession.self, ArchiveBacklogCommand.self, VerifyAudioRetention.self, NameRecordingFolder.self, NameNotesFolder.self, MigrateNotesFolder.self, Diagnose.self, ExportIcon.self],
         defaultSubcommand: Run.self
     )
 }
@@ -245,6 +245,9 @@ final class AppController: NSObject, NSApplicationDelegate {
         menuBar.onRetryArchive = { [transcription, root] in
             let report = try await transcription.retryArchiveBacklog(root: root, force: true)
             return report.busy ? "A backlog check is already running" : "Checked pending saves: \(report.attempted) attempted, \(report.pending) waiting"
+        }
+        menuBar.onVersionCreated = { [transcription, root] in
+            _ = try await transcription.retryArchiveBacklog(root: root)
         }
         menuBar.onSpeechCredentialsInstalled = { [transcription, root] in
             _ = try await transcription.retryPendingTranscriptions(root: root, credentialsInstalled: true)

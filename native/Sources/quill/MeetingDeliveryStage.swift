@@ -44,7 +44,8 @@ actor MeetingDeliveryStage {
 /// Retention remains independent and verifies source artifacts on every removal.
 enum MeetingRetention {
     static func apply(_ dir: URL) {
-        guard Config.mayAutomaticallyDeleteAudio(dir), !AudioRetention.explicitlyRemoved(dir) else { return }
+        guard (try? ArchiveBacklog.object(dir.appendingPathComponent("meta.json"))["text_only_revision"] as? Bool) != true,
+              Config.mayAutomaticallyDeleteAudio(dir), !AudioRetention.explicitlyRemoved(dir) else { return }
         do {
             let count = try AudioRetention.deleteAfterVerification(dir)
             if count > 0 { MeetingLog.append(dir, "Audio retention: verified text and notes; removed \(count) audio track(s)") }

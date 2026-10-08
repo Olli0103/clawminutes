@@ -69,6 +69,9 @@ struct LabelSpeaker: ParsableCommand {
         let dir = URL(fileURLWithPath: (recording as NSString).expandingTildeInPath)
         let url = dir.appendingPathComponent("transcript.json")
         let fm = FileManager.default
+        guard !fm.fileExists(atPath: dir.appendingPathComponent("archive-receipt.json").path) else {
+            throw ValidationError("This meeting was saved. Use revise-meeting with exact --turns and --name to preserve it.")
+        }
         let lock = open(dir.appendingPathComponent(".postprocess.lock").path, O_CREAT | O_RDWR | O_CLOEXEC, 0o600)
         guard lock >= 0 else { throw ValidationError("Could not lock this transcript.") }
         defer { flock(lock, LOCK_UN); close(lock) }
@@ -124,6 +127,6 @@ struct LabelSpeaker: ParsableCommand {
             throw error
         }
         print("Backup: \(backup.path)")
-        print("Labelled \(speaker ?? "the verified sole remote speaker") as \(name). Run the archive sync to publish the correction.")
+        print("Labelled \(speaker ?? "the verified sole remote speaker") as \(name). This local draft has not been sent.")
     }
 }

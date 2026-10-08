@@ -98,20 +98,32 @@ struct HelperPopover: View {
 struct MeetingDetailView: View {
     @ObservedObject var controller: MenuBarController
     let meetingID: String
+    @State private var revisionMode: MeetingRevisionEditor.Mode?
+    @State private var unidentifiedTurns: Int?
     var body: some View {
         ScrollView {
             if let meeting = controller.recentMeetings.first(where: { $0.id == meetingID }) {
                 VStack(alignment: .leading, spacing: 16) {
                     Text(meeting.title).font(.title2.weight(.semibold))
+                    if meeting.revision > 1 { Text("Version \(meeting.revision)").font(.caption).foregroundStyle(.secondary) }
                     Label(meeting.statusTitle, systemImage: meeting.symbol).foregroundStyle(meeting.needsAttention ? .orange : .primary)
                     if let date = meeting.started { Text(date, format: .dateTime).font(.caption).foregroundStyle(.secondary) }
                     Text(meeting.detail).font(.callout).textSelection(.enabled)
+                    if let unidentifiedTurns, unidentifiedTurns > 0 {
+                        Text("\(unidentifiedTurns) turns have no identified speaker.").font(.caption).foregroundStyle(.secondary)
+                    }
                     HStack {
                         if let notes = meeting.notes {
                             Button("Open notes") { controller.openDocument(notes) }
                             Button("Copy notes") { controller.copyNotes(meeting) }
                         }
                         if let transcript = meeting.transcript { Button("Open transcript") { controller.openDocument(transcript) } }
+                    }
+                    if meeting.ready && meeting.transcript != nil {
+                        HStack {
+                            Button("Identify speakers…") { revisionMode = .speakers }
+                            Button("Regenerate notes…") { revisionMode = .template }
+                        }
                     }
                     if meeting.issue?.code == "local_model_missing" { Button("Download local model…", action: controller.setupLocal) }
                     else if meeting.issue?.code == "speech_credentials_missing" { Button("Add API key…", action: controller.editAPIKey) }
@@ -122,8 +134,17 @@ struct MeetingDetailView: View {
                         Text(meeting.issue?.code ?? meeting.stage.rawValue).font(.caption.monospaced()).textSelection(.enabled)
                     }
                 }.padding(24).frame(maxWidth: .infinity, alignment: .leading)
+                    .sheet(item: $revisionMode) { mode in MeetingRevisionEditor(controller: controller, meeting: meeting, mode: mode) }
             } else { Text("This meeting is no longer in the current list.").padding(24) }
         }.frame(minWidth: 430, minHeight: 320)
+            .task(id: meetingID) {
+                unidentifiedTurns = nil
+                guard let meeting = controller.recentMeetings.first(where: { $0.id == meetingID }) else { return }
+                unidentifiedTurns = try? await Task.detached {
+                    let transcript = try JSONDecoder().decode(Transcript.self, from: ArchiveBacklog.read(meeting.directory.appendingPathComponent("transcript.json")))
+                    return transcript.segments.filter { $0.speaker_name == nil }.count
+                }.value
+            }
     }
 }
 

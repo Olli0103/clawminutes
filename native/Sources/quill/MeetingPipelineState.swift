@@ -30,12 +30,14 @@ struct MeetingPipelineState: Codable, Sendable {
     static func load(_ directory: URL, inspected: ArchiveBacklog.Item? = nil,
                      now: Double = Date().timeIntervalSince1970) throws -> Self {
         let identity = try identity(directory)
+        let metadata = try ArchiveBacklog.object(directory.appendingPathComponent("meta.json"))
+        let revision = try MeetingRevisions.descriptor(meta: metadata, directory: directory)?.number ?? 1
         let file = directory.appendingPathComponent("state.json")
         if FileManager.default.fileExists(atPath: file.path) {
             let data = try ArchiveBacklog.read(file)
             guard data.count <= 16_384 else { throw invalidState }
             let value = try JSONDecoder().decode(Self.self, from: data)
-            guard value.schemaVersion == 1, value.recordingIdentity == identity, value.revision >= 1,
+            guard value.schemaVersion == 1, value.recordingIdentity == identity, value.revision == revision,
                   value.updatedAt.isFinite, [value.transcription, value.delivery].allSatisfy({
                       $0.count >= 0 && $0.count <= 1000 && $0.nextAttemptAt.isFinite
                   }) else { throw invalidState }
@@ -45,6 +47,7 @@ struct MeetingPipelineState: Codable, Sendable {
         // retranscribes, re-exports, or changes a saved document.
         let item = inspected ?? ArchiveBacklog.inspect(directory)
         var value = Self(recordingIdentity: identity, stage: .interrupted, updatedAt: now)
+        value.revision = revision
         value.reconcile(item, now: now)
         return value
     }
@@ -53,6 +56,8 @@ struct MeetingPipelineState: Codable, Sendable {
     }
     func write(_ directory: URL) throws {
         guard try Self.identity(directory) == recordingIdentity else { throw Self.invalidState }
+        let metadata = try ArchiveBacklog.object(directory.appendingPathComponent("meta.json"))
+        guard (try MeetingRevisions.descriptor(meta: metadata, directory: directory)?.number ?? 1) == revision else { throw Self.invalidState }
         let file = directory.appendingPathComponent("state.json")
         if FileManager.default.fileExists(atPath: file.path) { _ = try ArchiveBacklog.read(file) }
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]

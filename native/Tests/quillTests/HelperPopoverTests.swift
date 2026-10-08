@@ -45,6 +45,23 @@ final class HelperPopoverTests: XCTestCase {
                 .write(to: URL(fileURLWithPath: preview).appendingPathComponent(name + ".png"))
             XCTAssertFalse(window.isVisible)
         }
+        let transcript = Transcript(engine: "parakeet", model: "fixture", created_at: "2026-10-08T08:00:00Z", segments: [
+            .init(speaker: "system_unknown", start_ms: 125000, end_ms: 130000, text: "Let's confirm who will prepare the proposal before assigning an owner.", source: "system"),
+            .init(speaker: "system_unknown", start_ms: 131000, end_ms: 133000, text: "The decision is still open.", source: "system")])
+        for dark in [false, true] {
+            NSApp.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            for mode in [MeetingRevisionEditor.Mode.speakers, .template] {
+                let view = NSHostingView(rootView: MeetingRevisionEditor(controller: controller, meeting: sample[0], mode: mode, loadedTranscript: transcript)
+                    .environment(\.colorScheme, dark ? .dark : .light))
+                let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 580), styleMask: [.titled], backing: .buffered, defer: false)
+                window.appearance = NSApp.appearance; window.contentView = view; view.layoutSubtreeIfNeeded()
+                let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+                view.cacheDisplay(in: view.bounds, to: bitmap)
+                try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                    .write(to: URL(fileURLWithPath: preview).appendingPathComponent("revision-" + mode.rawValue + (dark ? "-dark" : "-light") + ".png"))
+                XCTAssertFalse(window.isVisible)
+            }
+        }
         for dark in [false, true] {
             let name: NSAppearance.Name = dark ? .darkAqua : .aqua
             NSApp.appearance = NSAppearance(named: name)
