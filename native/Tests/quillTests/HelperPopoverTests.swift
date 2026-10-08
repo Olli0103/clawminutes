@@ -158,4 +158,69 @@ extension HelperPopoverTests {
         }
     }
 
+    @MainActor func testSetupChecklistRendersWithoutStartingCaptureOrRequestingAccess() async throws {
+        let controller = MenuBarController(preview: true)
+        XCTAssertFalse(controller.captureCheckBusy); XCTAssertNil(controller.captureCheckReport)
+        XCTAssertFalse(controller.captureCheckAllowed, "Startup recovery must finish before a check can start")
+        controller.startCaptureCheck()
+        XCTAssertFalse(controller.captureCheckBusy)
+        guard let preview = ProcessInfo.processInfo.environment["CLAWMINUTES_UI_PREVIEW_DIR"] else { return }
+        let appearance = NSApp.appearance
+        defer { NSApp.appearance = appearance }
+        for dark in [false, true] {
+            NSApp.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            let view = NSHostingView(rootView: SetupChecklistView(controller: controller).environment(\.colorScheme, dark ? .dark : .light))
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 610, height: 700), styleMask: [.titled], backing: .buffered, defer: false)
+            window.appearance = NSApp.appearance; window.contentView = view
+            try await Task.sleep(for: .milliseconds(500)); view.layoutSubtreeIfNeeded()
+            let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                .write(to: URL(fileURLWithPath: preview).appendingPathComponent("setup-" + (dark ? "dark" : "light") + ".png"))
+            XCTAssertFalse(window.isVisible); XCTAssertFalse(controller.captureCheckBusy)
+            XCTAssertNil(controller.captureCheckReport)
+        }
+    }
+
+    @MainActor func testActiveAudioCheckIsVisibleAndPopoverCancelsWithoutStartingMeeting() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let started = expectation(description: "Fake capture started")
+        let device = CheckDevice { _ in started.fulfill() }
+        let runner = CaptureCheckRunner(root: root.appendingPathComponent("checks"), activityLockPath: root.appendingPathComponent("lease"),
+            permissions: { true }, makeDevice: { device }, wait: { try await Task.sleep(for: .seconds(10)) })
+        let controller = MenuBarController(preview: true, captureCheck: runner)
+        var meetingStarts = 0
+        controller.onToggle = { meetingStarts += 1 }
+        controller.enableCaptureCheck(); controller.startCaptureCheck()
+        await fulfillment(of: [started], timeout: 2)
+        XCTAssertTrue(controller.captureCheckBusy)
+        XCTAssertEqual(controller.activity, .audioCheck("10s"))
+        XCTAssertEqual(controller.backendTitle, "Audio stays here"); XCTAssertEqual(controller.modelTitle, "No transcription")
+        if let output = ProcessInfo.processInfo.environment["CLAWMINUTES_UI_PREVIEW_DIR"] {
+            let appearance = NSApp.appearance
+            defer { NSApp.appearance = appearance }
+            for dark in [false, true] {
+                NSApp.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+                let view = NSHostingView(rootView: HelperPopover(controller: controller).environment(\.colorScheme, dark ? .dark : .light)
+                    .background(Color(nsColor: .windowBackgroundColor)))
+                let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 380, height: 580), styleMask: [.titled], backing: .buffered, defer: false)
+                window.appearance = NSApp.appearance; window.contentView = view
+                try await Task.sleep(for: .milliseconds(500)); view.layoutSubtreeIfNeeded()
+                let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+                view.cacheDisplay(in: view.bounds, to: bitmap)
+                try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                    .write(to: URL(fileURLWithPath: output).appendingPathComponent("audio-check-popover-" + (dark ? "dark" : "light") + ".png"))
+                XCTAssertFalse(window.isVisible)
+            }
+        }
+        controller.toggleRecording()
+        await controller.stopCaptureCheck()
+        XCTAssertEqual(meetingStarts, 0)
+        XCTAssertEqual(device.stops, 1)
+        XCTAssertFalse(controller.captureCheckBusy)
+        XCTAssertTrue(controller.captureCheckReport?.cancelled == true)
+        XCTAssertTrue(controller.captureCheckReport?.audioRemoved == true)
+    }
+
 }

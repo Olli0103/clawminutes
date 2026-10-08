@@ -58,7 +58,7 @@ final class MenuPresentationTests: XCTestCase {
         XCTAssertEqual(MenuPresentation.activity(recording: true, elapsed: "1:24", status: .transcribing(session: "previous", queued: 0)), .recording("1:24"))
     }
     func testIconOnlyHidesTextInEveryState() {
-        for state in [HelperActivity.ready, .failed, .archivePending, .transcribing, .recording("1:00")] {
+        for state in [HelperActivity.ready, .audioCheck("10s"), .failed, .archivePending, .transcribing, .recording("1:00")] {
             XCTAssertEqual(MenuPresentation.title(style: .iconOnly, activity: state, backend: "Local only"), "")
         }
     }
@@ -74,4 +74,10 @@ final class MenuPresentationTests: XCTestCase {
         XCTAssertEqual((config["gateway"] as? [String: String])?["url"], "https://gateway.example.com")
         XCTAssertEqual((config["transcription"] as? [String: String])?["engine"], "parakeet")
     }
+    func testAudioCheckIsVisibleAsActiveWorkAndHasItsOwnTitle() {
+        XCTAssertTrue(HelperActivity.audioCheck("10s").isWorking)
+        XCTAssertEqual(MenuPresentation.title(style: .descriptive, activity: .audioCheck("10s"), backend: "Audio stays here"),
+            " Audio check · 10s · Audio stays here")
+    }
+
 }

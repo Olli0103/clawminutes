@@ -18,18 +18,18 @@ struct HelperPopover: View {
             if controller.activity.isWorking, let detail = controller.detail {
                 Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(3)
             }
-            if let warning = controller.captureWarning {
+            if !controller.captureCheckBusy, let warning = controller.captureWarning {
                 Label(warning, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Button(action: controller.toggleRecording) {
                 HStack {
-                    Image(systemName: controller.recording ? "stop.fill" : "mic.fill")
-                    Text(controller.recording ? "Stop recording" : (controller.startingRecording ? "Starting…" : "Start recording")).fontWeight(.semibold)
+                    Image(systemName: controller.recording || controller.captureCheckBusy ? "stop.fill" : "mic.fill")
+                    Text(controller.captureCheckBusy ? "Cancel audio check" : controller.recording ? "Stop recording" : (controller.startingRecording ? "Starting…" : "Start recording")).fontWeight(.semibold)
                     Spacer()
                     Text("⌘R").foregroundStyle(.secondary)
                 }.padding(.vertical, 7).frame(maxWidth: .infinity)
-            }.buttonStyle(.borderedProminent).tint(controller.recording ? .red : .accentColor)
+            }.buttonStyle(.borderedProminent).tint(controller.recording || controller.captureCheckBusy ? .red : .accentColor)
                 .keyboardShortcut("r").disabled(controller.startingRecording)
             if controller.recording {
                 Label(controller.captureWarning == nil ? controller.captureHealth : "Recording with an audio warning",
@@ -46,7 +46,7 @@ struct HelperPopover: View {
                 } label: { Label(controller.backendTitle, systemImage: "waveform") }
                     .menuStyle(.borderlessButton).fixedSize().disabled(controller.activity.isWorking)
                 Spacer()
-                Text(controller.displayedBackend == "parakeet" ? "Audio stays on this Mac" : "Audio goes to ElevenLabs")
+                Text(controller.captureCheckBusy ? "No transcription or upload" : controller.displayedBackend == "parakeet" ? "Audio stays on this Mac" : "Audio goes to ElevenLabs")
                     .font(.caption).foregroundStyle(.secondary)
             }
             if !controller.accessibilityGranted && controller.promptsEnabled {
@@ -221,6 +221,7 @@ struct HelperSettings: View {
                         Toggle("Ask when a Teams call starts", isOn: Binding(get: { controller.promptsEnabled }, set: { _ in controller.togglePrompts() }))
                         Text("One prompt per call. Dismiss keeps audio off. You can always start from the menu bar.")
                             .font(.caption).foregroundStyle(.secondary)
+                        Button("Setup checklist…", action: controller.showSetup)
                         Button("Open recording controls", action: controller.openMenu)
                     }
                 case .recording:

@@ -16,10 +16,10 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
     var firstBufferAt: Date? { progress.snapshot.firstWrite }
     private(set) var isRecording = false
 
-    func start(writingTo url: URL) async throws {
+    func start(writingTo url: URL, allowFixture: Bool = true) async throws {
         let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: false)
         guard let display = content.displays.first else { throw TranscriptionFailure("No display available for Teams audio capture. Recording remains off.") }
-        let fixture = ProcessInfo.processInfo.environment["OPENCLAW_TEAMS_CAPTURE_FIXTURE"] == "1"
+        let fixture = allowFixture && ProcessInfo.processInfo.environment["OPENCLAW_TEAMS_CAPTURE_FIXTURE"] == "1"
         let filter: SCContentFilter
         if fixture {
             let own = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }

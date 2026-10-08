@@ -6,12 +6,13 @@ enum MenuBarStyle: String, CaseIterable {
 }
 
 enum HelperActivity: Equatable {
-    case ready, recording(String), transcribing, preparing, failed, archivePending
+    case ready, recording(String), audioCheck(String), transcribing, preparing, failed, archivePending
 
     var title: String {
         switch self {
         case .ready: return "Ready"
         case .recording(let elapsed): return "Recording · \(elapsed)"
+        case .audioCheck(let status): return "Audio check · \(status)"
         case .transcribing: return "Transcribing"
         case .preparing: return "Setting up"
         case .failed: return "Needs attention"
@@ -19,7 +20,7 @@ enum HelperActivity: Equatable {
         }
     }
     var isWorking: Bool {
-        switch self { case .recording, .transcribing, .preparing: return true; default: return false }
+        switch self { case .recording, .audioCheck, .transcribing, .preparing: return true; default: return false }
     }
 }
 

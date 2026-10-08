@@ -77,9 +77,13 @@ Extract `ocmh-recording-mac.zip` on the recording Mac, then run in the extracted
 python3 scripts/helper.py install --gateway https://your-gateway.example
 ```
 
+The helper opens a setup checklist once on first launch. Reopen it from General Settings. Every permission, download, sign-in and audio-check action is explicit. See [setup and audio check](docs/setup-checklist.md).
+
 Open the helper's Settings and connect the Gateway. Choose Cloudflare Access when your Gateway uses its GitHub sign-in, or use direct Gateway token authentication. Tokens are stored locally through macOS Keychain or Cloudflare's application-scoped session cache. Remote Gateways require HTTPS.
 
 Grant the helper microphone, Screen & System Audio Recording, and Accessibility access. Use Check again after changing permissions. Teams system audio uses application-filtered, audio-only ScreenCaptureKit capture; the app registers no screen output and saves no screenshots or video.
+
+The optional 10-second audio check records only microphone and Teams audio in a separate private folder, reports sound/silence for each track, and discards its test files. It never transcribes or uploads audio and cannot run beside a meeting recording.
 
 Set up the Local only model before your first recording. Model setup downloads Parakeet; recording-time recognition does not silently download missing models or switch to a cloud backend.
 

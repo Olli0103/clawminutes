@@ -15,7 +15,7 @@ final class RecordingSession {
     private var healthTask: Task<Void, Never>?
     private var closing = false
     private var hasStarted = false
-    private let workLease: HelperWorkLease
+    private let captureOwnership: CaptureOwnership
     private var requestedEnd: Date?
     private var recoveryNotified: Set<String> = []
     private(set) var captureWarning: String?
@@ -98,7 +98,7 @@ final class RecordingSession {
     /// Create the session folder under `root` (yyyy.MM.dd-HHmm, suffixed on
     /// collision) without starting capture yet.
     init(root: URL, context: MeetingContext? = nil, activityLockPath: URL = HelperWorkLease.path) throws {
-        workLease = try HelperWorkLease.acquire(at: activityLockPath)
+        captureOwnership = try CaptureOwnership.acquire(activityLockPath: activityLockPath)
         try RecordingStorage.checkStart(freeBytes: RecordingStorage.available(at: root))
         meetingContext = context?.isCurrent(at: startedAt.timeIntervalSince1970) == true ? context : nil
         let cleanSubject = meetingContext.flatMap { TeamsMeetingTitle.clean($0.title) }.map(MeetingDocuments.component) ?? "Meeting"

@@ -280,6 +280,7 @@ final class AppController: NSObject, NSApplicationDelegate {
             }
             guard !Task.isCancelled, let self else { return }
             self.startupReady = true
+            self.menuBar.enableCaptureCheck()
             self.meetings.start()
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(60)) }
@@ -297,6 +298,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         backlogTask?.cancel()
         meetings.shutdown()
         Task {
+            await menuBar.stopCaptureCheck()
             if let session { await finishSession(session) }
             NSApp.terminate(nil)
         }
@@ -315,7 +317,8 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        if showMenuOnLaunch { menuBar.showSettings() }
+        if !promptFixture && !UserDefaults.standard.bool(forKey: "clawMinutesSetupShownV1") { menuBar.showSetup() }
+        else if showMenuOnLaunch { menuBar.showSettings() }
         if promptFixture {
             Task {
                 let panel = MeetingConsentPanel(fixture: true)
@@ -337,6 +340,7 @@ final class AppController: NSObject, NSApplicationDelegate {
         starting = true
         menuBar.setStartingRecording(true)
         defer { starting = false; menuBar.setStartingRecording(false) }
+        await menuBar.stopCaptureCheck()
         do {
             let newSession = try RecordingSession(root: root, context: meetings.contextForStart)
             try await newSession.start()
