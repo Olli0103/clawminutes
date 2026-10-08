@@ -5,6 +5,16 @@ import CoreGraphics
 import ArgumentParser
 
 enum HelperDiagnostics {
+    static func observedReport(root: URL, settings: URL = Config.path, permissions: Permissions,
+                               localModelAvailable: Bool, instanceLock: URL?, workerExecutable: URL?) async throws -> Report {
+        var (report, requests) = try buildReport(root: root, settings: settings, permissions: permissions,
+                                                localModelAvailable: localModelAvailable)
+        requests.insert(.init(role: .capture, path: settings.deletingLastPathComponent().appendingPathComponent("capture.lock").path), at: 0)
+        requests.insert(.init(role: .lifecycle, path: settings.deletingLastPathComponent().appendingPathComponent("lifecycle.lock").path), at: 0)
+        if let instanceLock { requests.insert(.init(role: .instance, path: instanceLock.path), at: 0) }
+        report.lockObservations = await HelperLockDiagnostics.capture(requests, executable: workerExecutable)
+        return report
+    }
     struct Permissions: Codable, Sendable {
         let accessibility: Bool
         let microphone: Bool
@@ -41,13 +51,19 @@ enum HelperDiagnostics {
         let meetings: [Meeting]
         let events: [PipelineEvents.Event]
         let lockOwnership: String
+        var lockObservations: [HelperLockDiagnostics.Observation]
         let excluded: [String]
     }
     static func report(root: URL, settings: URL = Config.path, permissions: Permissions,
                        localModelAvailable: Bool, limit: Int = 25) throws -> Report {
+        try buildReport(root: root, settings: settings, permissions: permissions, localModelAvailable: localModelAvailable, limit: limit).0
+    }
+    private static func buildReport(root: URL, settings: URL, permissions: Permissions,
+                                    localModelAvailable: Bool, limit: Int = 25) throws -> (Report, [HelperLockDiagnostics.Request]) {
         let files = (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)) ?? []
         let candidates = files.filter { $0.lastPathComponent.first != "." }.sorted { $0.lastPathComponent > $1.lastPathComponent }
         var meetings: [Meeting] = []
+        var requests: [HelperLockDiagnostics.Request] = []
         for directory in candidates where meetings.count < max(0, min(limit, 25)) {
             guard let values = try? directory.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey]),
                   values.isDirectory == true, values.isSymbolicLink != true else { continue }
@@ -58,7 +74,10 @@ enum HelperDiagnostics {
             state?.reconcile(item, now: Date().timeIntervalSince1970)
             let deliveryError = item.verifiedText?.includesDelivery == true ? nil : state?.deliveryRetry?.lastError ?? state?.delivery.lastError
             let primaryError = state?.transcription.lastError ?? deliveryError ?? state?.localExport?.lastError
-            meetings.append(Meeting(recordingRef: AudioRetention.digest(Data((state?.recordingIdentity ?? directory.lastPathComponent).utf8)).prefix(24).description,
+            let reference = AudioRetention.digest(Data((state?.recordingIdentity ?? directory.lastPathComponent).utf8)).prefix(24).description
+            requests.append(.init(role: .archive, path: directory.appendingPathComponent("archive.lock").path,
+                                  recordingRef: reference, meetingIndex: meetings.count))
+            meetings.append(Meeting(recordingRef: reference,
                                     artifactState: item.state, pipelineStage: state?.stage,
                                     transcriptionAttempts: state?.transcription.count,
                                     deliveryAttempts: item.retry?.attempts ?? state?.delivery.count,
@@ -74,14 +93,15 @@ enum HelperDiagnostics {
         let config = try? ArchiveBacklog.object(settings)
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "development"
         let os = ProcessInfo.processInfo.operatingSystemVersion
-        return Report(schemaVersion: 2, generatedAt: Date().timeIntervalSince1970,
+        return (Report(schemaVersion: 3, generatedAt: Date().timeIntervalSince1970,
                       helperVersion: version.range(of: #"^[0-9]+\.[0-9]+\.[0-9]+$"#, options: .regularExpression) == nil ? "development" : version,
                       operatingSystem: "macOS \(os.majorVersion).\(os.minorVersion).\(os.patchVersion)", permissions: permissions,
                       configurationReadable: config != nil, localModelAvailable: localModelAvailable,
                       freeBytes: try? RecordingStorage.available(at: root), meetings: meetings,
                       events: PipelineEvents.recent(at: settings.deletingLastPathComponent()),
-                      lockOwnership: "needs_evidence: diagnostic does not acquire lifecycle or recording locks or infer their owners",
-                      excluded: ["audio", "transcripts", "notes", "meeting titles", "participant names", "paths", "hostname", "credentials", "Gateway URL", "raw errors", "raw configuration", "raw log files"])
+                      lockOwnership: "needs_evidence: macOS does not expose flock owner PIDs; sampled state is not proof of current ownership",
+                      lockObservations: [],
+                      excluded: ["audio", "transcripts", "notes", "meeting titles", "participant names", "paths", "hostname", "credentials", "Gateway URL", "raw errors", "raw configuration", "raw log files"]), requests)
     }
     static func data(_ report: Report) throws -> Data {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -102,8 +122,9 @@ struct Diagnose: AsyncParsableCommand {
     @Option(help: "Create a new report file. Existing files are never replaced. Omit for standard output.") var output: String?
     mutating func run() async throws {
         let permissions = await HelperDiagnostics.Permissions.current()
-        let report = try HelperDiagnostics.report(root: Config.resolveRoot(cliOverride: recordings), permissions: permissions,
-                                                  localModelAvailable: ParakeetEngine.modelsAvailable)
+        let report = try await HelperDiagnostics.observedReport(root: Config.resolveRoot(cliOverride: recordings), permissions: permissions,
+                                                  localModelAvailable: ParakeetEngine.modelsAvailable,
+                                                  instanceLock: AppRunLock.path, workerExecutable: Bundle.main.executableURL)
         if let output { try HelperDiagnostics.write(report, to: URL(fileURLWithPath: (output as NSString).expandingTildeInPath)); print("Redacted diagnostic report created.") }
         else { FileHandle.standardOutput.write(try HelperDiagnostics.data(report)) }
     }

@@ -28,14 +28,20 @@ enum HarnessProcess {
     }
 
     static func run(executable: URL, arguments: [String], input: Data = Data(), directory: URL,
-                    timeout: Double) async throws -> Result {
+                    timeout: Double, childEnvironment: [String: String]? = nil,
+                    maximumOutputBytes: Int = 4_000_000, maximumErrorBytes: Int = 1_000_000) async throws -> Result {
         try await Task.detached(priority: .utility) {
-            try execute(executable: executable, arguments: arguments, input: input, directory: directory, timeout: timeout)
+            try execute(executable: executable, arguments: arguments, input: input, directory: directory, timeout: timeout,
+                        childEnvironment: childEnvironment, maximumOutputBytes: maximumOutputBytes, maximumErrorBytes: maximumErrorBytes)
         }.value
     }
 
     private static func execute(executable: URL, arguments: [String], input: Data, directory: URL,
-                                timeout: Double) throws -> Result {
+                                timeout: Double, childEnvironment: [String: String]?,
+                                maximumOutputBytes: Int, maximumErrorBytes: Int) throws -> Result {
+        guard timeout.isFinite, timeout > 0, maximumOutputBytes > 0, maximumErrorBytes > 0 else {
+            throw Failure.launch(EINVAL)
+        }
         let fm = FileManager.default
         let prefix = UUID().uuidString
         let inputURL = directory.appendingPathComponent(prefix + ".input")
@@ -65,7 +71,7 @@ enum HarnessProcess {
               posix_spawnattr_setflags(&attributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT)) == 0,
               posix_spawnattr_setpgroup(&attributes, 0) == 0 else { throw Failure.launch(EINVAL) }
         var argv = ([executable.path] + arguments).map { strdup($0) } + [nil]
-        var env = environment().map { strdup($0.key + "=" + $0.value) } + [nil]
+        var env = (childEnvironment ?? environment()).map { strdup($0.key + "=" + $0.value) } + [nil]
         defer { argv.forEach { free($0) }; env.forEach { free($0) } }
         var pid: pid_t = 0
         let launched = posix_spawn(&pid, executable.path, &actions, &attributes, &argv, &env)
@@ -79,7 +85,7 @@ enum HarnessProcess {
             var outputInfo = stat(), errorInfo = stat()
             _ = fstat(stdout.fileDescriptor, &outputInfo)
             _ = fstat(stderr.fileDescriptor, &errorInfo)
-            let tooLarge = outputInfo.st_size > 4_000_000 || errorInfo.st_size > 1_000_000
+            let tooLarge = outputInfo.st_size > maximumOutputBytes || errorInfo.st_size > maximumErrorBytes
             if tooLarge || ProcessInfo.processInfo.systemUptime >= deadline {
                 kill(-pid, SIGTERM)
                 usleep(100_000)
@@ -89,8 +95,11 @@ enum HarnessProcess {
             }
             usleep(25_000)
         }
+        var finalOutput = stat(), finalError = stat()
+        guard fstat(stdout.fileDescriptor, &finalOutput) == 0, fstat(stderr.fileDescriptor, &finalError) == 0,
+              finalOutput.st_size <= maximumOutputBytes, finalError.st_size <= maximumErrorBytes else { throw Failure.outputTooLarge }
         let data = try Data(contentsOf: outputURL)
-        guard data.count <= 4_000_000 else { throw Failure.outputTooLarge }
+        guard data.count <= maximumOutputBytes else { throw Failure.outputTooLarge }
         let exitStatus = status & 0x7f == 0 ? (status >> 8) & 0xff : 128 + (status & 0x7f)
         return Result(status: exitStatus, output: data)
     }

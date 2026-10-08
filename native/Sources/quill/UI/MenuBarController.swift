@@ -137,7 +137,8 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
                 defer { self.diagnosing = false }
                 do {
                     try await Task.detached {
-                        let report = try HelperDiagnostics.report(root: root, permissions: permissions, localModelAvailable: ready)
+                        let report = try await HelperDiagnostics.observedReport(root: root, permissions: permissions, localModelAvailable: ready,
+                            instanceLock: AppRunLock.path, workerExecutable: Bundle.main.executableURL)
                         try HelperDiagnostics.write(report, to: output)
                     }.value
                     NSWorkspace.shared.activateFileViewerSelecting([output])
