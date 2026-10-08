@@ -231,4 +231,97 @@ final class DeliveryEvidenceTests: XCTestCase {
         XCTAssertThrowsError(try VerifiedLocalExport.perform(f.directory, activityLockPath: f.lease, explicit: true))
     }
 
+    func testManualArchiveRespectsPermanentFailure() async throws {
+        let f = try fixture(saved: false)
+        var state = try MeetingPipelineState.load(f.directory)
+        state.delivery = .init(count: 1, nextAttemptAt: 0,
+            lastError: DeliveryFailure(code: "ai_invalid_output", detail: "Review the model output", retryable: false, completionAttempted: true),
+            transcriptSHA256: f.receipt["localTranscriptSHA256"] as? String, completionAttempts: 1)
+        try state.write(f.directory)
+        let original = try ArchiveBacklog.read(f.directory.appendingPathComponent("state.json"))
+        let command = try ArchiveSession.parse(["--directory", f.directory.path])
+        do {
+            try await command.archive(activityLockPath: f.lease, appLockPath: f.lease.appendingPathExtension("app"), now: 100,
+                saveArchive: { _ in XCTFail("Manual archive must not bypass a permanent failure") })
+            XCTFail("A skipped send must not report that the meeting was saved")
+        } catch {}
+        XCTAssertEqual(try ArchiveBacklog.read(f.directory.appendingPathComponent("state.json")), original)
+    }
+
+    func testManualArchivePreservesBlockedBudgetsAndRetryDeadline() async throws {
+        for kind in ["paid_cap", "unknown_budget", "backoff"] {
+            let f = try fixture(saved: false)
+            var state = try MeetingPipelineState.load(f.directory)
+            state.delivery = .init(count: 3, nextAttemptAt: kind == "backoff" ? 500 : 0,
+                transcriptSHA256: f.receipt["localTranscriptSHA256"] as? String,
+                completionAttempts: kind == "paid_cap" ? 3 : 0)
+            if kind == "unknown_budget" { state.delivery.completionAttempts = nil; state.delivery.budgetUnverified = true }
+            try state.write(f.directory)
+            let original = try ArchiveBacklog.read(f.directory.appendingPathComponent("state.json"))
+            let command = try ArchiveSession.parse(["--directory", f.directory.path])
+            do {
+                try await command.archive(activityLockPath: f.lease, appLockPath: f.lease.appendingPathExtension("app"), now: 100,
+                    saveArchive: { _ in XCTFail("Blocked manual archive must not send") })
+                XCTFail("Blocked meeting must not claim success: \(kind)")
+            } catch {}
+            XCTAssertEqual(try ArchiveBacklog.read(f.directory.appendingPathComponent("state.json")), original, kind)
+        }
+    }
+    func testManualArchiveReservesAndPersistsPaidFailure() async throws {
+        let f = try fixture(saved: false), directory = f.directory
+        let command = try ArchiveSession.parse(["--directory", directory.path])
+        do {
+            try await command.archive(activityLockPath: f.lease, appLockPath: f.lease.appendingPathExtension("app"), now: 100,
+                saveArchive: { folder in
+                    let reserved = try MeetingPipelineState.load(folder)
+                    XCTAssertEqual(reserved.delivery.count, 1)
+                    XCTAssertEqual(reserved.delivery.nextAttemptAt, 130)
+                    throw DeliveryFailure(code: "ai_invalid_output", detail: "Synthetic invalid output", retryable: false, completionAttempted: true)
+                })
+            XCTFail("Failed completion must not claim success")
+        } catch { XCTAssertEqual((error as? DeliveryFailure)?.code, "ai_invalid_output") }
+        let state = try MeetingPipelineState.load(directory)
+        XCTAssertEqual(state.delivery.count, 1); XCTAssertEqual(state.delivery.completionAttempts, 1)
+        XCTAssertEqual(state.delivery.lastError?.code, "ai_invalid_output")
+    }
+    func testManualArchiveHonorsHelperOwnershipAndVerifiedOfflineSave() async throws {
+        let f = try fixture(), path = f.lease.appendingPathExtension("app")
+        let command = try ArchiveSession.parse(["--directory", f.directory.path])
+        do {
+            let owner = try XCTUnwrap(AppRunLock.acquire(at: path))
+            defer { withExtendedLifetime(owner) {} }
+            do {
+                try await command.archive(activityLockPath: f.lease, appLockPath: path, now: 100,
+                    saveArchive: { _ in XCTFail("Active helper owns delivery") })
+                XCTFail("CLI must not compete with the running helper")
+            } catch {}
+        }
+        try await command.archive(activityLockPath: f.lease, appLockPath: path, now: 100,
+            saveArchive: { _ in XCTFail("Verified export needs no Gateway request") })
+        XCTAssertEqual(ArchiveBacklog.inspect(f.directory, notesRoot: f.notes).verifiedText, .exported)
+    }
+    func testManualArchiveUsesRealWriterAndVerifiesSavedArtifacts() async throws {
+        let f = try fixture(saved: false), notes = f.notes, lease = f.lease
+        let response = try JSONSerialization.data(withJSONObject: f.receipt)
+        let command = try ArchiveSession.parse(["--directory", f.directory.path])
+        try await command.archive(activityLockPath: lease, appLockPath: lease.appendingPathExtension("app"), now: 100,
+            saveArchive: { folder in
+                try await GatewayArchive.save(folder, transport: { _ in response },
+                    capabilityTransport: { try LegacyReceiptReconciliationTests.capabilities() },
+                    exportRootOverride: notes, activityLockPath: lease)
+            })
+        XCTAssertEqual(ArchiveBacklog.inspect(f.directory, notesRoot: notes).verifiedText, .exported)
+        XCTAssertEqual(try MeetingPipelineState.load(f.directory).delivery.count, 1)
+    }
+    func testManualArchiveCannotClaimSuccessFromAnEmptyCallback() async throws {
+        let f = try fixture(saved: false)
+        let command = try ArchiveSession.parse(["--directory", f.directory.path])
+        do {
+            try await command.archive(activityLockPath: f.lease, appLockPath: f.lease.appendingPathExtension("app"), now: 100,
+                saveArchive: { _ in })
+            XCTFail("An empty callback does not prove saved artifacts")
+        } catch { XCTAssertEqual((error as? DeliveryFailure)?.code, "local_save_unverified") }
+        XCTAssertEqual(try MeetingPipelineState.load(f.directory).delivery.count, 1)
+    }
+
 }

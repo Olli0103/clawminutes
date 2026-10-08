@@ -21,8 +21,30 @@ struct ArchiveSession: AsyncParsableCommand {
     static let configuration = CommandConfiguration(commandName: "archive-session", abstract: "Send a finished text transcript to the configured Gateway. Never sends audio.")
     @Option var directory: String
     mutating func run() async throws {
-        try await GatewayArchive.save(URL(fileURLWithPath: directory))
-        print("Meeting saved in Gateway archive and read back. Recording preserved.")
+        try await archive()
+        print("Gateway archive receipt and local meeting documents verified.")
+    }
+    func archive(activityLockPath: URL = HelperWorkLease.path, appLockPath: URL? = nil,
+                 now: TimeInterval = Date().timeIntervalSince1970,
+                 saveArchive: @escaping @Sendable (URL) async throws -> Void = { try await GatewayArchive.save($0) }) async throws {
+        let acquired = try appLockPath.map { try AppRunLock.acquire(at: $0) } ?? AppRunLock.acquire()
+        guard let owner = acquired else { throw ValidationError("The helper is running. Use this meeting's recovery actions in Settings.") }
+        defer { withExtendedLifetime(owner) {} }
+        let folder = URL(fileURLWithPath: directory)
+        let item = ArchiveBacklog.inspect(folder)
+        if item.verifiedText == .exported { return }
+        guard item.pending else { throw ValidationError(item.reason) }
+        guard item.nextAttemptAt <= now else {
+            throw ValidationError("This meeting is waiting before its next save attempt. Retry later; existing attempt history is preserved.")
+        }
+        let delivery = MeetingDeliveryStage(activityLockPath: activityLockPath, saveArchive: saveArchive, onSaved: { _ in })
+        switch await delivery.deliver(folder, now: now) {
+        case .saved: return
+        case .failed(let failure): throw failure
+        case .skipped:
+            let latest = ArchiveBacklog.inspect(folder)
+            guard latest.verifiedText == .exported else { throw ValidationError(latest.reason) }
+        }
     }
 }
 
