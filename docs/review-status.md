@@ -2,9 +2,17 @@
 
 Audited on 8 October 2026 against the supplied Opus review of `e2cb65e`. The audited source-code checkpoint is `bba876d`, following the compact-PCM baseline `9bd1786`. Subsequent checkpoints add isolated kernel lock observations and cross-process save serialization as described below. Earlier baseline hashes and CI links remain evidence for their named commits. This document is the current requirement map; [review-plan.md](review-plan.md) retains dated implementation history. Earlier checkpoints describe their own source revisions and must not be read as current acceptance results.
 
-**Source work is substantially implemented; installed acceptance and public binary release are not established.** No helper or Gateway was installed, activated, reloaded or restarted for this audit. Tests use temporary homes, synthetic audio, stubbed completions or isolated real SDK stores. They do not establish live Teams, provider, macOS permission or production Gateway behavior.
+**Source work is substantially implemented; full installed acceptance and public binary release are not established.** No helper or Gateway was installed, activated, reloaded or restarted during the 8 October source audit. Its tests use temporary homes, synthetic audio, stubbed completions or isolated real SDK stores. The separately approved 9 October activation below adds limited installed evidence.
 
 Teams desktop remains the only enabled meeting provider. Other tools are outside the user's authorized implementation scope. No local OpenClaw installation is required for capture; the development SDK supports isolated contract testing.
+
+## Approved activation, 9 October 2026
+
+The Gateway plugin from `f21117a` was activated on OpenClaw 2026.9.9 after a cooperative idle lease reported zero active work. Its public capability route and archive adapter passed. One synthetic text meeting produced actual Gateway-coordinated AI notes. Identical replay and read-only verification returned the same documents; changed speech returned HTTP 409 without a completion, and a raw-audio field returned HTTP 422. The attempt ledger contained one reservation after these checks. The generated notes retained unknown-speaker and invited-versus-observed distinctions. This establishes one real synthetic-text completion and archive readback, not provider billing, live capture or participant attribution.
+
+The local helper was updated to 0.2.16 with the existing signing identity after signature verification matched its prior designated requirement. Its installed diagnostics reported Accessibility, microphone and system-audio access, an available local model and a working public Gateway handshake. Preferences were preserved. No existing audio file changed or disappeared; startup created pipeline state and delivery receipts and updated processing logs. The update exposed and fixed original-keychain selection and recognition of the exact owned LaunchServices agent format. All 54 Python installer, signing and packaging checks passed. Actual capture after this update and fresh-Mac permission continuity remain `needs_evidence`.
+
+Twenty ready-state samples over 380 seconds included the actual AI test. One sample during that request reported a 3.89-second event-loop delay and degraded state; later sampled delays were roughly 22–30 ms. Observed process RSS ranged from 2.01 to 2.36 GiB. No fresh JavaScript heap samples were returned. Correlation with the request does not identify the blocking function or plugin owner. Performance and ownership remain open; this activation does not close that investigation. Private runtime evidence, credentials and signing material remain outside Git.
 
 ## Defects R1–R14
 

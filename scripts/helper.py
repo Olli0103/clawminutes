@@ -153,7 +153,17 @@ def verify_agent(snapshot, app, legacy, parser):
     old_agent = plistlib.loads(snapshot[0])
     arguments = old_agent.get('ProgramArguments', [])
     allowed = {str(folder/'Contents/MacOS'/name) for folder in [app, legacy] for name in ['ocmh', 'quill']}
-    if old_agent.get('Label') != LABEL or not isinstance(arguments, list) or not arguments or arguments[0] not in allowed:
+    valid_arguments = isinstance(arguments, list) and bool(arguments) and all(isinstance(a, str) for a in arguments)
+    direct = valid_arguments and arguments[0] in allowed
+    # Earlier local installs used LaunchServices. Recognize only the exact
+    # owned-app invocation, never an arbitrary open command or shell wrapper.
+    launchservices = (valid_arguments and len(arguments) == 9
+                      and arguments[:4] == ['/usr/bin/open', '-W', '-g', '-a']
+                      and arguments[4] in {str(app), str(legacy)}
+                      and arguments[5:8] == ['--args', 'run', '--out']
+                      and pathlib.Path(arguments[8]).is_absolute())
+    consistent_program = valid_arguments and old_agent.get('Program', arguments[0]) == arguments[0]
+    if old_agent.get('Label') != LABEL or not consistent_program or not (direct or launchservices):
         parser.error('An unrelated LaunchAgent occupies the helper path. It was left untouched.')
 
 

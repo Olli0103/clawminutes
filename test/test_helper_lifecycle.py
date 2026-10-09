@@ -110,6 +110,34 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(plist['KeepAlive'], {'SuccessfulExit': False})
         self.assertGreaterEqual(plist['ThrottleInterval'], 10)
 
+    def test_owned_launchservices_agent_can_update_to_supervised_helper(self):
+        shutil.copytree(self.source, self.state / helper.NAME)
+        agent = self.home / 'Library/LaunchAgents' / f'{helper.LABEL}.plist'
+        agent.parent.mkdir(parents=True)
+        arguments = ['/usr/bin/open', '-W', '-g', '-a', str(self.state / helper.NAME),
+                     '--args', 'run', '--out', str(self.recordings)]
+        agent.write_bytes(plistlib.dumps({'Label': helper.LABEL, 'ProgramArguments': arguments, 'KeepAlive': False}))
+        self.assertEqual(self.invoke('update'), 0)
+        current = plistlib.loads(agent.read_bytes())
+        self.assertEqual(current['ProgramArguments'][0], str(self.state / helper.NAME / 'Contents/MacOS/ocmh'))
+        self.assertEqual(current['KeepAlive'], {'SuccessfulExit': False})
+
+    def test_launchservices_agent_rejects_other_apps_extra_arguments_and_program_override(self):
+        agent = self.home / 'Library/LaunchAgents' / f'{helper.LABEL}.plist'
+        agent.parent.mkdir(parents=True)
+        arguments = ['/usr/bin/open', '-W', '-g', '-a', str(self.state / helper.NAME),
+                     '--args', 'run', '--out', str(self.recordings)]
+        variants = [dict(ProgramArguments=arguments[:4] + ['/Applications/Other.app'] + arguments[5:]),
+                    dict(ProgramArguments=arguments + ['--unexpected']),
+                    dict(ProgramArguments=arguments, Program='/bin/sh')]
+        for variant in variants:
+            before = plistlib.dumps({'Label': helper.LABEL, **variant})
+            agent.write_bytes(before)
+            self.commands.clear()
+            self.assertEqual(self.invoke('update'), 2)
+            self.assertEqual(agent.read_bytes(), before)
+            self.assertFalse(any(c[0] == '/bin/launchctl' for c in self.commands))
+
     def test_update_refuses_live_processing_without_recording_metadata(self):
         with (self.state / 'lifecycle.lock').open('a+b') as lease:
             fcntl.flock(lease.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
