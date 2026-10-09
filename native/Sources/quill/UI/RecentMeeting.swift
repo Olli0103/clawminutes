@@ -15,11 +15,13 @@ struct RecentMeeting: Identifiable, Sendable {
     var completionAttempts: Int = 0
     var canVerifyLegacyReceipt = false
     var canRetryLocalExport = false
+    var hasCaptureWarnings = false
     var canRetryAINotes: Bool { needsAttention && NotesRecovery.permits(.retryAI, failure: issue, completions: completionAttempts) }
     var canSaveTranscriptOnly: Bool { needsAttention && NotesRecovery.permits(.transcriptOnly, failure: issue, completions: completionAttempts) }
     var id: String { directory.path }
     var ready: Bool { notes != nil }
     var needsAttention: Bool { stage == .needsAttention || stage == .waitingForModel }
+    var guidance: MeetingGuidance { MeetingGuidance(self) }
     var statusTitle: String {
         switch stage {
         case .capturing: return "Recording"
@@ -30,11 +32,11 @@ struct RecentMeeting: Identifiable, Sendable {
         case .delivering: return "Sending"
         case .delivered: return "Saving notes"
         case .exported, .audioRemoved: return "Notes ready"
-        case .needsAttention: return "Needs attention"
+        case .needsAttention: return guidance.title
         }
     }
     var symbol: String {
-        if needsAttention { return "exclamationmark.circle" }
+        if needsAttention { return guidance.symbol }
         return ready ? "checkmark.circle" : (stage == .capturing ? "record.circle" : "clock")
     }
     static func make(_ item: ArchiveBacklog.Item, active: Bool = false) -> Self {
@@ -66,7 +68,8 @@ struct RecentMeeting: Identifiable, Sendable {
             revision: state?.revision ?? 1, completionAttempts: item.retry?.completionAttempts ?? 0,
             canVerifyLegacyReceipt: item.reason == LegacyReceiptReconciliation.reason
                 || (state != nil && item.verifiedText == .transcript && LegacyReceiptReconciliation.receiptAbsent(item.directory)),
-            canRetryLocalExport: item.verifiedText == .archive)
+            canRetryLocalExport: item.verifiedText == .archive,
+            hasCaptureWarnings: item.verifiedText == .exported && item.state == .needsReview)
     }
     static func readableDocument(_ file: URL) -> Bool {
         guard let values = try? file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey]),

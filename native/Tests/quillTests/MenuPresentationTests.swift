@@ -49,7 +49,7 @@ final class MenuPresentationTests: XCTestCase {
         let activity = MenuPresentation.activity(recording: false, elapsed: "0:00", status: .failed(session: "2026.10.01-1636"))
         XCTAssertEqual(activity, .failed)
         XCTAssertFalse(activity.isWorking)
-        XCTAssertEqual(MenuPresentation.title(style: .descriptive, activity: activity, backend: "Local only"), " Needs attention · Local only")
+        XCTAssertEqual(MenuPresentation.title(style: .descriptive, activity: activity, backend: "Local only"), " Meeting needs review · Local only")
     }
     func testArchivePendingShowsCompletedTranscriptAndTheSpecificNextStep() throws {
         let status = TranscriptionCoordinator.Status.archivePending(session: "AI weekly")

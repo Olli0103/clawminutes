@@ -1,6 +1,6 @@
 # Recovering failed AI notes
 
-Open a meeting marked **Needs attention** through **See all → Details**. Supported AI failures offer **Save transcript-only notes…**. When an attempt remains, **Try AI notes again…** requests one additional attempt using the Gateway's current notes model. The sheet explains charges before queuing work. It cannot reset the three-attempt limit for that archive version.
+Open a meeting with an unresolved issue through **See all → Review**. Its recovery card explains the problem and recommends one action. Supported AI failures offer **Save transcript…** or **More options → Save transcript without AI…**. When an attempt remains, **Try AI notes again…** requests one additional attempt using the Gateway's current notes model. The sheet explains charges before queuing work. It cannot reset the three-attempt limit for that archive version.
 
 Transcript-only recovery preserves the transcript, original recording metadata and recorded failure history. It sends the same text with a closed recovery request containing only a kind and UUID. If the Gateway already saved AI notes and the earlier response was lost, it returns those saved notes without changing them or calling a model. Otherwise it verifies the failed source against its attempt ledger and saves transcript-only notes without another completion. Network outages and expired sign-in can still recover after the AI cap because sending text is independent of generating notes.
 

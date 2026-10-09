@@ -284,6 +284,10 @@ extension AudioRetentionTests {
         let rows = try AudioCleanup.review(meetings, measure: { _ in 60 })
         XCTAssertNotNil(rows[0].plan); XCTAssertNil(rows[0].issue)
         XCTAssertNil(rows[1].plan); XCTAssertTrue(rows[1].issue?.contains("gaps") == true)
+        XCTAssertEqual(AudioCleanup.defaultSelection(rows), Set([rows[0].id]), "All verified audio is selected without selecting recovery audio")
+        XCTAssertTrue(AudioCleanup.explanation(rows[1]).contains("incomplete"))
+        var alreadyRemoved = rows[0]; alreadyRemoved.alreadyRemoved = true
+        XCTAssertTrue(AudioCleanup.defaultSelection([alreadyRemoved, rows[1]]).isEmpty)
         assertKept(eligible); assertKept(gap)
     }
     func testIncompleteOrFalseRemovalMarkerCannotProveRemoval() throws {

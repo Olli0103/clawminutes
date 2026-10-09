@@ -15,7 +15,7 @@ enum HelperActivity: Equatable {
         case .audioCheck(let status): return "Audio check · \(status)"
         case .transcribing: return "Transcribing"
         case .preparing: return "Setting up"
-        case .failed: return "Needs attention"
+        case .failed: return "Meeting needs review"
         case .archivePending: return "Waiting to send"
         }
     }

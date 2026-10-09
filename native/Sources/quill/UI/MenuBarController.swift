@@ -98,7 +98,7 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
         let meetings = selection ?? recentMeetings
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 650, height: 560),
             styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        window.title = "Review recorded audio"; window.isReleasedWhenClosed = false; window.delegate = self
+        window.title = "Delete old audio"; window.isReleasedWhenClosed = false; window.delegate = self
         window.contentViewController = NSHostingController(rootView: AudioCleanupView(controller: self, meetings: meetings,
             onClose: { [weak window] in window?.close() }, onBusyChange: { [weak self, weak window] active in
                 self?.deletingAudio = active
@@ -378,9 +378,9 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
     }
     func showMeetingDetails(_ meeting: RecentMeeting) {
         popover.performClose(nil)
-        let window = meetingWindow ?? NSWindow(contentRect: NSRect(x: 0, y: 0, width: 490, height: 430),
+        let window = meetingWindow ?? NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 570),
             styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "ClawMinutes meeting"; window.isReleasedWhenClosed = false
+        window.title = meeting.title; window.isReleasedWhenClosed = false
         window.contentViewController = NSHostingController(rootView: MeetingDetailView(controller: self, meetingID: meeting.id))
         if meetingWindow == nil { window.center() }
         meetingWindow = window

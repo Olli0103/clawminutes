@@ -94,6 +94,34 @@ final class HelperPopoverTests: XCTestCase {
 }
 
 extension HelperPopoverTests {
+    @MainActor func testGuidedLegacyMeetingRendersWithoutStartingVerification() async throws {
+        let controller = MenuBarController(preview: true)
+        let meeting = RecentMeeting(directory: URL(fileURLWithPath: "/fixture/legacy-notes"), title: "AI weekly",
+            started: Date(timeIntervalSince1970: 1791461940), stage: .needsAttention, issue: nil,
+            detail: LegacyReceiptReconciliation.reason, notes: nil, transcript: URL(fileURLWithPath: "/fixture/transcript.md"), canVerifyLegacyReceipt: true)
+        controller.updateRecentMeetings([meeting])
+        XCTAssertEqual(meeting.guidance.button, "Find my notes")
+        guard let preview = ProcessInfo.processInfo.environment["CLAWMINUTES_UI_PREVIEW_DIR"] else { return }
+        let previous = NSApp.appearance
+        defer { NSApp.appearance = previous }
+        for (name, dark) in [("light", false), ("dark", true)] {
+            NSApp.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+            let content = MeetingDetailView(controller: controller, meetingID: meeting.id)
+                .environment(\.colorScheme, dark ? .dark : .light)
+                .environment(\.controlActiveState, .active)
+            let view = NSHostingView(rootView: content)
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 570), styleMask: [.titled], backing: .buffered, defer: false)
+            window.appearance = NSApp.appearance; window.contentView = view
+            try await Task.sleep(for: .milliseconds(500)); view.layoutSubtreeIfNeeded()
+            let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+            view.cacheDisplay(in: view.bounds, to: bitmap)
+            try XCTUnwrap(bitmap.representation(using: .png, properties: [:]))
+                .write(to: URL(fileURLWithPath: preview).appendingPathComponent("guided-meeting-" + name + ".png"))
+            XCTAssertFalse(window.isVisible)
+            XCTAssertFalse(controller.gatewayOperation)
+        }
+    }
+
     @MainActor func testFullTextResultsRenderInLightAndDarkWithoutOpeningAWindow() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

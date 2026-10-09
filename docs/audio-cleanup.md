@@ -1,8 +1,8 @@
-# Review recorded audio
+# Delete old audio
 
-Use **Settings → Privacy & storage → Review recorded audio…** to review historical recordings, or **Review this meeting's audio…** in a meeting's details. This action is independent of the future-only automatic-retention setting.
+Use **Settings → Privacy & storage → Delete old audio…** to review historical recordings, or **More options → Delete this meeting's audio…** in a meeting's details. This action is independent of the future-only automatic-retention setting.
 
-The review is read-only. It lists eligible and blocked meetings, remaining declared tracks, their sizes and recording locations. Nothing is preselected. Select meetings and acknowledge permanent deletion before choosing **Delete selected audio**. Deletion removes only their declared capture tracks. Notes, transcripts, metadata, templates and other files remain. Audio playback, re-transcription and further voice analysis are unavailable after removal.
+The review is read-only. It lists eligible and blocked meetings, remaining declared tracks, their sizes and recording locations. All verified recordings are selected automatically; unfinished or unverified recordings remain unselected and show the next recovery step. Deselect any meeting you want to keep. Choose **Delete audio…**, review the total size and meeting count, then confirm **Delete audio** once. Deletion removes only their declared capture tracks. Notes, transcripts, metadata, templates and other files remain. Audio playback, re-transcription and further voice analysis are unavailable after removal.
 
 Each selected meeting is verified again under its save lock and a helper lifecycle lease. Active or incomplete captures, capture gaps, missing Teams speech, invalid timestamps, missing or mismatched Gateway readback, changed exported notes, unreadable tracks and incomplete coverage block deletion. Existing user edits are preserved rather than overwritten to make cleanup eligible.
 

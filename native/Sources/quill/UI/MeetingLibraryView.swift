@@ -33,7 +33,7 @@ struct MeetingLibraryView: View {
                     .accessibilityLabel("Focus meeting search").help("Focus search (⌘F)")
                 TextField("Search titles, notes and transcripts", text: $query).textFieldStyle(.roundedBorder)
                     .accessibilityLabel("Search titles, notes and transcripts").focused($searchFocused)
-                Toggle("Needs attention", isOn: $attentionOnly).toggleStyle(.checkbox)
+                Toggle("To finish", isOn: $attentionOnly).toggleStyle(.checkbox)
             }
             HStack {
                 Text(searching ? "Searching on this Mac…" : "Search stays on this Mac.").font(.caption).foregroundStyle(.secondary)
@@ -59,18 +59,18 @@ struct MeetingLibraryView: View {
                                 Text(match.field.rawValue + ": " + excerpt).font(.callout).foregroundStyle(.secondary).lineLimit(3)
                                     .accessibilityLabel("\(match.field.rawValue) match. \(excerpt)")
                             }
-                            if meeting.needsAttention { Text(meeting.detail).font(.caption).foregroundStyle(.secondary).lineLimit(3) }
+                            if meeting.needsAttention { Text(meeting.guidance.message).font(.caption).foregroundStyle(.secondary).lineLimit(3) }
                         }
                         Spacer()
                         if meeting.ready && !meeting.needsAttention {
-                            Button("Open") { controller.openMeeting(meeting) }
+                            Button("Open") { controller.openMeeting(meeting) }.helperButton()
                             Menu {
                                 Button("Copy notes") { controller.copyNotes(meeting) }
                                 Button("Details") { controller.showMeetingDetails(meeting) }
                                 Button("Show files") { controller.openDocument(meeting.directory) }
                             } label: { Image(systemName: "ellipsis.circle") }.menuStyle(.borderlessButton).fixedSize()
                                 .accessibilityLabel("More actions for \(meeting.title)")
-                        } else { Button("Details") { controller.showMeetingDetails(meeting) } }
+                        } else { Button("Review") { controller.showMeetingDetails(meeting) }.helperButton() }
                     }.padding(.vertical, 8)
                 }.listStyle(.inset)
             }

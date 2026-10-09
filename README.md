@@ -64,7 +64,7 @@ Packaging finds `cloudflared` on `PATH`, or uses `OPENCLAW_TEAMS_CLOUDFLARED`. T
 Copy the npm archive to your existing Gateway host and run there:
 
 ```sh
-openclaw plugins install ./openclaw-teams-transcribe-0.2.16.tgz --accept-capabilities
+openclaw plugins install ./openclaw-teams-transcribe-0.2.17.tgz --accept-capabilities
 openclaw plugins enable teams-transcribe --accept-capabilities
 openclaw teams-transcribe helper-export --output ./ocmh-recording-mac.zip
 ```
@@ -126,7 +126,9 @@ Parakeet keeps audio and speech recognition on the recording Mac. The Gateway re
 
 If you explicitly select ElevenLabs, audio goes directly from the Mac to ElevenLabs for speech recognition.
 
-Recordings and retry receipts live under `~/.openclaw/teams-transcribe`. Audio is kept by default. Enable **Delete future audio after verified notes** to apply automatic verification and removal only to recordings started after opt-in. Historical recordings have a separate **Review recorded audio…** flow with explicit selection, fresh verification and deletion confirmation. See [audio cleanup](docs/audio-cleanup.md) for limits and resumable partial removal. Transcripts, notes, metadata, and deletion receipts remain. Deleting audio prevents later retranscription from those tracks.
+Meeting recovery shows a specific next step such as **Find my notes**, **Sign in to Gateway** or **Review transcript**. Technical details stay collapsed. See [recovery and storage controls](docs/recovery-ui.md).
+
+Recordings and retry receipts live under `~/.openclaw/teams-transcribe`. Audio is kept by default. Enable **Automatically delete audio after saving notes** to apply automatic verification and removal only to recordings started after opt-in. Historical recordings have a separate **Delete old audio…** flow that selects verified recordings automatically, shows the space to free, and asks for one deletion confirmation. See [audio cleanup](docs/audio-cleanup.md) for limits and resumable partial removal. Transcripts, notes, metadata, and deletion receipts remain. Deleting audio prevents later retranscription from those tracks.
 
 The helper checks finished transcript delivery at launch and every minute while running. Failed saves retry after 30 seconds, 2 minutes, 10 minutes, then every 30 minutes, subject to the one-minute check. Retry times survive relaunch. Reconnecting or choosing **Retry pending saves** checks immediately. Settings shows the pending count. Each pass attempts at most five saves; active recordings and synthetic fixtures are excluded. A valid receipt must match the recording ID, utterance count, exact transcript bytes and complete text package, and the exported files must exist. Saved metadata changes require review and a separate revision. Older receipts missing either fingerprint, or an absent local receipt, can use **Check for saved meeting…** in meeting details. This explicit text-only comparison repairs a matching completed save without another model call. Missing or conflicting archives remain blocked. See [receipt reconciliation](docs/receipt-reconciliation.md) and [delivery evidence](docs/delivery-evidence.md).
 

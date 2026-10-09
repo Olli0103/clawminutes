@@ -1,8 +1,8 @@
 # Check for an already saved meeting
 
-Older helpers saved successful Gateway receipts without a transcript hash or complete source fingerprint. Matching a session ID, utterance count and speech alone cannot prove which meeting details were sent. These meetings stay in Needs attention and cannot be resent automatically or through the direct save path. Existing declared fingerprints must still match the current source.
+Older helpers saved successful Gateway receipts without a transcript hash or complete source fingerprint. Matching a session ID, utterance count and speech alone cannot prove which meeting details were sent. These meetings show **Check saved notes** and cannot be resent automatically or through the direct save path. Existing declared fingerprints must still match the current source.
 
-Meeting details offer **Check for saved meeting…** when an older receipt lacks fingerprints or the local receipt is absent. A missing confirmation does not establish that the Gateway saved anything. Opening the sheet only reviews local files. **Check on Gateway** explicitly sends the closed text envelope for comparison. It sends the transcript, timestamps, observed meeting details and notes selection, never audio. If the notes default changed, choose the original notes root above its year/month folders. This does not change the future default or copy history.
+Meeting details offer **Find my notes** when an older receipt lacks fingerprints or the local receipt is absent. A missing confirmation does not establish that the Gateway saved anything. **Find my notes** opens the sheet, reviews local files, then sends the closed text envelope for comparison. Opening the meeting detail itself makes no Gateway request. It sends the transcript, timestamps, observed meeting details and notes selection, never audio. If the notes default changed, choose the original notes root above its year/month folders. This does not change the future default or copy history.
 
 ## Verification contract
 

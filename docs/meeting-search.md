@@ -1,6 +1,6 @@
 # Find a past meeting
 
-Choose **See all** in the menu-bar popover. Search finds titles, saved notes and transcripts for meetings recorded on this Mac. Use **Needs attention** to show only meetings with an unresolved issue. Press Command-F or choose the search icon to focus the field.
+Choose **See all** in the menu-bar popover. Search finds titles, saved notes and transcripts for meetings recorded on this Mac. Use **To finish** to show only meetings with an unresolved issue. Press Command-F or choose the search icon to focus the field.
 
 Search ignores case and accents. All entered words must occur in the title or in one document together with the title. For example, `weekly budget` finds a meeting titled Weekly planning whose notes mention budget. Results retain the library's date order and show a matching excerpt from notes or the transcript. Open and Details use the same document and recovery actions as the meeting list. A matching excerpt is source text, not evidence that a decision was approved or a speaker was identified.
 

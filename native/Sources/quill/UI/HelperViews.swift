@@ -10,7 +10,7 @@ struct HelperPopover: View {
                 Image(nsImage: HelperAppIcon.image(appearance: NSAppearance(named: colorScheme == .dark ? .darkAqua : .aqua)!))
                     .resizable().scaledToFit().frame(width: 44, height: 44).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(controller.activity.title).font(.title2.weight(.semibold))
+                    Text(controller.activity.isWorking ? controller.activity.title : "ClawMinutes").font(.title2.weight(.semibold))
                     Text(controller.meetingTitle).font(.callout).foregroundStyle(.secondary).lineLimit(2)
                 }
                 Spacer()
@@ -29,7 +29,8 @@ struct HelperPopover: View {
                     Spacer()
                     Text("⌘R").foregroundStyle(.secondary)
                 }.padding(.vertical, 7).frame(maxWidth: .infinity)
-            }.buttonStyle(.borderedProminent).tint(controller.recording || controller.captureCheckBusy ? .red : .accentColor)
+            }.helperButton(prominent: true).controlSize(.large)
+                .tint(controller.recording || controller.captureCheckBusy ? .red : .accentColor)
                 .keyboardShortcut("r").disabled(controller.startingRecording)
             if controller.recording {
                 Label(controller.captureWarning == nil ? controller.captureHealth : "Recording with an audio warning",
@@ -65,18 +66,23 @@ struct HelperPopover: View {
             ForEach(Array(controller.recentMeetings.prefix(3))) { meeting in
                 Button { controller.openMeeting(meeting) } label: {
                     HStack(alignment: .top, spacing: 9) {
-                        Image(systemName: meeting.symbol).foregroundStyle(meeting.needsAttention ? .orange : (meeting.ready ? .green : .secondary))
+                        Image(systemName: meeting.symbol)
+                            .font(.body).frame(width: 32, height: 32)
+                            .foregroundStyle(meeting.canVerifyLegacyReceipt ? Color.accentColor : meeting.needsAttention ? .orange : (meeting.ready ? .green : .secondary))
+                            .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
                         VStack(alignment: .leading, spacing: 3) {
                             Text(meeting.title).font(.callout.weight(.medium)).foregroundStyle(.primary).lineLimit(1)
                             HStack(spacing: 5) {
                                 if let date = meeting.started { Text(date, format: .dateTime.month(.abbreviated).day().hour().minute()) }
-                                Text("· " + meeting.statusTitle)
                             }.font(.caption).foregroundStyle(.secondary)
+                            Text(meeting.statusTitle).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                         }
                         Spacer(minLength: 3)
-                        Text(meeting.ready && !meeting.needsAttention ? "Open" : "Details").font(.caption).foregroundStyle(.secondary)
+                        Text(meeting.ready && !meeting.needsAttention ? "Open" : "Review").font(.caption).foregroundStyle(.secondary)
                         Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.secondary)
-                    }.padding(.vertical, 5).contentShape(Rectangle())
+                    }.padding(10).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 14))
+                        .contentShape(RoundedRectangle(cornerRadius: 14))
                 }.buttonStyle(.plain).accessibilityLabel("\(meeting.title), \(meeting.statusTitle)")
             }
             if controller.pendingArchiveCount > 0 && !controller.gatewayOperation {
@@ -85,12 +91,12 @@ struct HelperPopover: View {
             }
             Divider()
             HStack {
-                Button("Settings", action: controller.showSettings).buttonStyle(.plain)
+                Button(action: controller.showSettings) { Label("Settings", systemImage: "gearshape") }.helperButton()
                 Spacer()
                 Button(controller.promptsEnabled ? "Pause prompts" : "Resume prompts", action: controller.togglePrompts).buttonStyle(.plain)
                 Button("Quit", action: controller.quit).buttonStyle(.plain).keyboardShortcut("q")
             }.font(.caption).foregroundStyle(.secondary)
-        }.padding(20).frame(width: 380)
+        }.padding(22).frame(width: 400).helperPanel()
     }
 }
 
@@ -108,70 +114,73 @@ struct MeetingDetailView: View {
         ScrollView {
             if let meeting = controller.recentMeetings.first(where: { $0.id == meetingID }) {
                 VStack(alignment: .leading, spacing: 16) {
-                    Text(meeting.title).font(.title2.weight(.semibold))
-                    if meeting.revision > 1 { Text("Version \(meeting.revision)").font(.caption).foregroundStyle(.secondary) }
-                    Label(meeting.statusTitle, systemImage: meeting.symbol).foregroundStyle(meeting.needsAttention ? .orange : .primary)
-                    if let date = meeting.started { Text(date, format: .dateTime).font(.caption).foregroundStyle(.secondary) }
-                    Text(meeting.detail).font(.callout).textSelection(.enabled)
-                    if let unidentifiedTurns, unidentifiedTurns > 0 {
-                        Text("\(unidentifiedTurns) turns have no identified speaker.").font(.caption).foregroundStyle(.secondary)
-                    }
-                    HStack {
-                        if let notes = meeting.notes {
-                            Button("Open notes") { controller.openDocument(notes) }
-                            Button("Copy notes") { controller.copyNotes(meeting) }
-                        }
-                        if let transcript = meeting.transcript { Button("Open transcript") { controller.openDocument(transcript) } }
-                    }
-                    if meeting.notes != nil {
-                        Button("Copy notes to another folder…") { controller.copyExistingNotes([meeting]) }
-                    }
-                    if meeting.ready && meeting.transcript != nil {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(meeting.title).font(.system(size: 25, weight: .semibold)).fixedSize(horizontal: false, vertical: true)
                         HStack {
-                            Button("Identify speakers…") { revisionMode = .speakers }
-                            Button("Regenerate notes…") { revisionMode = .template }
+                            if let date = meeting.started { Text(date, format: .dateTime).font(.callout).foregroundStyle(.secondary) }
+                            if meeting.revision > 1 { Text("Version \(meeting.revision)").font(.caption).foregroundStyle(.secondary) }
+                        }
+                    }.padding(.bottom, 4)
+                    if meeting.needsAttention || meeting.canVerifyLegacyReceipt || meeting.canRetryLocalExport {
+                        let guidance = meeting.guidance
+                        VStack(alignment: .leading, spacing: 12) {
+                            Label(guidance.title, systemImage: guidance.symbol).font(.headline)
+                            Text(guidance.message).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            Button(savingLocalNotes ? "Saving notes…" : guidance.button) { perform(guidance.action, meeting: meeting) }
+                                .helperButton(prominent: true).controlSize(.large)
+                                .disabled(savingLocalNotes
+                                    || ((guidance.action == .signIn || guidance.action == .checkConnection) && controller.gatewayOperation)
+                                    || (guidance.action == .supportReport && controller.diagnosing))
+                            Text(guidance.footnote).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            if let localSaveError { Text(localSaveError).font(.callout).foregroundStyle(.orange) }
+                        }.helperCard(tint: .accentColor)
+                    } else {
+                        Label(meeting.statusTitle, systemImage: meeting.symbol).font(.headline).foregroundStyle(meeting.ready ? Color.green : Color.secondary)
+                        Text(meeting.detail).font(.callout).foregroundStyle(.secondary)
+                    }
+                    if let unidentifiedTurns, unidentifiedTurns > 0 {
+                        Label("\(unidentifiedTurns) passages have an unknown speaker. Names are shown only when speaker evidence supports them.", systemImage: "person.crop.circle.badge.questionmark")
+                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
+                    HStack(spacing: 10) {
+                        if let notes = meeting.notes {
+                            Button { controller.openDocument(notes) } label: { Label("Open notes", systemImage: "doc.text") }.helperButton(prominent: !meeting.needsAttention)
+                        }
+                        if let transcript = meeting.transcript {
+                            Button { controller.openDocument(transcript) } label: { Label("Open transcript", systemImage: "text.alignleft") }.helperButton()
                         }
                     }
-                    if meeting.canRetryLocalExport {
-                        Button(savingLocalNotes ? "Saving notes…" : "Retry saving notes on this Mac") {
-                            savingLocalNotes = true; localSaveError = nil
-                            Task {
-                                do {
-                                    _ = try await Task.detached {
-                                        try VerifiedLocalExport.perform(meeting.directory, explicit: true)
-                                    }.value
-                                } catch { localSaveError = DeliveryFailure.classify(error).detail }
-                                savingLocalNotes = false
-                                await controller.refreshLocalMeetings()
+                    Divider().padding(.vertical, 4)
+                    HStack {
+                        Menu {
+                            if meeting.notes != nil {
+                                Button("Copy notes") { controller.copyNotes(meeting) }
+                                Button("Copy notes to another folder…") { controller.copyExistingNotes([meeting]) }
                             }
-                        }.disabled(savingLocalNotes)
-                        if let localSaveError { Text(localSaveError).font(.caption).foregroundStyle(.orange) }
+                            if meeting.ready && meeting.transcript != nil {
+                                Button("Identify speakers…") { revisionMode = .speakers }
+                                Button("Regenerate notes…") { revisionMode = .template }
+                            }
+                            if meeting.canVerifyLegacyReceipt { Button("Find saved notes") { verifyingLegacyReceipt = true } }
+                            if meeting.canSaveTranscriptOnly { Button("Save transcript without AI…") { recoveryKind = .transcriptOnly } }
+                            if meeting.canRetryAINotes { Button("Try AI notes again…") { recoveryKind = .retryAI } }
+                            Button("Delete this meeting's audio…") { controller.reviewRecordedAudio([meeting]) }
+                            Button("Show files in Finder") { controller.openDocument(meeting.directory) }
+                        } label: { Label("More options", systemImage: "ellipsis") }.menuStyle(.borderlessButton).fixedSize()
+                        Spacer()
                     }
-                    else if meeting.issue?.code == "local_model_missing" { Button("Download local model…", action: controller.setupLocal) }
-                    else if meeting.issue?.code == "speech_credentials_missing" { Button("Add API key…", action: controller.editAPIKey) }
-                    else if meeting.issue?.code == "sign_in_required" { Button("Sign in", action: controller.connectGateway) }
-                    else if meeting.issue?.retryable == true && meeting.transcript != nil { Button("Retry sending", action: controller.retrySaving) }
-                    if meeting.canSaveTranscriptOnly {
-                        Button("Save transcript-only notes…") { recoveryKind = .transcriptOnly }
-                    }
-                    if meeting.canRetryAINotes {
-                        Button("Try AI notes again…") { recoveryKind = .retryAI }
-                    }
-                    if meeting.canVerifyLegacyReceipt {
-                        Button("Check for saved meeting…") { verifyingLegacyReceipt = true }
-                    }
-                    Button("Review this meeting’s audio…") { controller.reviewRecordedAudio([meeting]) }
-                    Button("Show files in Finder") { controller.openDocument(meeting.directory) }.buttonStyle(.link)
                     DisclosureGroup("Technical details") {
-                        Text(meeting.issue?.code ?? meeting.stage.rawValue).font(.caption.monospaced()).textSelection(.enabled)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(meeting.detail).font(.caption).textSelection(.enabled)
+                            Text(meeting.issue?.code ?? meeting.stage.rawValue).font(.caption.monospaced()).textSelection(.enabled)
+                        }.padding(.top, 6)
                     }
                 }.padding(24).frame(maxWidth: .infinity, alignment: .leading)
                     .sheet(item: $revisionMode) { mode in MeetingRevisionEditor(controller: controller, meeting: meeting, mode: mode) }
-                    .sheet(isPresented: $verifyingLegacyReceipt) { LegacyReceiptView(controller: controller, meeting: meeting) }
+                    .sheet(isPresented: $verifyingLegacyReceipt) { LegacyReceiptView(controller: controller, meeting: meeting, automaticallyCheck: true) }
                     .sheet(item: $recoveryKind) { kind in NotesRecoveryEditor(controller: controller, meeting: meeting, kind: kind) }
             } else { Text("This meeting is no longer in the current list.").padding(24) }
-        }.frame(minWidth: 430, minHeight: 320)
-            .background(Color(nsColor: .windowBackgroundColor))
+        }.frame(minWidth: 480, minHeight: 440).helperPanel()
             .task(id: meetingID) {
                 unidentifiedTurns = nil
                 guard let meeting = controller.recentMeetings.first(where: { $0.id == meetingID }) else { return }
@@ -181,12 +190,45 @@ struct MeetingDetailView: View {
                 }.value
             }
     }
+    private func perform(_ action: MeetingGuidance.Action, meeting: RecentMeeting) {
+        switch action {
+        case .findNotes: verifyingLegacyReceipt = true
+        case .downloadModel: controller.setupLocal()
+        case .addSpeechKey: controller.editAPIKey()
+        case .signIn: controller.connectGateway()
+        case .checkConnection: controller.recheckGateway()
+        case .retryAI: recoveryKind = .retryAI
+        case .transcriptOnly: recoveryKind = .transcriptOnly
+        case .openTranscript: if let transcript = meeting.transcript { controller.openDocument(transcript) }
+        case .supportReport: controller.saveDiagnostics()
+        case .saveLocalNotes:
+            guard !savingLocalNotes else { return }
+            savingLocalNotes = true; localSaveError = nil
+            Task {
+                do { _ = try await Task.detached { try VerifiedLocalExport.perform(meeting.directory, explicit: true) }.value }
+                catch { localSaveError = DeliveryFailure.classify(error).detail }
+                savingLocalNotes = false
+                await controller.refreshLocalMeetings()
+            }
+        }
+    }
 }
 
 enum HelperSettingsPage: String, CaseIterable, Identifiable {
     case general = "General", recording = "Recording", notes = "Notes", connection = "Connection"
     case privacy = "Privacy & storage", permissions = "Permissions", advanced = "Advanced"
     var id: String { rawValue }
+    var symbol: String {
+        switch self {
+        case .general: return "slider.horizontal.3"
+        case .recording: return "mic"
+        case .notes: return "doc.text"
+        case .connection: return "network"
+        case .privacy: return "lock.shield"
+        case .permissions: return "checkmark.shield"
+        case .advanced: return "wrench.and.screwdriver"
+        }
+    }
 }
 
 @MainActor
@@ -199,15 +241,17 @@ struct HelperSettings: View {
     var body: some View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 5) {
-                Text("ClawMinutes").font(.headline).padding(.bottom, 16)
+                Text("ClawMinutes").font(.title3.weight(.semibold)).padding(.bottom, 3)
+                Text("Settings").font(.caption).foregroundStyle(.secondary).padding(.bottom, 16)
                 ForEach(HelperSettingsPage.allCases) { item in
                     Button { page = item } label: {
-                        Text(item.rawValue).frame(maxWidth: .infinity, alignment: .leading).padding(9)
-                            .background(page == item ? Color.accentColor.opacity(0.16) : .clear, in: RoundedRectangle(cornerRadius: 7))
+                        Label(item.rawValue, systemImage: item.symbol).font(.callout.weight(page == item ? .semibold : .regular))
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 10).padding(.horizontal, 9)
+                            .background(page == item ? Color.accentColor.opacity(0.14) : .clear, in: RoundedRectangle(cornerRadius: 12))
                     }.buttonStyle(.plain).accessibilityAddTraits(page == item ? .isSelected : [])
                 }
                 Spacer()
-            }.padding(14).frame(width: 165)
+            }.padding(14).frame(width: 190).background(.ultraThinMaterial)
             Divider()
             Form {
                 Text(page.rawValue).font(.title2.weight(.semibold))
@@ -293,7 +337,7 @@ struct HelperSettings: View {
                         ForEach(controller.recentMeetings.filter { !$0.ready || $0.needsAttention }) { meeting in
                             Button { controller.showMeetingDetails(meeting) } label: {
                                 VStack(alignment: .leading) {
-                                    Text(meeting.title); Text(meeting.detail).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                                    Text(meeting.title); Text(meeting.statusTitle).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                                 }
                             }.buttonStyle(.plain)
                         }
@@ -304,15 +348,23 @@ struct HelperSettings: View {
                         Text(controller.selectedEngine == "parakeet" ? "Speech recognition runs on this Mac. Audio never falls back to a cloud service." : "Speech recognition runs at ElevenLabs. Audio is uploaded directly from this Mac to ElevenLabs.")
                         Text("Your Gateway receives the finished transcript and meeting details. AI notes send that text to its selected model provider.")
                     }
-                    Section("Audio retention") {
-                        Toggle("Delete future audio after verified notes", isOn: Binding(get: { controller.deletesVerifiedAudio }, set: controller.setAudioRetention))
-                        Text("Applies to recordings started after enabling this setting. Older recordings stay untouched. Audio with capture gaps or missing Teams speech is kept for review.")
-                            .font(.caption).foregroundStyle(.secondary)
-                        Text(controller.storageSummary).font(.callout)
-                        Button("Review recorded audio…") { controller.reviewRecordedAudio() }
+                    Section("Recording storage") {
+                        Text(controller.storageSummary).font(.callout.weight(.medium)).monospacedDigit()
+                        Button(role: .destructive) { controller.reviewRecordedAudio() } label: {
+                            Label("Delete old audio…", systemImage: "trash")
+                        }.helperButton(prominent: true).tint(.red).controlSize(.large)
                             .disabled(controller.recentMeetings.isEmpty)
-                        Button("Check storage usage", action: controller.checkStorage)
-                        Button("Open recording files", action: controller.openRecordings)
+                        Text("Selects audio from verified saved meetings. Review the space to free, then confirm once. Notes and transcripts stay.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        HStack {
+                            Button(action: controller.checkStorage) { Label("Refresh", systemImage: "arrow.clockwise") }
+                            Button("Open recordings", action: controller.openRecordings)
+                        }.controlSize(.small)
+                    }
+                    Section("Future recordings") {
+                        Toggle("Automatically delete audio after saving notes", isOn: Binding(get: { controller.deletesVerifiedAudio }, set: controller.setAudioRetention))
+                        Text("Applies to new recordings only. Audio with gaps or missing Teams speech is kept for recovery.")
+                            .font(.caption).foregroundStyle(.secondary)
                     }
                 case .permissions:
                     Section {
@@ -334,7 +386,7 @@ struct HelperSettings: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
-            }.formStyle(.grouped)
+            }.formStyle(.grouped).helperButton().controlSize(.large)
         }.frame(width: 690, height: 620).foregroundStyle(.primary)
             .background(Color(nsColor: .windowBackgroundColor))
     }
