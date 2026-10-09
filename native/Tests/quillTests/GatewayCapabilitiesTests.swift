@@ -1,0 +1,177 @@
+import Foundation
+import XCTest
+@testable import quill
+
+final class GatewayCapabilitiesTests: XCTestCase, @unchecked Sendable {
+    private func status() -> [String: Any] {
+        ["plugin": "teams-transcribe", "protocolVersion": 1, "rawAudioAccepted": false,
+         "gatewayMachine": "fixture-gateway", "notesModelConfigured": "fixture/model",
+         "archive": ["adapterVersion": 1, "sdkVersion": "2026.9.7", "verification": "isolated-readback-v1"],
+         "capabilities": ["textEnvelope": 1, "structuredErrors": 1, "idempotentCompletedSave": true,
+                          "cappedNotesAttempts": 3, "revisions": 1, "notesRecovery": 1]]
+    }
+    private func data(_ value: [String: Any]) throws -> Data { try JSONSerialization.data(withJSONObject: value) }
+    func testCapabilitiesRejectLegacyUnsafeAndUnverifiedContracts() throws {
+        XCTAssertEqual(try GatewayCapabilities.verify(data(status())).archive.sdkVersion, "2026.9.7")
+        for (key, replacement) in [("protocolVersion", 2 as Any), ("rawAudioAccepted", true), ("plugin", "other"),
+                                    ("archive", ["adapterVersion": 1, "sdkVersion": "2026.9.9", "verification": "isolated-readback-v1"]),
+                                    ("gatewayMachine", "private\nheader"), ("capabilities", ["textEnvelope": 1])] {
+            var value = status(); value[key] = replacement
+            XCTAssertThrowsError(try GatewayCapabilities.verify(data(value))) { error in
+                let issue = DeliveryFailure.classify(error)
+                XCTAssertEqual(issue.code, "plugin_update_needed"); XCTAssertFalse(issue.retryable); XCTAssertFalse(issue.completionAttempted)
+            }
+        }
+        var legacy = status(); legacy.removeValue(forKey: "protocolVersion")
+        XCTAssertThrowsError(try GatewayCapabilities.verify(data(legacy)))
+        XCTAssertThrowsError(try GatewayCapabilities.verify(Data(repeating: 32, count: 16_385)))
+    }
+    func testFutureSDKRequiresTheStrongerObservableArchiveContract() throws {
+        var value = status()
+        for version in ["2026.9.7", "2026.9.9", "2026.9.9-rc.1+fixture"] {
+            value["archive"] = ["adapterVersion": 2, "sdkVersion": version, "verification": "isolated-readback-v2"]
+            XCTAssertEqual(try GatewayCapabilities.verify(data(value)).archive.sdkVersion, version)
+        }
+        let archives: [[String: Any]] = [
+            ["adapterVersion": 1, "sdkVersion": "2026.9.9", "verification": "isolated-readback-v2"],
+            ["adapterVersion": 2, "sdkVersion": "2026.9.9", "verification": "isolated-readback-v1"],
+            ["adapterVersion": 3, "sdkVersion": "2026.9.9", "verification": "isolated-readback-v2"],
+            ["adapterVersion": 2, "sdkVersion": "2026.9.9"],
+            ["adapterVersion": 2, "sdkVersion": "2026.9.9\n", "verification": "isolated-readback-v2"],
+            ["adapterVersion": 2, "sdkVersion": "../archive", "verification": "isolated-readback-v2"],
+            ["adapterVersion": 2, "sdkVersion": String(repeating: "9", count: 81), "verification": "isolated-readback-v2"]
+        ]
+        for archive in archives {
+            value["archive"] = archive
+            XCTAssertThrowsError(try GatewayCapabilities.verify(data(value)))
+        }
+    }
+    private func session(_ root: URL) throws -> URL {
+        let directory = root.appendingPathComponent("meeting")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try data(["recording_id": "capabilities-fixture", "status": "stopped", "started": "2026-10-08T10:00:00Z",
+                  "audio_started_at": 1791453600, "ended": "2026-10-08T10:01:00Z", "notes_mode": "ai"])
+            .write(to: directory.appendingPathComponent("meta.json"))
+        try Transcript(engine: "parakeet", model: "parakeet-tdt-0.6b-v3-coreml", created_at: "2026-10-08T10:02:00Z", segments: [
+            .init(speaker: "system_unknown", start_ms: 0, end_ms: 1000, text: "Synthetic speech", source: "system")
+        ]).write(to: directory)
+        return directory
+    }
+    private actor Counter {
+        var calls = 0
+        func hit() { calls += 1 }
+    }
+    func testIncompatiblePreflightNeverTransmitsSpeechOrWritesReceipt() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directory = try session(root)
+        let transcript = try ArchiveBacklog.read(directory.appendingPathComponent("transcript.json"))
+        let sent = Counter()
+        do {
+            try await GatewayArchive.save(directory, transport: { _ in await sent.hit(); return Data() },
+                capabilityTransport: { Data(#"{"plugin":"teams-transcribe","rawAudioAccepted":false}"#.utf8) },
+                exportRootOverride: root.appendingPathComponent("notes"), activityLockPath: root.appendingPathComponent("lease"))
+            XCTFail("Legacy status cannot permit transmission")
+        } catch { XCTAssertEqual(DeliveryFailure.classify(error).code, "plugin_update_needed") }
+        let count = await sent.calls
+        XCTAssertEqual(count, 0)
+        XCTAssertEqual(try ArchiveBacklog.read(directory.appendingPathComponent("transcript.json")), transcript)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("archive-receipt.json").path))
+    }
+    func testOlderGatewayCannotReceiveExpandedUncertaintyEnvelope() async throws {
+        for count in [1, 40] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let directory = try session(root), sent = Counter()
+            let file = directory.appendingPathComponent("transcript.json")
+            var transcript = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+            transcript["capture_gaps"] = (0..<count).map { index in
+                ["source": "mic", "start_ms": index * 1000, "end_ms": index * 1000 + 100,
+                 "reason": count == 1 ? "boundary_context_unverified" : "device_changed"] as [String: Any]
+            }
+            try data(transcript).write(to: file)
+            let legacyStatus = try data(status())
+            do {
+                try await GatewayArchive.save(directory, transport: { _ in await sent.hit(); return Data() },
+                    capabilityTransport: { legacyStatus }, exportRootOverride: root.appendingPathComponent("notes"),
+                    activityLockPath: root.appendingPathComponent("lease"))
+                XCTFail("An older Gateway cannot accept this uncertainty contract")
+            } catch { XCTAssertEqual(DeliveryFailure.classify(error).code, "plugin_update_needed") }
+            let count = await sent.calls
+            XCTAssertEqual(count, 0)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("archive-receipt.json").path))
+        }
+    }
+    func testExpandedGapCapabilityChecksVersionCountAndLegacyCompatibility() throws {
+        func body(_ count: Int, reason: String) throws -> Data {
+            try data(["transcript": ["capture_gaps": Array(repeating: ["source": "mic", "start_ms": 0, "end_ms": 1, "reason": reason], count: count)]])
+        }
+        let legacy = try GatewayCapabilities.verify(data(status()))
+        XCTAssertNoThrow(try legacy.verifyCaptureEvidence(in: body(32, reason: "device_changed")))
+        XCTAssertThrowsError(try legacy.verifyCaptureEvidence(in: body(33, reason: "device_changed")))
+        for reason in ["boundary_context_unverified", "capture_timing_uncertain", "rotation_pending"] {
+            XCTAssertThrowsError(try legacy.verifyCaptureEvidence(in: body(1, reason: reason)))
+        }
+        var value = status(), features = try XCTUnwrap(value["capabilities"] as? [String: Any])
+        features["captureGapEvidence"] = 2; features["maximumCaptureGaps"] = 4096
+        value["capabilities"] = features
+        let expanded = try GatewayCapabilities.verify(data(value))
+        XCTAssertNoThrow(try expanded.verifyCaptureEvidence(in: body(4096, reason: "capture_timing_uncertain")))
+        XCTAssertThrowsError(try expanded.verifyCaptureEvidence(in: body(4097, reason: "capture_timing_uncertain")))
+        features["maximumCaptureGaps"] = 39; value["capabilities"] = features
+        XCTAssertThrowsError(try GatewayCapabilities.verify(data(value)).verifyCaptureEvidence(in: body(40, reason: "device_changed")))
+        features["captureGapEvidence"] = 3; value["capabilities"] = features
+        XCTAssertThrowsError(try GatewayCapabilities.verify(data(value)).verifyCaptureEvidence(in: body(1, reason: "rotation_pending")))
+        features.removeValue(forKey: "maximumCaptureGaps"); features["captureGapEvidence"] = 2; value["capabilities"] = features
+        XCTAssertThrowsError(try GatewayCapabilities.verify(data(value)).verifyCaptureEvidence(in: body(1, reason: "boundary_context_unverified")))
+    }
+    func testReconnectCannotRearmExpandedEvidenceUsingLegacyHandshake() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directory = try session(root), file = directory.appendingPathComponent("transcript.json")
+        var transcript = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: file)) as? [String: Any])
+        transcript["capture_gaps"] = [["source": "mic", "start_ms": 0, "end_ms": 1, "reason": "boundary_context_unverified"]]
+        let bytes = try data(transcript); try bytes.write(to: file)
+        let retry = ArchiveBacklog.Retry(attempts: 4, nextAttemptAt: 1000, transcriptSHA256: AudioRetention.digest(bytes),
+            completionAttempts: 1, lastError: GatewayCapabilities.unsupported)
+        let retryFile = directory.appendingPathComponent("archive-retry.json")
+        try JSONEncoder().encode(retry).write(to: retryFile)
+        let prior = try ArchiveBacklog.read(retryFile)
+        let proof = try GatewayCapabilities.verify(data(status()))
+        XCTAssertThrowsError(try ArchiveBacklog.rearmConnection(ArchiveBacklog.inspect(directory), now: 2000, capabilities: proof))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: directory.appendingPathComponent("state.json").path))
+        XCTAssertEqual(try ArchiveBacklog.read(retryFile), prior)
+        var current = status(), features = try XCTUnwrap(current["capabilities"] as? [String: Any])
+        features["captureGapEvidence"] = 2; features["maximumCaptureGaps"] = 4096; current["capabilities"] = features
+        try ArchiveBacklog.rearmConnection(ArchiveBacklog.inspect(directory), now: 2000,
+            capabilities: GatewayCapabilities.verify(data(current)))
+        let rearmed = try XCTUnwrap(MeetingPipelineState.load(directory).deliveryRetry)
+        XCTAssertNil(rearmed.lastError); XCTAssertEqual(rearmed.attempts, 4); XCTAssertEqual(rearmed.completionAttempts, 1)
+        XCTAssertEqual(try ArchiveBacklog.read(retryFile), prior)
+    }
+    func testVerifiedCompatibilityRearmsOnlyMatchingFailureWithoutResettingBudget() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directory = try session(root), file = directory.appendingPathComponent("archive-retry.json")
+        let transcript = try ArchiveBacklog.read(directory.appendingPathComponent("transcript.json"))
+        let retry = ArchiveBacklog.Retry(attempts: 4, nextAttemptAt: 1000, transcriptSHA256: AudioRetention.digest(transcript),
+            completionAttempts: 1, lastError: GatewayCapabilities.unsupported)
+        try JSONEncoder().encode(retry).write(to: file)
+        let before = try ArchiveBacklog.read(file)
+        try ArchiveBacklog.rearmConnection(ArchiveBacklog.inspect(directory), now: 2000)
+        XCTAssertEqual(try ArchiveBacklog.read(file), before, "A generic Retry cannot bypass compatibility review")
+        let proof = try GatewayCapabilities.verify(data(status()))
+        try ArchiveBacklog.rearmConnection(ArchiveBacklog.inspect(directory), now: 2000, capabilities: proof)
+        let ready = try XCTUnwrap(MeetingPipelineState.load(directory).deliveryRetry)
+        XCTAssertNil(ready.lastError); XCTAssertEqual(ready.attempts, 4); XCTAssertEqual(ready.completionAttempts, 1)
+        XCTAssertTrue(ArchiveBacklog.inspect(directory).pending)
+        XCTAssertEqual(try ArchiveBacklog.read(file), before, "Legacy evidence stays frozen after migration")
+        var state = try MeetingPipelineState.load(directory)
+        state.delivery.lastError = DeliveryFailure(code: "ai_invalid_output", detail: "Synthetic", retryable: false, completionAttempted: true)
+        try state.write(directory)
+        let stateFile = directory.appendingPathComponent("state.json")
+        let blocked = try ArchiveBacklog.read(stateFile)
+        try ArchiveBacklog.rearmConnection(ArchiveBacklog.inspect(directory), now: 3000, capabilities: proof)
+        XCTAssertEqual(try ArchiveBacklog.read(stateFile), blocked, "A verified connection cannot grant an AI retry")
+    }
+}

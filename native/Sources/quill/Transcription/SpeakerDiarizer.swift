@@ -8,6 +8,13 @@ struct SpeakerAnalysis: Codable, Sendable {
     var named_spans: [NamedSpeakerSpan] = []
     var voice_identities: [String: SpeakerIdentity]? = nil
     var voice_samples: [VoiceSample]? = nil
+    mutating func scopeClusters(to segment: String) {
+        // Independently clustered files have independent speaker numbering.
+        // Their numeric IDs cannot establish that a person is the same across a restart.
+        turns = turns.map { SpeakerTurn(speaker_id: segment + "_" + $0.speaker_id, start: $0.start, end: $0.end) }
+        voice_samples = voice_samples?.map { VoiceSample(speaker_id: segment + "_" + $0.speaker_id,
+                                                       start: $0.start, end: $0.end, embedding: $0.embedding) }
+    }
 }
 
 enum SpeakerDiarizer {

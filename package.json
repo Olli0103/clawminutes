@@ -1,6 +1,6 @@
 {
   "name": "openclaw-teams-transcribe",
-  "version": "0.2.5",
+  "version": "0.2.17",
   "type": "module",
   "description": "ClawMinutes: local Teams transcription on macOS with AI meeting notes from OpenClaw",
   "license": "MIT",
@@ -11,15 +11,18 @@
     "native/Tests",
     "native/Package.swift",
     "native/Package.resolved",
+    "native/Helper.entitlements",
     "native/tools",
-    "helper",
+    "helper/ocmh.app",
+    "helper/recording-mac.zip",
     "scripts/*.py",
     "scripts/*.mjs",
     "notices",
     "docs",
     "README.md",
     "openclaw.plugin.json",
-    "LICENSE"
+    "LICENSE",
+    "doctor-contract-api.js"
   ],
   "scripts": {
     "test": "node --test test/*.test.mjs",
@@ -38,7 +41,7 @@
     ],
     "compat": {
       "minGatewayVersion": "2026.9.7",
-      "pluginApi": "2026.9.7"
+      "pluginApi": ">=2026.9.7"
     }
   },
   "peerDependencies": {

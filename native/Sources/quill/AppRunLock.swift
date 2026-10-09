@@ -1,15 +1,18 @@
 import Foundation
 
 /// Shared by Finder launches, the login service, and the terminal command.
-final class AppRunLock {
+final class AppRunLock: @unchecked Sendable {
+    let acquiredAt = Date()
     private let descriptor: Int32
 
     private init(descriptor: Int32) { self.descriptor = descriptor }
 
-    static func acquire(at path: URL = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Library/Application Support/OpenClawTeamsTranscribe/run.lock")) throws -> AppRunLock? {
+    static var path: URL { FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/OpenClawTeamsTranscribe/run.lock") }
+
+    static func acquire(at path: URL = AppRunLock.path) throws -> AppRunLock? {
         try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let fd = open(path.path, O_CREAT | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR)
+        let fd = open(path.path, O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR)
         guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
         guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
             let error = errno

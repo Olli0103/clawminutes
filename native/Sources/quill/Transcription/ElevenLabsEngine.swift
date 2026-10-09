@@ -27,7 +27,7 @@ actor ElevenLabsEngine: TranscriptionEngine {
 
     func prepare() async throws {
         guard !offline else { throw TranscriptionFailure("ElevenLabs requires uploading audio. Use --engine parakeet with --offline.") }
-        guard let key = try keyProvider() else { throw TranscriptionFailure("Set your ElevenLabs API key from the ocmh menu first.") }
+        guard let key = try keyProvider() else { throw SpeechRecognitionIssue.cloudCredentialsMissing }
         _ = try ElevenLabsKeychain.validated(key)
         prepared = true
     }
@@ -36,7 +36,7 @@ actor ElevenLabsEngine: TranscriptionEngine {
         guard prepared else { throw TranscriptionFailure("ElevenLabs engine used before prepare().") }
         // Read again for each track so replacing/removing a key takes effect
         // without restarting Quill, even while the transcription queue is busy.
-        guard let key = try keyProvider() else { throw TranscriptionFailure("The ElevenLabs API key is missing. Set it from the ocmh menu.") }
+        guard let key = try keyProvider() else { throw SpeechRecognitionIssue.cloudCredentialsMissing }
         let fingerprint = try Self.fingerprint(audio)
         let cacheURL = audio.deletingLastPathComponent().appendingPathComponent("elevenlabs-\(audio.lastPathComponent).json")
         if let cache = try? JSONDecoder().decode(Cache.self, from: Data(contentsOf: cacheURL)),
@@ -117,7 +117,7 @@ actor ElevenLabsEngine: TranscriptionEngine {
     nonisolated static func checkStatus(_ status: Int) throws {
         switch status {
         case 200: return
-        case 401, 403: throw TranscriptionFailure("ElevenLabs rejected the API key or its speech-to-text permission. Update the key from the ocmh menu.")
+        case 401, 403: throw SpeechRecognitionIssue.cloudCredentialsMissing
         case 402, 429: throw TranscriptionFailure("ElevenLabs quota or rate limit reached. Check your account and retry later.")
         default: throw TranscriptionFailure("ElevenLabs transcription failed (HTTP \(status)). Audio is retained for retry.")
         }

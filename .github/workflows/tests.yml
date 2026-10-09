@@ -7,18 +7,44 @@ permissions:
 jobs:
   gateway-contracts:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        sdk: ['2026.9.7', '2026.9.8', '2026.9.9']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: npm install --ignore-scripts --package-lock=false --no-audit --no-fund openclaw@${{ matrix.sdk }}
+      - name: Verify installed SDK provenance
+        env:
+          EXPECTED_SDK_VERSION: ${{ matrix.sdk }}
+        run: |
+          node --input-type=module - <<'JS'
+          import fs from 'node:fs';
+          import assert from 'node:assert/strict';
+          const sdk=JSON.parse(fs.readFileSync('node_modules/openclaw/package.json','utf8'));
+          assert.equal(sdk.name,'openclaw');
+          assert.equal(sdk.version,process.env.EXPECTED_SDK_VERSION);
+          console.log(JSON.stringify({sdkVersion:sdk.version,nodeVersion:process.version}));
+          JS
+      - run: npm test
+      - name: Production archive smoke with synthetic text
+        run: OPENCLAW_TEAMS_OPENCLAW_DIR="$PWD/node_modules/openclaw" node scripts/archive-smoke.mjs
+      - run: python3 -m unittest discover -s test -p 'test_helper_*.py'
+  native-core:
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
       - run: npm install --ignore-scripts --package-lock=false --no-audit --no-fund
-      - run: npm test
-  native-core:
-    runs-on: xcode-27
-    env:
-      DEVELOPER_DIR: /Applications/Xcode_27.2_beta.app/Contents/Developer
-    steps:
-      - uses: actions/checkout@v4
+      - name: Select installed Xcode
+        run: python3 .github/scripts/select-xcode.py
       - run: swift --version
-      - run: swift test --package-path native -j 4 --filter 'MeetingNotesTests|RecordingIdentityTests|AudioRetentionTests|GatewayArchiveTests|MenuPresentationTests'
+      - name: Full isolated native suite
+        run: |
+          export OPENCLAW_TEAMS_HOME="$RUNNER_TEMP/clawminutes-test-home"
+          mkdir -p "$OPENCLAW_TEAMS_HOME"
+          swift test --package-path native -j 4

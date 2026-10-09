@@ -38,3 +38,50 @@ test('canonical SDK readback uses the returned summary wrapper and compares gene
  assert.throws(()=>assertArchiveReadback(record,[{...rows[0],speaker:{label:'Invented name'}}],{summary:record.summary,markdown:'saved'}),/differs/);
  assert.throws(()=>assertArchiveReadback(record,[...rows,rows[0]],{summary:record.summary,markdown:'saved'}),/differs/);
 });
+
+test('AI notes and both exports explicitly retain missing capture intervals',async()=>{
+ const gaps=[{source:'system',start_ms:10000,end_ms:20000,reason:'buffers_stalled'}];
+ const record=meetingRecord(meta,{...transcript,capture_gaps:gaps},'teams-gap');
+ let request;
+ await generateNotes(record,meta,async value=>{request=value;return {text:JSON.stringify({sections:[{title:'Decisions',body:'- needs_evidence'}]}),provider:'fixture',model:'test'};});
+ assert.deepEqual(JSON.parse(request.user).facts.captureGaps,gaps);
+ assert.match(request.system,/speech is missing/);
+ for(const text of [documents(record).notesMarkdown,documents(record).transcriptMarkdown]){
+  assert.ok(text.includes('## Capture gaps\n\nMissing speech is not recoverable from this transcript.\n\n'));assert.match(text,/system: 10000 to 20000 ms/);
+ }
+});
+
+test('unreconciled boundary words remain review warnings without claiming capture interruption',async()=>{
+ const gaps=[{source:'mic',start_ms:29000,end_ms:61000,reason:'boundary_context_unverified'}];
+ const record=meetingRecord(meta,{...transcript,capture_gaps:gaps},'teams-boundary');
+ let request;
+ await generateNotes(record,meta,async value=>{request=value;return {text:JSON.stringify({sections:[{title:'Decisions',body:'- needs_evidence'}]}),provider:'fixture',model:'test'};});
+ assert.deepEqual(JSON.parse(request.user).facts.captureGaps,gaps);
+ assert.match(request.system,/does not establish interrupted capture/);
+ for(const text of [documents(record).notesMarkdown,documents(record).transcriptMarkdown]){
+  assert.match(text,/## Transcription boundary review/);
+  assert.doesNotMatch(text,/## Capture gaps/);
+  assert.match(text,/Original recognition and audio are retained/);
+ }
+});
+
+test('notes model receives voice-match uncertainty and cannot treat it as confirmed ownership',async()=>{
+ const record=meetingRecord(meta,{...transcript,segments:[{...transcript.segments[0],speaker_name:'Alice',attribution:'meeting_voice'}]},'uncertain-voice');
+ let request;
+ await generateNotes(record,meta,async value=>{request=value;return {text:JSON.stringify({sections:[{title:'Decisions',body:'- needs_evidence'}]}),provider:'fixture',model:'test'};});
+ assert.match(request.system,/not confirmed identity/);
+ assert.match(request.system,/Do not use that label alone to assign owners/);
+ assert.match(JSON.parse(request.user).transcript[0],/voice match, uncertain/);
+ assert.match(documents(record).transcriptMarkdown,/voice match, uncertain/);
+});
+
+
+test('uncertain timing and interrupted handoff exports do not assert missing audio',()=>{
+ for(const reason of ['capture_timing_uncertain','rotation_pending']){
+  const record=meetingRecord(meta,{...transcript,capture_gaps:[{source:'mic',start_ms:1000,end_ms:2000,reason}]},'timing-review');
+  for(const text of [documents(record).notesMarkdown,documents(record).transcriptMarkdown]){
+   assert.match(text,/Audio is incomplete or its timing is uncertain/);
+   assert.doesNotMatch(text,/Missing speech is not recoverable/);
+  }
+ }
+});

@@ -34,7 +34,7 @@ struct Quill: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "ocmh",
         abstract: "Meeting recorder + transcriber. Records mic and system audio, then transcribes locally or with ElevenLabs.",
-        subcommands: [Run.self, Doctor.self, Meetings.self, Transcribe.self, Transcription.self, SetupLocal.self, CaptureFixture.self, RecoverSessions.self, GatewayStatus.self, ArchiveSession.self, VerifyAudioRetention.self, NameRecordingFolder.self, NameNotesFolder.self, ExportIcon.self],
+        subcommands: [Run.self, Doctor.self, Meetings.self, Transcribe.self, ReviseMeeting.self, Transcription.self, SetupLocal.self, CaptureFixture.self, RecoverSessions.self, GatewayStatus.self, ArchiveSession.self, ArchiveBacklogCommand.self, VerifyAudioRetention.self, NameRecordingFolder.self, NameNotesFolder.self, MigrateNotesFolder.self, Diagnose.self, LockSnapshot.self, ExportIcon.self],
         defaultSubcommand: Run.self
     )
 }
@@ -105,7 +105,6 @@ struct Meetings: AsyncParsableCommand {
                 }
             }
             let output: [String: Any] = ["needs_accessibility_permission": scan.needsPermission,
-                                         "needs_zoom_screen_permission": scan.needsZoomScreenPermission,
                                          "apps": apps.map(\.name), "meetings": rows, "active_speakers": scan.speakers,
                                          "speaker_capture": scan.speakerCaptureStatus,
                                          "speaker_boxes": scan.speakerBoxes,
@@ -116,9 +115,7 @@ struct Meetings: AsyncParsableCommand {
                                               "complete": observation.roster_complete ?? false]
                                          },
                                          "tile_speakers": tileSpeakers, "observed_at": scan.observedAt,
-                                         "zoom_border_scores": await scanner.zoomBorderScores(),
-                                         "zoom_capture_status": await scanner.zoomCaptureStatus(),
-                                         "captions": scan.captions.map { ["speaker": $0.names.first ?? "", "text": $0.text ?? ""] }]
+                                         "enabled_provider": "Microsoft Teams"]
             let data = try JSONSerialization.data(withJSONObject: output, options: [.sortedKeys])
             FileHandle.standardOutput.write(data + Data("\n".utf8))
             if watch { try await Task.sleep(for: .seconds(2)) }
@@ -164,7 +161,7 @@ struct Run: AsyncParsableCommand {
         app.mainMenu = ApplicationMenu.make()
         app.applicationIconImage = HelperAppIcon.image()
 
-        let controller = AppController(root: root, showMenuOnLaunch: showMenu, promptFixture: promptFixture)
+        let controller = AppController(root: root, startupOwner: runLock, showMenuOnLaunch: showMenu, promptFixture: promptFixture)
         app.delegate = controller
         Task {
             do { try await NativeNotifications.shared.authorize() }
@@ -214,16 +211,27 @@ final class AppController: NSObject, NSApplicationDelegate {
     private let meetings = MeetingAssistant()
     private var session: RecordingSession?
     private var ticker: Timer?
+    private var backlogTask: Task<Void, Never>?
+    private var startupReady = false
     private var starting = false
     private var stopping = false
     private let showMenuOnLaunch: Bool
     private let promptFixture: Bool
 
-    init(root: URL, showMenuOnLaunch: Bool = false, promptFixture: Bool = false) {
+    init(root: URL, startupOwner: AppRunLock, showMenuOnLaunch: Bool = false, promptFixture: Bool = false) {
         self.root = root
         self.showMenuOnLaunch = showMenuOnLaunch
         self.promptFixture = promptFixture
         super.init()
+        NativeNotifications.shared.onAction = { [weak self] action, context in
+            guard let self else { return }
+            switch action {
+            case .openNotes: self.menuBar.openNotes(notificationMeetingID: context["meetingID"])
+            case .keepRecording: self.meetings.keepRecording(notificationToken: context["recordingToken"])
+            case .openSound:
+                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.sound") { NSWorkspace.shared.open(url) }
+            }
+        }
         menuBar.onToggle = { [weak self] in self?.toggle() }
         menuBar.onOpenFolder = { [weak self] in self?.openFolder() }
         menuBar.onQuit = { [weak self] in self?.shutdown() }
@@ -231,6 +239,19 @@ final class AppController: NSObject, NSApplicationDelegate {
         menuBar.onDetectionToggle = { [weak self] in self?.meetings.toggleEnabled() }
         menuBar.onPermission = { [weak self] in self?.meetings.requestPermission() }
         menuBar.onKeepRecording = { [weak self] in self?.meetings.keepRecording() }
+        menuBar.onRetryArchive = { [transcription, root] capabilities in
+            let report = try await transcription.retryArchiveBacklog(root: root, force: true, capabilities: capabilities)
+            return report.busy ? "A backlog check is already running" : "Checked pending saves: \(report.attempted) attempted, \(report.pending) waiting"
+        }
+        menuBar.onTextPrepared = { [transcription, root] in
+            _ = try await transcription.retryArchiveBacklog(root: root)
+        }
+        menuBar.onSpeechCredentialsInstalled = { [transcription, root] in
+            _ = try await transcription.retryPendingTranscriptions(root: root, credentialsInstalled: true)
+        }
+        menuBar.onLocalModelInstalled = { [transcription, root] in
+            _ = try await transcription.retryPendingTranscriptions(root: root, modelInstalled: true)
+        }
         meetings.onStart = { [weak self] in
             guard let self, self.session == nil else { return false }
             return await self.startSession()
@@ -240,22 +261,44 @@ final class AppController: NSObject, NSApplicationDelegate {
         meetings.onMeetingContext = { [weak self] context in self?.session?.updateMeetingContext(context) }
         meetings.onMeetingTitle = { [weak self] title in self?.menuBar.setMeetingSubject(title) }
         meetings.onSpeakers = { [weak self] observation in self?.session?.recordSpeakers(observation) }
-        meetings.start()
 
-        Task { [transcription, root] in
-            await transcription.setStatusHandler { status in
+        backlogTask = Task { [weak self, transcription, root] in
+            await transcription.setMeetingsHandler { [weak self] meetings in
+                Task { @MainActor [weak self] in self?.menuBar.updateRecentMeetings(meetings) }
+            }
+            await transcription.setBacklogHandler { [weak self] count in
+                Task { @MainActor [weak self] in self?.menuBar.pendingArchiveCount = count }
+            }
+            await transcription.setStatusHandler { [weak self] status in
                 Task { @MainActor [weak self] in
                     self?.showTranscription(status)
                 }
             }
-            await transcription.resumePending(root: root)
+            while !Task.isCancelled {
+                if await transcription.resumePending(root: root, startupOwner: startupOwner) { break }
+                do { try await Task.sleep(for: .seconds(5)) } catch { return }
+            }
+            guard !Task.isCancelled, let self else { return }
+            self.startupReady = true
+            self.menuBar.enableCaptureCheck()
+            self.meetings.start()
+            while !Task.isCancelled {
+                do { try await Task.sleep(for: .seconds(60)) }
+                catch { break }
+                do {
+                    _ = try await transcription.retryPendingTranscriptions(root: root)
+                    _ = try await transcription.retryArchiveBacklog(root: root)
+                } catch { FileHandle.standardError.write(Data("Meeting backlog check unavailable. Recordings preserved.\n".utf8)) }
+            }
         }
     }
 
     /// Stop any live session cleanly (finalizing files) and exit.
     func shutdown() {
+        backlogTask?.cancel()
         meetings.shutdown()
         Task {
+            await menuBar.stopCaptureCheck()
             if let session { await finishSession(session) }
             NSApp.terminate(nil)
         }
@@ -274,11 +317,14 @@ final class AppController: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        if showMenuOnLaunch { menuBar.showSettings() }
+        if !promptFixture && !UserDefaults.standard.bool(forKey: "clawMinutesSetupShownV1") { menuBar.showSetup() }
+        else if showMenuOnLaunch { menuBar.showSettings() }
         if promptFixture {
-            NSApp.activate(ignoringOtherApps: true)
-            let response = MeetingConsentPrompt.make(fixture: true).runModal()
-            FileHandle.standardError.write(Data("Prompt fixture response: \(response.rawValue). No fixture audio is started by this UI-only diagnostic.\n".utf8))
+            Task {
+                let panel = MeetingConsentPanel(fixture: true)
+                let response = await panel.present()
+                FileHandle.standardError.write(Data("Prompt fixture accepted: \(response). No fixture audio is started by this UI-only diagnostic.\n".utf8))
+            }
         }
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -290,12 +336,16 @@ final class AppController: NSObject, NSApplicationDelegate {
         Task { _ = await startSession() }
     }
     @discardableResult private func startSession() async -> Bool {
-        guard !starting, session == nil else { return false }
+        guard startupReady, !starting, session == nil else { return false }
         starting = true
         menuBar.setStartingRecording(true)
         defer { starting = false; menuBar.setStartingRecording(false) }
+        await menuBar.stopCaptureCheck()
         do {
             let newSession = try RecordingSession(root: root, context: meetings.contextForStart)
+            newSession.onClosedChunk = { [transcription] directory, file in
+                Task { await transcription.enqueueClosedChunk(directory, file: file) }
+            }
             try await newSession.start()
             session = newSession
             FileHandle.standardError.write(Data("● recording → \(newSession.dir.path)\n".utf8))
@@ -305,8 +355,9 @@ final class AppController: NSObject, NSApplicationDelegate {
             return false
         }
 
+        menuBar.captureHealth = session?.healthText ?? "Checking microphone and Teams audio…"
         menuBar.update(recording: true, elapsed: "0:00")
-        ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        ticker = HousekeepingTimer.schedule(every: 1) { [weak self] _ in
             MainActor.assumeIsolated { self?.tick() }
         }
         meetings.recordingStarted()
@@ -342,6 +393,8 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func tick() {
         guard let session else { return }
         session.checkpoint()
+        menuBar.captureHealth = session.healthText
+        menuBar.updateCaptureWarning(session.captureWarning)
         menuBar.update(
             recording: true,
             elapsed: Self.format(Date().timeIntervalSince(session.audioStartedAt))

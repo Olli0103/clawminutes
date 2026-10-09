@@ -1,0 +1,213 @@
+import Foundation
+import XCTest
+@testable import quill
+
+final class GatewayHTTPContractTests: XCTestCase, @unchecked Sendable {
+    func testSwiftEnvelopeAgainstRealJSHandlerAndSDKPreservesSavedNotes() async throws {
+        var repository = URL(fileURLWithPath: #filePath)
+        for _ in 0..<4 { repository.deleteLastPathComponent() }
+        guard FileManager.default.fileExists(atPath: repository.appendingPathComponent("node_modules/openclaw/package.json").path) else {
+            throw XCTSkip("Install the pinned OpenClaw development SDK for the Swift-to-JavaScript HTTP contract test")
+        }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("clawminutes-http-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let process = Process(), output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["node", repository.appendingPathComponent("test/http-contract-server.mjs").path, root.path]
+        process.currentDirectoryURL = repository
+        process.standardOutput = output
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        defer { if process.isRunning { process.terminate() }; process.waitUntilExit() }
+        var data = Data()
+        while data.count < 8 {
+            guard let byte = try output.fileHandleForReading.read(upToCount: 1), !byte.isEmpty else { break }
+            data.append(byte)
+            if byte == Data([10]) { break }
+        }
+        let port = try XCTUnwrap(Int(String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)))
+        let origin = URL(string: "http://127.0.0.1:\(port)")!
+        let session = URLSession(configuration: .ephemeral, delegate: NoGatewayRedirect(), delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+        @Sendable func post(_ body: Data, verifying: Bool = false) async throws -> (Data, Int) {
+            var request = URLRequest(url: origin.appendingPathComponent("plugins/teams-transcribe/ingest"))
+            if verifying { request.url = URL(string: request.url!.absoluteString + "?mode=verify") }
+            request.timeoutInterval = 20
+            request.httpMethod = "POST"
+            request.httpBody = body
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            let (data, response) = try await session.data(for: request)
+            return (data, try XCTUnwrap(response as? HTTPURLResponse).statusCode)
+        }
+        @Sendable func capabilities() async throws -> Data {
+            let (data, response) = try await session.data(from: origin.appendingPathComponent("plugins/teams-transcribe/ingest"))
+            let status = try XCTUnwrap(response as? HTTPURLResponse).statusCode
+            guard status == 200 else { throw DeliveryFailure.response(status: status, data: data) }
+            return data
+        }
+        let negotiated = try GatewayCapabilities.verify(await capabilities())
+        XCTAssertEqual(negotiated.archive.verification, "isolated-readback-v2")
+        let meta: [String: Any] = ["started": "2026-10-08T08:00:00Z", "ended": "2026-10-08T08:01:00Z", "audio_started_at": 1791446400.0,
+            "status": "stopped", "fixture": true, "notes_mode": "ai", "files": ["mic": "/forbidden/audio"],
+            "note_template": ["id": "fixture", "name": "Fixture", "context": "Synthetic", "sections": [["title": "Summary", "instructions": "Summarize"]]]]
+        let uncertaintyReasons = ["boundary_context_unverified", "capture_timing_uncertain", "rotation_pending", "device_changed"]
+        var uncertaintyRanges: [[String: Any]] = []
+        for index in 0..<40 {
+            let source: String = index % 2 == 0 ? "mic" : "system"
+            let start: Int = index * 1000
+            let reason: String = uncertaintyReasons[index % 4]
+            uncertaintyRanges.append(["source": source, "start_ms": start, "end_ms": start + 100, "reason": reason])
+        }
+        var transcript: [String: Any] = ["engine": "parakeet", "model": "parakeet-tdt-0.6b-v3-coreml", "created_at": "2026-10-08T08:02:00Z",
+            "execution_machine": "fixture-mac", "execution_location": "recording_mac",
+            "segments": [["speaker": "system_unknown", "source": "system", "start_ms": 0, "end_ms": 1000, "text": "Synthetic speech."]],
+            "capture_gaps": uncertaintyRanges]
+        let envelope = try GatewayArchive.envelope(meta: meta, transcript: transcript, recordingID: "http-fixture")
+        XCTAssertFalse(String(decoding: envelope, as: UTF8.self).contains("/forbidden/audio"))
+        let (first, firstStatus) = try await post(envelope)
+        XCTAssertEqual(firstStatus, 200)
+        let saved = try XCTUnwrap(JSONSerialization.jsonObject(with: first) as? [String: Any])
+        XCTAssertEqual(saved["saved"] as? Bool, true)
+        let documents = try XCTUnwrap(saved["documents"] as? [String: Any])
+        let metadata = try XCTUnwrap(documents["metadata"] as? [String: Any])
+        let details = try XCTUnwrap(metadata["metadata"] as? [String: Any])
+        XCTAssertEqual(details["captureGaps"] as? NSArray, transcript["capture_gaps"] as? NSArray)
+        XCTAssertTrue((documents["notesMarkdown"] as? String)?.contains("Transcription boundary review") == true)
+        let (repeatData, repeatStatus) = try await post(envelope)
+        XCTAssertEqual(repeatStatus, 200)
+        let repeated = try XCTUnwrap(JSONSerialization.jsonObject(with: repeatData) as? [String: Any])
+        XCTAssertEqual((saved["documents"] as? NSDictionary), (repeated["documents"] as? NSDictionary))
+        transcript["segments"] = [["speaker": "system_unknown", "source": "system", "start_ms": 0, "end_ms": 1000, "text": "Synthetic speech."],
+                                  ["speaker": "system_unknown", "source": "system", "start_ms": 2000, "end_ms": 3000, "text": "Additional speech."]]
+        let (conflict, conflictStatus) = try await post(GatewayArchive.envelope(meta: meta, transcript: transcript, recordingID: "http-fixture"))
+        XCTAssertEqual(conflictStatus, 409)
+        let failure = DeliveryFailure.response(status: conflictStatus, data: conflict)
+        XCTAssertEqual(failure.code, "revision_conflict")
+        XCTAssertFalse(failure.retryable)
+        XCTAssertFalse(failure.completionAttempted)
+        var revisedMeta = meta
+        let descriptor = MeetingRevisions.Descriptor(number: 2, baseRecordingId: "http-fixture",
+            parentSessionId: try XCTUnwrap(saved["sessionId"] as? String), reason: "speaker_correction")
+        revisedMeta["revision"] = descriptor.json
+        transcript["segments"] = [["speaker": "system_unknown", "source": "system", "start_ms": 0, "end_ms": 1000,
+            "text": "Synthetic speech.", "speaker_name": "Fixture Alice", "attribution": "manual"]]
+        let revisionEnvelope = try GatewayArchive.envelope(meta: revisedMeta, transcript: transcript, recordingID: descriptor.recordingId)
+        let (revisionData, revisionStatus) = try await post(revisionEnvelope)
+        XCTAssertEqual(revisionStatus, 200)
+        let revision = try XCTUnwrap(JSONSerialization.jsonObject(with: revisionData) as? [String: Any])
+        XCTAssertNotEqual(revision["sessionId"] as? String, saved["sessionId"] as? String)
+        XCTAssertTrue((revision["documents"] as? [String: Any])?["transcriptMarkdown"] as? String != nil)
+        let (_, revisionRepeatStatus) = try await post(revisionEnvelope)
+        XCTAssertEqual(revisionRepeatStatus, 200)
+        let (originalAgain, originalAgainStatus) = try await post(envelope)
+        XCTAssertEqual(originalAgainStatus, 200)
+        XCTAssertEqual((try JSONSerialization.jsonObject(with: originalAgain) as? [String: Any])?["documents"] as? NSDictionary,
+                       saved["documents"] as? NSDictionary)
+        revisedMeta["revision"] = descriptor.json.merging(["audio": "/private/audio"], uniquingKeysWith: { _, new in new })
+        XCTAssertThrowsError(try GatewayArchive.envelope(meta: revisedMeta, transcript: transcript, recordingID: descriptor.recordingId))
+        let (invalid, invalidStatus) = try await post(Data(#"{"audio":"forbidden"}"#.utf8))
+        XCTAssertEqual(invalidStatus, 422)
+        XCTAssertEqual(DeliveryFailure.response(status: invalidStatus, data: invalid).code, "invalid_payload")
+        let local = root.appendingPathComponent("local-recovery"), notesRoot = root.appendingPathComponent("notes")
+        try FileManager.default.createDirectory(at: local, withIntermediateDirectories: true)
+        var recoveryMeta = meta
+        recoveryMeta["fixture"] = false; recoveryMeta["recording_id"] = "http-recovery"
+        recoveryMeta["note_template"] = ["id": "fixture", "name": "Fixture", "context": "fixture-invalid-output", "sections": [["title": "Summary", "instructions": "Summarize"]]]
+        try JSONSerialization.data(withJSONObject: recoveryMeta).write(to: local.appendingPathComponent("meta.json"))
+        let originalTranscript = try JSONSerialization.data(withJSONObject: transcript)
+        try originalTranscript.write(to: local.appendingPathComponent("transcript.json"))
+        let lease = root.appendingPathComponent("lifecycle.lock")
+        let delivery = MeetingDeliveryStage(activityLockPath: lease, saveArchive: { directory in
+            try await GatewayArchive.save(directory, transport: { body in
+                let (data, status) = try await post(body)
+                guard status == 200 else { throw DeliveryFailure.response(status: status, data: data) }
+                return data
+            }, capabilityTransport: capabilities, exportRootOverride: notesRoot, activityLockPath: lease)
+        }, onSaved: { _ in })
+        if case .failed(let failure) = await delivery.deliver(local, now: 100) { XCTAssertEqual(failure.code, "ai_invalid_output") }
+        else { XCTFail("Synthetic invalid AI output must fail") }
+        XCTAssertEqual(ArchiveBacklog.inspect(local, notesRoot: notesRoot).retry?.completionAttempts, 1)
+        _ = try NotesRecovery.prepare(local, kind: .retryAI, now: 200, activityLockPath: lease)
+        if case .failed(let failure) = await delivery.deliver(local, now: 200) { XCTAssertEqual(failure.code, "ai_invalid_output") }
+        else { XCTFail("Explicit retry must preserve the model failure") }
+        XCTAssertEqual(ArchiveBacklog.inspect(local, notesRoot: notesRoot).retry?.completionAttempts, 2)
+        _ = try NotesRecovery.prepare(local, kind: .transcriptOnly, now: 300, activityLockPath: lease)
+        if case .saved = await delivery.deliver(local, now: 300) {} else { XCTFail("Transcript-only recovery must save") }
+        let recovered = try ArchiveBacklog.object(local.appendingPathComponent("archive-receipt.json"))
+        XCTAssertEqual((recovered["notes"] as? [String: Any])?["backend"] as? String, "transcript-only")
+        var legacyRecovery = recovered
+        legacyRecovery.removeValue(forKey: "localTranscriptSHA256")
+        try JSONSerialization.data(withJSONObject: legacyRecovery).write(to: local.appendingPathComponent("archive-receipt.json"))
+        let recoveryPlan = try LegacyReceiptReconciliation.prepare(local, notesRoot: notesRoot)
+        let verifiedRecovery = try await LegacyReceiptReconciliation.apply(recoveryPlan, transport: { body in
+            let (data, status) = try await post(body, verifying: true)
+            guard status == 200 else { throw DeliveryFailure.response(status: status, data: data) }
+            return data
+        }, capabilityTransport: capabilities, activityLockPath: lease)
+        XCTAssertTrue(verifiedRecovery.exported)
+        XCTAssertEqual(try MeetingPipelineState.load(local).delivery.completionAttempts, 2)
+        XCTAssertEqual(ArchiveBacklog.inspect(local, notesRoot: notesRoot).state, .needsReview, "Capture gaps still require review after recovery")
+        XCTAssertEqual(try ArchiveBacklog.read(local.appendingPathComponent("transcript.json")), originalTranscript)
+        XCTAssertEqual(try ArchiveBacklog.object(local.appendingPathComponent("meta.json"))["notes_mode"] as? String, "ai")
+        let regenerated = try MeetingRevisions.create(from: local, change: .template(NoteTemplate(id: "fixture", name: "Fixture", context: "Synthetic",
+            sections: [.init(title: "Summary", instructions: "Summarize")])), activityLockPath: lease)
+        if case .saved = await delivery.deliver(regenerated, now: 400) {} else { XCTFail("An explicit new version must regenerate notes after transcript-only recovery") }
+        let newReceipt = try ArchiveBacklog.object(regenerated.appendingPathComponent("archive-receipt.json"))
+        XCTAssertNotEqual(newReceipt["sessionId"] as? String, recovered["sessionId"] as? String)
+        XCTAssertEqual((newReceipt["notes"] as? [String: Any])?["backend"] as? String, "gateway-model")
+        XCTAssertEqual((try ArchiveBacklog.object(local.appendingPathComponent("archive-receipt.json"))["notes"] as? [String: Any])?["backend"] as? String, "transcript-only")
+        try await GatewayArchive.save(regenerated, transport: { _ in XCTFail("Saved exports must not send speech again"); throw URLError(.notConnectedToInternet) },
+            capabilityTransport: { XCTFail("Verified local exports must remain usable offline"); throw URLError(.notConnectedToInternet) },
+            exportRootOverride: notesRoot, activityLockPath: lease)
+        var legacy = newReceipt
+        legacy.removeValue(forKey: "localTranscriptSHA256")
+        let legacyBytes = try JSONSerialization.data(withJSONObject: legacy)
+        try legacyBytes.write(to: regenerated.appendingPathComponent("archive-receipt.json"))
+        let blocked = ArchiveBacklog.inspect(regenerated, notesRoot: notesRoot)
+        XCTAssertTrue(RecentMeeting.make(blocked).canVerifyLegacyReceipt)
+        let plan = try LegacyReceiptReconciliation.prepare(regenerated, notesRoot: notesRoot)
+        let exportedPath = try String(contentsOf: regenerated.appendingPathComponent("notes-export-path.txt"), encoding: .utf8)
+        let editedNotes = URL(fileURLWithPath: exportedPath).appendingPathComponent("notes.md")
+        try Data("User-edited notes stay".utf8).write(to: editedNotes)
+        let verification = try await LegacyReceiptReconciliation.apply(plan, transport: { body in
+            let (data, status) = try await post(body, verifying: true)
+            guard status == 200 else { throw DeliveryFailure.response(status: status, data: data) }
+            return data
+        }, capabilityTransport: capabilities, activityLockPath: lease)
+        XCTAssertTrue(verification.exported)
+        XCTAssertEqual(try String(contentsOf: editedNotes, encoding: .utf8), "User-edited notes stay")
+        XCTAssertEqual(try ArchiveBacklog.object(regenerated.appendingPathComponent("archive-receipt.json"))["localTranscriptSHA256"] as? String, plan.transcriptSHA256)
+        let preserved = regenerated.appendingPathComponent("archive-receipt.legacy-" + AudioRetention.digest(legacyBytes) + ".json")
+        XCTAssertEqual(try ArchiveBacklog.read(preserved), legacyBytes)
+        XCTAssertFalse(RecentMeeting.make(ArchiveBacklog.inspect(regenerated, notesRoot: notesRoot)).canVerifyLegacyReceipt)
+        // A completed canonical save is recoverable even when the local receipt
+        // was lost and neither side can authorize another paid attempt.
+        try FileManager.default.removeItem(at: regenerated.appendingPathComponent("archive-receipt.json"))
+        var unknownBudget = try MeetingPipelineState.load(regenerated)
+        unknownBudget.delivery.count = 2
+        unknownBudget.delivery.completionAttempts = nil
+        unknownBudget.delivery.budgetUnverified = true
+        try unknownBudget.write(regenerated)
+        let gatewayLedger = root.appendingPathComponent("teams-transcribe/notes-attempts/" + (newReceipt["sessionId"] as! String) + ".json")
+        let unprovableLedger = Data(#"{"schemaVersion":1,"attempts":2,"fingerprint":"unprovable-legacy-hash"}"#.utf8)
+        try unprovableLedger.write(to: gatewayLedger)
+        XCTAssertTrue(RecentMeeting.make(ArchiveBacklog.inspect(regenerated, notesRoot: notesRoot)).canVerifyLegacyReceipt)
+        let lostPlan = try LegacyReceiptReconciliation.prepare(regenerated, notesRoot: notesRoot)
+        XCTAssertTrue(lostPlan.receiptWasMissing)
+        let lostResult = try await LegacyReceiptReconciliation.apply(lostPlan, transport: { body in
+            let (data, status) = try await post(body, verifying: true)
+            guard status == 200 else { throw DeliveryFailure.response(status: status, data: data) }
+            return data
+        }, capabilityTransport: capabilities, activityLockPath: lease)
+        XCTAssertTrue(lostResult.exported)
+        XCTAssertEqual(try String(contentsOf: editedNotes, encoding: .utf8), "User-edited notes stay")
+        XCTAssertEqual(try ArchiveBacklog.read(gatewayLedger), unprovableLedger)
+        let retainedBudget = try MeetingPipelineState.load(regenerated)
+        XCTAssertEqual(retainedBudget.delivery.count, 2); XCTAssertNil(retainedBudget.delivery.completionAttempts)
+        XCTAssertEqual(retainedBudget.delivery.budgetUnverified, true)
+        XCTAssertFalse(RecentMeeting.make(ArchiveBacklog.inspect(regenerated, notesRoot: notesRoot)).canVerifyLegacyReceipt)
+        let (counts, _) = try await session.data(from: origin.appendingPathComponent("statistics"))
+        XCTAssertEqual((try JSONSerialization.jsonObject(with: counts) as? [String: Int])?["completions"], 5)
+    }
+}

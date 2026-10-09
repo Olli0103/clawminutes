@@ -6,7 +6,7 @@ import Foundation
 /// model automatically recognizes English, Romanian, and its other supported
 /// languages without a language hint. Models download once into FluidAudio's
 /// managed cache; transcription then runs entirely on-device.
-actor ParakeetEngine: TranscriptionEngine {
+actor ParakeetEngine: LocalPCMTranscriptionEngine {
     enum EngineError: Error, CustomStringConvertible {
         case notPrepared
         case unreadableAudio(URL, Error?)
@@ -27,12 +27,14 @@ actor ParakeetEngine: TranscriptionEngine {
 
     private var manager: AsrManager?
 
+    nonisolated static var modelsAvailable: Bool { AsrModels.modelsExist(at: AsrModels.defaultCacheDirectory(for: modelVersion), version: modelVersion) }
+
     func prepare() async throws {
         guard manager == nil else { return }
         ModelHub.offlineMode = true
         let cache = AsrModels.defaultCacheDirectory(for: Self.modelVersion)
         guard AsrModels.modelsExist(at: cache, version: Self.modelVersion) else {
-            throw TranscriptionFailure("Local only requires Parakeet v3 models on this Mac. Choose Download local model in ocmh. No cloud fallback.")
+            throw SpeechRecognitionIssue.localModelMissing
         }
         let models = try await AsrModels.load(from: cache, version: Self.modelVersion)
         let manager = AsrManager()
@@ -62,6 +64,21 @@ actor ParakeetEngine: TranscriptionEngine {
         // track or meeting from carrying its language context into this one.
         let result = try await manager.transcribe(audio, decoderState: &state)
 
+        return Self.segments(from: result)
+    }
+
+    func transcribe(samples: [Float]) async throws -> [TranscriptSegment] {
+        guard let manager else { throw EngineError.notPrepared }
+        guard !samples.isEmpty, samples.count <= BoundaryRecognition.maximumSamples,
+              samples.allSatisfy(\.isFinite) else { throw MeetingPipelineState.invalidState }
+        try Task.checkCancellation()
+        var state = try TdtDecoderState()
+        let result = try await manager.transcribe(samples, decoderState: &state)
+        try Task.checkCancellation()
+        return Self.segments(from: result)
+    }
+
+    private static func segments(from result: ASRResult) -> [TranscriptSegment] {
         let words = buildWordTimings(from: result.tokenTimings ?? [])
         guard !words.isEmpty else {
             let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)

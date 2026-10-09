@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {validateEnvelope,gatewayHandler} from '../src/gateway.mjs';
+import {validateEnvelope,gatewayHandler,installedRuntimeDirectory,maximumCaptureGaps} from '../src/gateway.mjs';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 const envelope={recordingId:'fixture',meta:{started:'2026-10-01T10:00:00Z',audio_started_at:1790848800},transcript:{engine:'parakeet',model:'parakeet-tdt-0.6b-v3-coreml',created_at:'2026-10-01T10:01:00Z',execution_machine:'recording-mac',execution_location:'recording_mac',segments:[{start_ms:0,end_ms:100,text:'Fixture'}]}};
 test('Gateway rejects audio, paths and arbitrary nested metadata',()=>{
  for(const value of [{...envelope,audio:'base64'}, {...envelope,meta:{...envelope.meta,files:{mic:'/private/audio.caf'}}}, {...envelope,transcript:{...envelope.transcript,audio:'base64'}}, {...envelope,transcript:{...envelope.transcript,segments:[{text:'Fixture',rawAudio:'base64'}]}}])assert.throws(()=>validateEnvelope(value),/audio|field/);
@@ -10,8 +13,76 @@ test('Local only must report recognition on the recording Mac with its actual mo
  assert.throws(()=>validateEnvelope({...envelope,transcript:{...envelope.transcript,execution_location:'gateway'}}),/recording Mac/);
  assert.throws(()=>validateEnvelope({...envelope,transcript:{...envelope.transcript,model:'scribe_v2'}}),/mismatch/);
 });
-test('Gateway readiness GET does not capture, transcribe or write an archive',async()=>{
+test('Gateway readiness checks the isolated store contract without a model call or real archive write',async()=>{
+ const stateDir=await fs.mkdtemp(path.join(os.tmpdir(),'clawminutes-capabilities-'));
+ try{
+ let calls=0;
  const response={headers:{},setHeader(k,v){this.headers[k]=v},writeHead(code){this.code=code},end(body){this.body=JSON.parse(body)}};
- await gatewayHandler({})({method:'GET'},response);
+ await gatewayHandler({stateDir,openclawDir:process.env.OPENCLAW_TEAMS_SDK_TEST_DIR||installedRuntimeDirectory(),complete:async()=>{calls++;throw Error('No model allowed');}})({method:'GET'},response);
  assert.equal(response.code,200);assert.equal(response.body.rawAudioAccepted,false);
+ assert.equal(response.body.capabilities.captureGapEvidence,2);assert.equal(response.body.capabilities.maximumCaptureGaps,maximumCaptureGaps);
+ assert.equal(response.body.protocolVersion,1);assert.equal(response.body.capabilities.textEnvelope,1);
+ assert.equal(response.body.archive.verification,'isolated-readback-v2');
+ assert.equal(calls,0);assert.deepEqual(await fs.readdir(stateDir),[]);
+ }finally{await fs.rm(stateDir,{recursive:true,force:true});}
+});
+
+test('capture gaps stay text-only and reject arbitrary evidence',()=>{
+ const gap={source:'mic',start_ms:10000,end_ms:20000,reason:'buffers_stalled'};
+ const payload={...envelope,transcript:{...envelope.transcript,capture_gaps:[gap]}};
+ assert.deepEqual(validateEnvelope(payload).transcript.capture_gaps,[gap]);
+ for(const invalid of [{...gap,file:'/private/mic.caf'},{...gap,source:'unknown'}, {...gap,end_ms:1}, {...gap,reason:'invented'}, {...gap,audio:'blob'}]){
+  assert.throws(()=>validateEnvelope({...payload,transcript:{...payload.transcript,capture_gaps:[invalid]}}),/capture gap/);
+ }
+});
+
+test('Gateway errors have a machine-readable permanent validation outcome',async()=>{
+ const req={method:'POST',headers:{'content-type':'application/json'},async *[Symbol.asyncIterator](){yield Buffer.from('{"audio":"forbidden"}');}};
+ const response={setHeader(){},writeHead(code){this.code=code;},end(body){this.body=JSON.parse(body);}};
+ await gatewayHandler({})(req,response);
+ assert.equal(response.code,422);assert.equal(response.body.code,'invalid_payload');
+ assert.equal(response.body.retryable,false);assert.equal(response.body.completionAttempted,false);
+});
+
+test('unsupported requests have structured outcomes and redacted correlation events',async()=>{
+ for(const [method,contentType,status,code] of [['PUT','application/json',405,'method_not_allowed'],['POST','audio/wav',415,'content_type_required']]){
+  const events=[];
+  const response={headers:{},setHeader(k,v){this.headers[k]=v;},writeHead(code){this.code=code;},end(body){this.body=JSON.parse(body);}};
+  await gatewayHandler({onFailure:e=>events.push(e)})({method,headers:{'content-type':contentType}},response);
+  assert.equal(response.code,status);assert.equal(response.body.code,code);
+  assert.equal(response.body.retryable,false);
+  assert.equal(events[0].requestId,response.headers['X-ClawMinutes-Request-ID']);
+ }
+});
+
+test('a failing diagnostic sink cannot reject a completed error response',async()=>{
+ const response={setHeader(){},writeHead(code){this.code=code;},end(body){this.body=JSON.parse(body);}};
+ assert.equal(await gatewayHandler({onFailure(){throw Error('diagnostic sink unavailable');}})({method:'PUT'},response),true);
+ assert.equal(response.code,405);
+ assert.equal(response.body.code,'method_not_allowed');
+});
+
+
+test('Gateway admits every uncertainty reason emitted by native incremental recovery',()=>{
+ for(const reason of ['boundary_context_unverified','capture_timing_uncertain','rotation_pending']){
+  const gap={source:'system',start_ms:1000,end_ms:2000,reason};
+  const payload={...envelope,transcript:{...envelope.transcript,capture_gaps:[gap]}};
+  assert.deepEqual(validateEnvelope(payload).transcript.capture_gaps,[gap]);
+ }
+});
+
+test('long recovered meetings preserve more than 32 uncertainty ranges',()=>{
+ const gaps=Array.from({length:40},(_,i)=>({source:i%2?'mic':'system',start_ms:i*1000,end_ms:i*1000+100,reason:'device_changed'}));
+ assert.deepEqual(validateEnvelope({...envelope,transcript:{...envelope.transcript,capture_gaps:gaps}}).transcript.capture_gaps,gaps);
+});
+
+
+test('expanded capture evidence remains bounded and closed at every range',()=>{
+ const gap={source:'mic',start_ms:1000,end_ms:2000,reason:'boundary_context_unverified'};
+ const withGaps=capture_gaps=>({...envelope,transcript:{...envelope.transcript,capture_gaps}});
+ assert.equal(validateEnvelope(withGaps(Array(maximumCaptureGaps).fill(gap))).transcript.capture_gaps.length,maximumCaptureGaps);
+ assert.throws(()=>validateEnvelope(withGaps(Array(maximumCaptureGaps+1).fill(gap))),/capture gaps/);
+ for(const invalid of [{...gap,audio:'blob'},{...gap,path:'/private/audio'}, {...gap,reason:'invented'}, {...gap,end_ms:NaN}, {...gap,start_ms:-1}, {...gap,end_ms:7*24*3600*1000+1}]){
+  assert.throws(()=>validateEnvelope(withGaps([invalid])),/capture gap/);
+ }
 });

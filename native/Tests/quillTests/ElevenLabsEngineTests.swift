@@ -113,6 +113,20 @@ final class ElevenLabsEngineTests: XCTestCase, @unchecked Sendable {
         XCTAssertNoThrow(try ElevenLabsEngine.checkStatus(200))
     }
 
+    func testRejectedCredentialsPauseUntilKeyRemedy() throws {
+        for status in [401, 403] {
+            XCTAssertThrowsError(try ElevenLabsEngine.checkStatus(status)) { error in
+                var state = MeetingPipelineState(recordingIdentity: "fixture", stage: .transcribing, updatedAt: 0)
+                state.transcription.count = 1
+                state.transcriptionFailed(error, at: 1)
+                XCTAssertEqual(state.transcription.lastError?.code, "speech_credentials_missing")
+                XCTAssertFalse(state.mayTranscribe(at: 1_000))
+                state.speechCredentialsInstalled(at: 1_001)
+                XCTAssertTrue(state.mayTranscribe(at: 1_001))
+            }
+        }
+    }
+
     func testRedirectIsRefused() {
         let delegate = ElevenLabsEngine.NoRedirects()
         let destination = URL(string: "https://unexpected.example/upload")!

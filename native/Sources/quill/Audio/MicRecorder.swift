@@ -28,18 +28,17 @@ final class MicRecorder: @unchecked Sendable {
     }
 
     private var engine = AVAudioEngine()
-    private var file: AVAudioFile?
+    private var configurationObserver: NSObjectProtocol?
+    private var preferRaw = false
+    private var generation = 0
+    private let writer = PCMChunkWriter()
     private var url: URL?
     private(set) var isRecording = false
     /// Wall-clock time of the first captured buffer — the track's true start,
     /// used to offset-align the two tracks' transcript timestamps.
-    private(set) var firstBufferAt: Date?
-    private let frameLock = NSLock()
-    private var framesWritten: Int64 = 0
-    var hasAudioFrames: Bool { frameLock.withLock { framesWritten > 0 } }
-    private func recorded(_ frames: AVAudioFrameCount) {
-        frameLock.withLock { framesWritten += Int64(frames) }
-    }
+    var progress: CaptureProgress { writer.progress }
+    var firstBufferAt: Date? { progress.snapshot.firstWrite }
+    var hasAudioFrames: Bool { progress.snapshot.frames > 0 }
 
     // Liveness check state (voice-processing path only). Written from the tap
     // callback, read on main when deciding to fall back.
@@ -51,10 +50,9 @@ final class MicRecorder: @unchecked Sendable {
     /// — PCM CAF needs no packet-table finalization, so a crash loses nothing written).
     func start(writingTo url: URL) throws {
         guard !isRecording else { return }
-        frameLock.withLock { framesWritten = 0 }
-        firstBufferAt = nil
+        generation += 1
         self.url = url
-        try attach(voiceProcessing: Config.micVoiceProcessing())
+        try attach(voiceProcessing: !preferRaw && Config.micVoiceProcessing())
         isRecording = true
     }
 
@@ -62,10 +60,15 @@ final class MicRecorder: @unchecked Sendable {
     func stop() {
         guard isRecording else { return }
         isRecording = false
+        generation += 1
+        removeConfigurationObserver()
         engine.stop()
         engine.inputNode.removeTap(onBus: 0)
-        file = nil
+        writer.stop()
     }
+
+    func prepareChunk(at url: URL) throws -> PCMChunkWriter.Prepared { try writer.prepare(next: url) }
+    func commitChunk(_ prepared: PCMChunkWriter.Prepared) throws -> CaptureProgress.Snapshot { try writer.commit(prepared) }
 
     // MARK: -
 
@@ -108,23 +111,8 @@ final class MicRecorder: @unchecked Sendable {
             throw RecorderError.formatUnsupported(inputFormat)
         }
 
-        let settings: [String: Any] = [
-            AVFormatIDKey: kAudioFormatLinearPCM,
-            AVLinearPCMBitDepthKey: 32,
-            AVLinearPCMIsFloatKey: true,
-            AVSampleRateKey: monoFormat.sampleRate,
-            AVNumberOfChannelsKey: 1,
-        ]
-        do {
-            file = try AVAudioFile(
-                forWriting: url!,
-                settings: settings,
-                commonFormat: monoFormat.commonFormat,
-                interleaved: monoFormat.isInterleaved
-            )
-        } catch {
-            throw RecorderError.fileCreationFailed(error)
-        }
+        do { try writer.start(writingTo: url!, format: monoFormat) }
+        catch { throw RecorderError.fileCreationFailed(error) }
 
         if voice {
             // Complete the duplex graph: VoiceProcessingIO must render to an
@@ -145,10 +133,16 @@ final class MicRecorder: @unchecked Sendable {
             try engine.start()
         } catch {
             input.removeTap(onBus: 0)
-            file = nil
+            writer.stop()
             throw RecorderError.engineStartFailed(error)
         }
 
+        // A route change is observed immediately and picked up by the next
+        // one-second health tick, instead of waiting for ten seconds of silence.
+        removeConfigurationObserver()
+        let epoch = progress.currentEpoch
+        configurationObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange,
+            object: engine, queue: nil) { [weak self] _ in self?.progress.deviceChanged(epoch: epoch) }
         let report = "mic: voiceProcessing=\(input.isVoiceProcessingEnabled) "
             + "input=\(input.outputFormat(forBus: 0)) tap=\(monoFormat)\n"
         FileHandle.standardError.write(Data(report.utf8))
@@ -161,9 +155,10 @@ final class MicRecorder: @unchecked Sendable {
     /// the only recovery is restarting raw.
     private func installVoiceTap(on input: AVAudioInputNode, format: AVAudioFormat) {
         let checkFrames = Int(format.sampleRate)
+        let generation = self.generation
+        let epoch = progress.currentEpoch
         input.installTap(onBus: 0, bufferSize: 4096, format: format) { [weak self] buffer, _ in
-            guard let self, let file = self.file else { return }
-            if self.firstBufferAt == nil { self.firstBufferAt = Date() }
+            guard let self else { return }
 
             if !self.livenessSettled {
                 let frames = Int(buffer.frameLength)
@@ -176,16 +171,19 @@ final class MicRecorder: @unchecked Sendable {
                 if self.livenessFrames >= checkFrames {
                     self.livenessSettled = true
                     if self.livenessPeak == 0 {
-                        DispatchQueue.main.async { self.fallBackToRaw() }
+                        DispatchQueue.main.async {
+                            guard self.generation == generation else { return }
+                            self.fallBackToRaw()
+                        }
                         return
                     }
                 }
             }
 
             do {
-                try file.write(from: buffer)
-                self.recorded(buffer.frameLength)
+                try self.writer.write(buffer, epoch: epoch)
             } catch {
+                self.progress.failed("write_failed")
                 FileHandle.standardError.write(Data("mic track write failed: \(error)\n".utf8))
             }
         }
@@ -201,45 +199,34 @@ final class MicRecorder: @unchecked Sendable {
         guard let converter = AVAudioConverter(from: inputFormat, to: monoFormat) else {
             throw RecorderError.formatUnsupported(inputFormat)
         }
+        let epoch = progress.currentEpoch
         input.installTap(onBus: 0, bufferSize: 4096, format: inputFormat) { [weak self] buffer, _ in
-            guard let self, let file = self.file else { return }
-            if self.firstBufferAt == nil { self.firstBufferAt = Date() }
+            guard let self else { return }
             guard let mono = AVAudioPCMBuffer(
                 pcmFormat: monoFormat,
                 frameCapacity: buffer.frameCapacity
             ) else { return }
             do {
                 try converter.convert(to: mono, from: buffer)
-                try file.write(from: mono)
-                self.recorded(mono.frameLength)
+                try self.writer.write(mono, epoch: epoch)
             } catch {
+                self.progress.failed("write_failed")
                 FileHandle.standardError.write(Data("mic track write failed: \(error)\n".utf8))
             }
         }
     }
 
-    /// The voice-processing route delivered a full second of digital silence:
-    /// tear the engine down and restart raw, discarding the silent prefix so
-    /// the track's timestamps start at real audio.
+    private func removeConfigurationObserver() {
+        if let configurationObserver { NotificationCenter.default.removeObserver(configurationObserver) }
+        configurationObserver = nil
+    }
+    deinit { removeConfigurationObserver() }
+
+    /// Request a raw segment through the session's normal recovery path. Even
+    /// the silent prefix is preserved; this recorder never deletes captured audio.
     private func fallBackToRaw() {
         guard isRecording else { return }
-        FileHandle.standardError.write(Data(
-            "warning: voice processing delivered silence — restarting mic raw\n".utf8
-        ))
-        engine.stop()
-        engine.inputNode.removeTap(onBus: 0)
-        file = nil
-        firstBufferAt = nil
-        if let url {
-            try? FileManager.default.removeItem(at: url)
-        }
-        do {
-            try attach(voiceProcessing: false)
-        } catch {
-            FileHandle.standardError.write(Data(
-                "mic raw fallback failed: \(error) — session continues without mic track\n".utf8
-            ))
-            file = nil
-        }
+        preferRaw = true
+        progress.failed("voice_processing_silent")
     }
 }

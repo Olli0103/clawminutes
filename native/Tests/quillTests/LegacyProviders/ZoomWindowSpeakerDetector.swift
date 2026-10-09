@@ -1,3 +1,4 @@
+@testable import quill
 import CoreGraphics
 import Foundation
 @preconcurrency import ScreenCaptureKit

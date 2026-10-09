@@ -9,16 +9,16 @@ import Foundation
 /// used because callback creation hangs on the tested macOS 27.2 machine.
 final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
     private var stream: SCStream?
-    private var file: AVAudioFile?
-    private var destination: URL?
+    private let writer = PCMChunkWriter()
     private let queue = DispatchQueue(label: "ai.openclaw.teams-transcribe.teams-audio")
-    private(set) var firstBufferAt: Date?
+    var progress: CaptureProgress { writer.progress }
+    var firstBufferAt: Date? { progress.snapshot.firstWrite }
     private(set) var isRecording = false
 
-    func start(writingTo url: URL) async throws {
+    func start(writingTo url: URL, allowFixture: Bool = true) async throws {
         let content = try await SCShareableContent.excludingDesktopWindows(true, onScreenWindowsOnly: false)
         guard let display = content.displays.first else { throw TranscriptionFailure("No display available for Teams audio capture. Recording remains off.") }
-        let fixture = ProcessInfo.processInfo.environment["OPENCLAW_TEAMS_CAPTURE_FIXTURE"] == "1"
+        let fixture = allowFixture && ProcessInfo.processInfo.environment["OPENCLAW_TEAMS_CAPTURE_FIXTURE"] == "1"
         let filter: SCContentFilter
         if fixture {
             let own = content.applications.filter { $0.processID == ProcessInfo.processInfo.processIdentifier }
@@ -38,14 +38,16 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
         config.height = 2
         config.minimumFrameInterval = CMTime(seconds: 1, preferredTimescale: 1)
         config.queueDepth = 3
-        destination = url
-        firstBufferAt = nil
+        try writer.start(writingTo: url)
         let capture = SCStream(filter: filter, configuration: config, delegate: self)
         try capture.addStreamOutput(self, type: .audio, sampleHandlerQueue: queue)
         stream = capture
         do { try await capture.startCapture(); isRecording = true }
-        catch { stream = nil; destination = nil; throw error }
+        catch { stream = nil; writer.stop(); throw error }
     }
+
+    func prepareChunk(at url: URL) throws -> PCMChunkWriter.Prepared { try writer.prepare(next: url) }
+    func commitChunk(_ prepared: PCMChunkWriter.Prepared) throws -> CaptureProgress.Snapshot { try writer.commit(prepared) }
 
     func stopAsync() async {
         if let stream { try? await stream.stopCapture() }
@@ -57,15 +59,17 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
         finish()
     }
     private func finish() {
-        queue.sync { file = nil; destination = nil }
+        queue.sync { writer.stop() }
         stream = nil
         isRecording = false
     }
     func stream(_ stream: SCStream, didStopWithError error: Error) {
+        guard self.stream === stream else { return }
+        progress.failed("stream_stopped")
         FileHandle.standardError.write(Data("Teams audio capture stopped: \(error.localizedDescription)\n".utf8))
     }
     func stream(_ stream: SCStream, didOutputSampleBuffer sampleBuffer: CMSampleBuffer, of outputType: SCStreamOutputType) {
-        guard outputType == .audio, CMSampleBufferDataIsReady(sampleBuffer), let destination,
+        guard self.stream === stream, outputType == .audio, CMSampleBufferDataIsReady(sampleBuffer),
               let description = CMSampleBufferGetFormatDescription(sampleBuffer) else { return }
         let format = AVAudioFormat(cmAudioFormatDescription: description)
         let buffers = AudioBufferList.allocate(maximumBuffers: 2)
@@ -76,15 +80,12 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
             blockBufferAllocator: kCFAllocatorDefault, blockBufferMemoryAllocator: kCFAllocatorDefault,
             flags: UInt32(kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment), blockBufferOut: &retained)
         guard status == noErr, let pcm = AVAudioPCMBuffer(pcmFormat: format, bufferListNoCopy: buffers.unsafePointer, deallocator: nil), pcm.frameLength > 0 else { return }
-        if firstBufferAt == nil { firstBufferAt = Date() }
         do {
-            if file == nil {
-                file = try AVAudioFile(forWriting: destination, settings: [AVFormatIDKey: kAudioFormatLinearPCM,
-                    AVLinearPCMBitDepthKey: 32, AVLinearPCMIsFloatKey: true, AVSampleRateKey: format.sampleRate,
-                    AVNumberOfChannelsKey: format.channelCount], commonFormat: format.commonFormat, interleaved: format.isInterleaved)
-            }
-            try file?.write(from: pcm)
+            try writer.write(pcm)
             withExtendedLifetime(retained) {}
-        } catch { FileHandle.standardError.write(Data("Teams audio write failed: \(error.localizedDescription)\n".utf8)) }
+        } catch {
+            progress.failed("write_failed")
+            FileHandle.standardError.write(Data("Teams audio write failed: \(error.localizedDescription)\n".utf8))
+        }
     }
 }

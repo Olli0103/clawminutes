@@ -14,31 +14,40 @@ final class MeetingAssistant {
     private var samplingSpeakers = false
     private var tracking = SpeakerTrackingState()
     private var recordingGeneration = 0
+    private var stopAction = RecordingActionToken()
+    private var countdownAnnounced = false
+    func keepRecording(notificationToken: String?) {
+        guard policy.recording, stopAction.accepts(notificationToken) else { return }
+        keepRecording()
+    }
     private var recordingSpeakerMeetingID: String?
     private var scanning = false
     private let recordingNotification: (String, String) -> Void
     private var automaticStart: DetectedMeeting?
+    private var consentPromptInProgress = false
+    private var consentPanel: MeetingConsentPanel?
     private var enabled = Config.meetingDetection()
     private var lastStatus: String?
-    private var consent = ConsentPromptState(prompted: Set(UserDefaults.standard.stringArray(forKey: "teamsPromptedMeetingIDs") ?? []))
-    private var needsZoomScreenPermission = false
+    private var consent = ConsentPromptState(saved: UserDefaults.standard.data(forKey: "teamsPromptedCallsV2"))
 
-    init(recordingNotification: @escaping (String, String) -> Void = notifyUser) {
+    init(recordingNotification: @escaping (String, String) -> Void = { notifyUser(title: $0, body: $1) }) {
         self.recordingNotification = recordingNotification
     }
 
     func start() {
         _ = policy.setAutomationEnabled(enabled)
-        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+        timer = HousekeepingTimer.schedule(every: 2) { [weak self] _ in
             MainActor.assumeIsolated { self?.poll() }
         }
         poll()
-        speakerTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+        speakerTimer = HousekeepingTimer.schedule(every: 0.25) { [weak self] _ in
             MainActor.assumeIsolated { self?.sampleSpeakers() }
         }
     }
 
     func shutdown() {
+        consentPanel?.dismiss(start: false)
+        consentPanel = nil
         timer?.invalidate()
         timer = nil
         speakerTimer?.invalidate()
@@ -62,13 +71,6 @@ final class MeetingAssistant {
             poll()
             return
         }
-        if needsZoomScreenPermission {
-            _ = CGRequestScreenCaptureAccess()
-            if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture") {
-                NSWorkspace.shared.open(url)
-            }
-            return
-        }
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
         _ = AXIsProcessTrustedWithOptions(options as CFDictionary)
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
@@ -77,7 +79,12 @@ final class MeetingAssistant {
     }
 
     func recordingStarted() {
+        stopAction.begin(); countdownAnnounced = false
         recordingContextID = contextForStart?.meeting_id
+        if let id = recordingContextID {
+            _ = consent.observe(availableMeetings[id] ?? DetectedMeeting(id: id, app: "Teams", service: "Microsoft Teams"))
+            persistConsent()
+        }
         recordingGeneration += 1
         policy.recordingStarted(for: automaticStart, automatic: automaticStart != nil)
         recordingSpeakerMeetingID = tracking.recordingMeetingID(preferred: automaticStart?.id, previous: nil)
@@ -88,6 +95,7 @@ final class MeetingAssistant {
     }
 
     func recordingStopped() {
+        stopAction.finish(); countdownAnnounced = false
         recordingGeneration += 1
         recordingContextID = nil
         policy.recordingStopped()
@@ -104,6 +112,7 @@ final class MeetingAssistant {
     var onMeetingTitle: ((String?) -> Void)?
     private var contexts: [String: MeetingContext] = [:]
     private var availableMeetingIDs: [String] = []
+    private var availableMeetings: [String: DetectedMeeting] = [:]
     private var recordingContextID: String?
     var contextForStart: MeetingContext? {
         let candidate = automaticStart.flatMap { contexts[$0.id] }
@@ -129,13 +138,12 @@ final class MeetingAssistant {
         let generation = recordingGeneration
         Task { [weak self, scanner] in
             let captureSpeakers = Config.speakerDetection()
-            let scan = await scanner.scan(apps: apps, captureSpeakers: captureSpeakers,
-                                          enableCaptions: self?.policy.recording == true && captureSpeakers && Config.autoMeetingCaptions(),
-                                          captionMeetingID: self?.recordingSpeakerMeetingID)
+            let scan = await scanner.scan(apps: apps, captureSpeakers: captureSpeakers)
             guard let self else { return }
             self.scanning = false
             guard self.enabled else { return }
             for (id, context) in scan.contexts { self.contexts[id] = context }
+            self.availableMeetings = scan.observations.compactMapValues { if case .present(let meeting) = $0 { return meeting }; return nil }
             self.availableMeetingIDs = scan.observations.compactMap { id, value in if case .present = value { return id }; return nil }.sorted()
             if self.policy.recording, self.recordingContextID == nil, self.availableMeetingIDs.count == 1 { self.recordingContextID = self.availableMeetingIDs[0] }
             if self.policy.recording, let id = self.recordingContextID, let context = scan.contexts[id] { self.onMeetingContext?(context) }
@@ -144,25 +152,35 @@ final class MeetingAssistant {
             self.tracking.update(scan.observations, at: scan.observedAt)
             for roster in scan.rosters { self.tracking.observe(roster) }
             let previousMeeting = self.recordingSpeakerMeetingID
-            for (id, observation) in scan.observations where observation == .ended { self.consent.ended(id); UserDefaults.standard.set(Array(self.consent.prompted), forKey: "teamsPromptedMeetingIDs") }
+            let promptedBefore = self.consent.prompted
+            let removedSavedConsent = self.consent.update(scan.observations, now: ProcessInfo.processInfo.systemUptime,
+                                promptInProgress: self.consentPromptInProgress,
+                                confirmedEndedCalls: scan.confirmedEndedConsentCalls)
+            if self.policy.recording {
+                for observation in scan.observations.values {
+                    if case .present(let meeting) = observation { _ = self.consent.observe(meeting) }
+                }
+            }
+            if self.consent.prompted != promptedBefore || removedSavedConsent {
+                self.persistConsent()
+            }
             let action = self.policy.update(scan.observations, now: ProcessInfo.processInfo.systemUptime)
             self.recordingSpeakerMeetingID = self.policy.recording
                 ? self.tracking.recordingMeetingID(preferred: self.policy.recordingMeeting?.id, previous: previousMeeting) : nil
             if self.policy.recording, let id = self.recordingSpeakerMeetingID, id != previousMeeting,
                let roster = self.tracking.seed(meetingID: id, at: Date().timeIntervalSince1970) { self.onSpeakers?(roster) }
-            self.needsZoomScreenPermission = scan.needsZoomScreenPermission && self.policy.recordingMeeting?.service == "Zoom"
             if generation == self.recordingGeneration, let id = self.recordingSpeakerMeetingID, let names = scan.speakers[id] {
                 self.onSpeakers?(SpeakerObservation(observed_at: scan.speakerObservedAt[id] ?? scan.observedAt,
                                                     meeting_id: id, names: names))
             }
-            for caption in scan.captions + scan.rosters where generation == self.recordingGeneration && caption.meeting_id == self.recordingSpeakerMeetingID {
+            for caption in scan.rosters where generation == self.recordingGeneration && caption.meeting_id == self.recordingSpeakerMeetingID {
                 self.onSpeakers?(caption)
             }
             if scan.needsPermission {
                 self.report("Meeting detection needs Accessibility permission", true)
                 return
             } else if let meeting = self.policy.recordingMeeting {
-                self.report(scan.speakerNameWarnings[meeting.id] ?? "Watching \(meeting.service) in \(meeting.app)", true)
+                self.report("Watching \(meeting.service) in \(meeting.app)", true)
             } else if self.policy.recording {
                 self.report(self.policy.automaticStop ? "No meeting linked; stop recording manually" : "Automatic stop off for this recording", true)
             } else {
@@ -170,17 +188,17 @@ final class MeetingAssistant {
             }
             switch action {
             case .start(let meeting):
-                guard self.consent.observe(meeting) else { break }
-                UserDefaults.standard.set(Array(self.consent.prompted), forKey: "teamsPromptedMeetingIDs")
+                guard !self.consentPromptInProgress else { break }
+                let shouldPrompt = self.consent.observe(meeting)
+                self.persistConsent()
                 self.policy.startFailed(for: meeting)
-                NSApp.activate(ignoringOtherApps: true)
-                let alert = MeetingConsentPrompt.make(title: self.contexts[meeting.id]?.title)
-                if alert.runModal() == .alertFirstButtonReturn {
-                    self.automaticStart = meeting
-                    _ = await self.onStart?()
-                    self.automaticStart = nil
-                }
+                if shouldPrompt { await self.requestConsent(for: meeting) }
             case .countdown(let seconds):
+                if !self.countdownAnnounced {
+                    self.countdownAnnounced = true
+                    notifyUser(title: "Call ended?", body: "Stopping in \(seconds) seconds. Choose Keep recording to continue.",
+                        category: .callEnd, context: ["recordingToken": self.stopAction.value ?? ""])
+                }
                 self.report("Meeting ended; stopping automatically in \(seconds)s", true)
             case .stop:
                 self.onStop?()
@@ -189,6 +207,25 @@ final class MeetingAssistant {
             case .none:
                 break
             }
+        }
+    }
+
+    private func persistConsent() {
+        if let data = try? consent.savedData() {
+            UserDefaults.standard.set(data, forKey: "teamsPromptedCallsV2")
+        }
+    }
+
+    private func requestConsent(for meeting: DetectedMeeting) async {
+        consentPromptInProgress = true
+        defer { consentPromptInProgress = false }
+        let panel = MeetingConsentPanel(title: contexts[meeting.id]?.title)
+        consentPanel = panel
+        defer { consentPanel = nil }
+        if await panel.present(), enabled {
+            automaticStart = meeting
+            _ = await onStart?()
+            automaticStart = nil
         }
     }
 

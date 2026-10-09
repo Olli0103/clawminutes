@@ -22,6 +22,14 @@ final class MeetingNotesTests: XCTestCase {
         XCTAssertNil(TeamsMeetingTitle.clean("Meeting - Microsoft Teams"))
         XCTAssertNil(TeamsMeetingTitle.clean("Title\nInjected heading"))
     }
+    func testTeamsCompactViewLabelIsNotPartOfMeetingTitleOrFolder() {
+        XCTAssertEqual(TeamsMeetingTitle.clean("Meeting compact view | AI Standup"), "AI Standup")
+        XCTAssertEqual(TeamsMeetingTitle.clean("Meeting compact view | AI Standup | Microsoft Teams"), "AI Standup")
+        XCTAssertEqual(TeamsMeetingTitle.clean("Meeting compact view | Council | weekly | Example Org | alex@example.com"), "Council | weekly")
+        XCTAssertEqual(MeetingDocuments.component("Meeting compact view | AI Standup"), "AI-Standup")
+        XCTAssertNil(TeamsMeetingTitle.clean("Meeting compact view"))
+        XCTAssertEqual(TeamsMeetingTitle.clean("Discussion about Meeting compact view"), "Discussion about Meeting compact view")
+    }
     func testExportCannotEscapeRootAndPreservesEditsOnRetry() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -47,7 +55,7 @@ final class MeetingNotesTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let time = Date().timeIntervalSince1970
         let context = MeetingContext(meeting_id: "teams:fixture", title: "Portfolio sync", title_source: "teams_window", first_observed_at: time, last_observed_at: time)
-        let session = try RecordingSession(root: root, context: context)
+        let session = try RecordingSession(root: root, context: context, activityLockPath: root.appendingPathComponent("lifecycle.lock"))
         session.checkpoint(); session.stop()
         let json = try JSONSerialization.jsonObject(with: Data(contentsOf: session.dir.appendingPathComponent("meta.json"))) as! [String: Any]
         XCTAssertEqual((json["meeting_context"] as? [String: Any])?["title"] as? String, "Portfolio sync")
@@ -110,10 +118,48 @@ final class MeetingNotesTests: XCTestCase {
         let sessionID = "teams-" + String(repeating: id, count: 24)
         return ["sessionId": sessionID, "saved": true, "documents": ["title": title, "startedAt": "2026-10-02T10:00:00Z", "notesMarkdown": "notes", "transcriptMarkdown": "transcript", "metadata": ["sessionId": sessionID]]]
     }
+    func testRevisionExportPreservesEditedOriginalNotes() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let receipt = exportReceipt(id: "a", title: "Weekly sync")
+        let original = try MeetingDocuments.export(receipt: receipt, root: root, recording: root)
+        let edited = Data("User edited original notes".utf8)
+        try edited.write(to: original.appendingPathComponent("notes.md"))
+        let childReceipt = exportReceipt(id: "b", title: "Weekly sync · v2")
+        let child = try MeetingDocuments.export(receipt: childReceipt, root: root, recording: root)
+        XCTAssertNotEqual(child, original)
+        XCTAssertTrue(child.lastPathComponent.hasSuffix("Weekly-sync-v2"))
+        XCTAssertEqual(try Data(contentsOf: original.appendingPathComponent("notes.md")), edited)
+        XCTAssertEqual(try MeetingDocuments.export(receipt: childReceipt, root: root, recording: root), child)
+        XCTAssertEqual(try Data(contentsOf: original.appendingPathComponent("notes.md")), edited)
+    }
     func testTemplateSnapshotAndValidation() throws {
         var template = NoteTemplate.defaults[0]; try template.validate()
         let snapshot = template.json; template.sections[0].title = "Changed"
         XCTAssertEqual((snapshot["sections"] as? [[String: String]])?[0]["title"], "Summary")
         template.sections = []; XCTAssertThrowsError(try template.validate())
+    }
+}
+
+
+extension MeetingNotesTests {
+    func testExplicitMigrationCopiesEditedNotesAndKeepsOriginal() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let recording = root.appendingPathComponent("raw")
+        try FileManager.default.createDirectory(at: recording, withIntermediateDirectories: true)
+        var receipt = exportReceipt(id: "a", title: "Meeting")
+        receipt["saved"] = true
+        try JSONSerialization.data(withJSONObject: receipt).write(to: recording.appendingPathComponent("archive-receipt.json"))
+        try Data(#"{"status":"stopped","ended":"2026-10-02T12:00:00Z"}"#.utf8).write(to: recording.appendingPathComponent("meta.json"))
+        let oldRoot = root.appendingPathComponent("old"), newRoot = root.appendingPathComponent("new")
+        let old = try MeetingDocuments.export(receipt: receipt, root: oldRoot, recording: recording)
+        try MeetingDocuments.rememberExport(old, root: oldRoot, recording: recording, sessionID: receipt["sessionId"] as! String)
+        try Data("User edits".utf8).write(to: old.appendingPathComponent("notes.md"))
+        let copied = try MeetingDocuments.migrateExport(recording: recording, to: newRoot)
+        XCTAssertEqual(try Data(contentsOf: copied.appendingPathComponent("notes.md")), Data("User edits".utf8))
+        XCTAssertEqual(try Data(contentsOf: old.appendingPathComponent("notes.md")), Data("User edits".utf8))
+        XCTAssertEqual(try MeetingDocuments.exportRoot(recording: recording, fallbackRoot: oldRoot).path, newRoot.path)
+        XCTAssertEqual(try MeetingDocuments.migrateExport(recording: recording, to: newRoot), copied)
     }
 }
