@@ -182,3 +182,16 @@ Full native suite: 319 tests, 307 passed and 12 opt-in tests skipped. Negative s
 ## Review candidate v2 SDK admission
 
 The earlier exact-version and bounded-range reports above describe previous candidates. The current candidate keeps the minimum plugin API and requires the v2 isolated storage/reader proof rather than an upper SDK version bound. Local verification passes 61 JavaScript tests, the production archive smoke and 489 native tests with 12 opt-in skips. The future-version case uses changed package metadata and the actual test SDK store; it is not an actual 2026.9.9 release test. The probe also exposed limitations of the real SDK readOnly option, so receipt verification keeps the existing-database guard and exposes only the exercised readers. See [current proof and limitations](gateway-capabilities.md) and [dated review evidence](review-plan.md). No installed lifecycle or provider action occurred.
+
+
+## Version 0.2.17 recovery and storage UI, 9 October 2026
+
+Code checkpoint `4ba243f` replaces generic attention labels with specific instructions and one recommended action. Regression checks preserve offline local export, read-only receipt verification, unknown paid budgets and retry limits. Verified historical audio is selected automatically; cleanup still verifies again under its existing locks and asks for one explicit permanent-deletion confirmation. Saved capture gaps direct the user to review the transcript and keep the audio.
+
+The full isolated native suite passed: **526 tests, 514 passed, 12 opt-in checks skipped**, with no failures. All **54 Python helper/signing/packaging tests** passed. A release build completed with Apple Swift 6.4 from the full Xcode toolchain. No Gateway production code changed for this UI update.
+
+An isolated native window with synthetic meetings and a temporary home was inspected in light and dark mode: meeting recovery, menu, storage settings and a blocked cleanup row rendered visibly. Offscreen snapshots did not reliably capture glass layers and are not visual acceptance evidence. Keyboard/VoiceOver, Reduce Transparency and installed confirmation on real recordings remain `needs_evidence`.
+
+The local-signed 0.2.17 helper passed deep/strict signature verification, ZIP integrity and extracted signature verification. Its designated requirement matches the installed helper. ZIP SHA-256: `46e192aff15ea9ee6035dccf3ed215696ea5dad1f826bb10d2a629db32018161`. The separately staged npm archive contains **261 entries, 33,685,775 bytes**, SHA-256 `5ab54170ceb42fcfff9c3ade013e857e21d27fd9711c489a26d6fa06b1f64dda`. Source membership and required helper/ZIP entries were checked; private recordings, signing material, logs and generated evidence were excluded. These are local package checks, not notarization or public binary-release evidence.
+
+No helper or Gateway was installed or restarted, no real recording was started, and no existing audio was deleted during this UI source/package verification. Local activation requires the user's explicit restart approval. See [recovery controls](recovery-ui.md).

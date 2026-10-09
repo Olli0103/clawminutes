@@ -14,6 +14,10 @@ The local helper was updated to 0.2.16 with the existing signing identity after 
 
 Twenty ready-state samples over 380 seconds included the actual AI test. One sample during that request reported a 3.89-second event-loop delay and degraded state; later sampled delays were roughly 22–30 ms. Observed process RSS ranged from 2.01 to 2.36 GiB. No fresh JavaScript heap samples were returned. Correlation with the request does not identify the blocking function or plugin owner. Performance and ownership remain open; this activation does not close that investigation. Private runtime evidence, credentials and signing material remain outside Git.
 
+## Recovery UI candidate, 9 October 2026
+
+Version 0.2.17 at code checkpoint `4ba243f` adds plain per-meeting instructions, one recommended recovery action, native glass controls and **Delete old audio…** with automatic verified selection and one deletion confirmation. The full native suite passed 514 checks with 12 opt-in checks skipped; all 54 Python checks passed. The release helper and npm archive were staged and verified with the existing local signing requirement. A separate synthetic native preview was inspected in light and dark appearances. This candidate has not been installed; the approved activation above still describes 0.2.16. No existing audio was deleted and no Gateway source changed. [UI details](recovery-ui.md) and [package evidence](verification.md#version-0217-recovery-and-storage-ui-9-october-2026) retain the scope and remaining acceptance checks.
+
 ## Defects R1–R14
 
 “Implemented” below means source plus isolated regression evidence, not live acceptance. “Partial” identifies a remaining source or evidence gap.
