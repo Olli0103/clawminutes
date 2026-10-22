@@ -126,6 +126,7 @@ enum DesignPreview {
 private struct MatrixBrowser: View {
     @State private var surface = "Popover"
     @State private var systemPopover = false
+    @State private var cleanupSheet = false
     @State private var name = "call-same-cause"
     @State private var appearance = "dark"
     @State private var reduceMotion = false
@@ -162,7 +163,12 @@ private struct MatrixBrowser: View {
                             .environment(\.cmPreviewReduceMotion, reduceMotion)
                     }
                 Button("Settings window") { DesignPreview.controller(for: name).showSettings() }
+                Button("Cleanup sheet") { cleanupSheet = true }
             }
+        }
+        .sheet(isPresented: $cleanupSheet) {
+            CleanupPreview(hasItems: name == "cleanup-items", onClose: { cleanupSheet = false })
+                .frame(width: 680, height: name == "cleanup-items" ? 480 : 340)
         }
         .onChange(of: appearance, initial: true) { _, value in
             NSApp.appearance = NSAppearance(named: value.contains("dark") ? .darkAqua : .aqua)
@@ -200,11 +206,10 @@ private struct MatrixScene: View {
 
 private struct CleanupPreview: View {
     let hasItems: Bool
-    @Environment(\.cmReviewRendering) private var reviewRendering
-    @State private var selected = Set<String>()
-    init(hasItems: Bool) {
+    let onClose: () -> Void
+    init(hasItems: Bool, onClose: @escaping () -> Void = {}) {
         self.hasItems = hasItems
-        _selected = State(initialValue: hasItems ? ["/synthetic/Weekly planning"] : [])
+        self.onClose = onClose
     }
     private var previewRows: [AudioCleanup.Row] {
         // Display-only synthetic plan. Preview buttons never call deletion.
@@ -214,7 +219,7 @@ private struct CleanupPreview: View {
                 .init(meeting: DesignPreview.meeting("Portfolio planning", cause: .unconfirmed), plan: nil, issue: "Synthetic unconfirmed receipt")]
     }
     var body: some View {
-        AudioCleanupView(controller: DesignPreview.controller(for: "idle"), previewRows: hasItems ? previewRows : [])
+        AudioCleanupView(controller: DesignPreview.controller(for: "idle"), previewRows: hasItems ? previewRows : [], onClose: onClose)
             .frame(width: 680)
     }
 

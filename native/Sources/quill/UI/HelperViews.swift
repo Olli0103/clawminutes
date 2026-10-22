@@ -313,7 +313,12 @@ struct HelperSettings: View {
                                 Text("Ask once. Dismissing keeps recording off.").font(.caption).foregroundStyle(CMTheme.secondary)
                             }
                         }.accessibilityLabel("Detect Teams calls").accessibilityHint("Ask once. Dismissing keeps recording off.")
-                        Toggle("Launch at login", isOn: Binding(get: { controller.loginStatus.enabled == true }, set: controller.setLaunchAtLogin))
+                        Toggle(isOn: Binding(get: { controller.loginStatus.enabled == true }, set: controller.setLaunchAtLogin)) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Launch at login")
+                                Text(controller.loginStatus.detail).font(.caption).foregroundStyle(CMTheme.secondary)
+                            }
+                        }.accessibilityLabel("Launch at login").accessibilityHint(controller.loginStatus.detail)
                             .disabled(controller.loginStatus.enabled == nil)
                         if let issue = controller.loginSettingError {
                             Text(issue).font(.caption).foregroundStyle(CMTheme.secondary)
@@ -321,12 +326,7 @@ struct HelperSettings: View {
                         if controller.loginStatus.enabled == nil || controller.loginSettingError != nil {
                             Button("Check login setting again", action: controller.refreshLoginSetting)
                         }
-                        HStack {
-                            Button("Setup checklist…", action: controller.showSetup)
-                            Button("Recording controls", action: controller.openMenu)
-                        }
-                    } footer: {
-                        Text(controller.loginStatus.detail).cmFormFootnote()
+                        Button("Setup checklist…", action: controller.showSetup)
                     }
                 case .recording:
                     Section {
@@ -447,6 +447,7 @@ struct HelperSettings: View {
                     }
                 case .advanced:
                     Section {
+                        Button("Recording controls", action: controller.openMenu)
                         Text("Speech model: " + controller.modelTitle).textSelection(.enabled)
                         Text("Recognition: " + (controller.displayedBackend == "parakeet" ? "this Mac" : "ElevenLabs cloud"))
                         Button("Open recording files and logs", action: controller.openRecordings)

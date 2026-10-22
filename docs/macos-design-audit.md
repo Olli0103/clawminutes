@@ -21,3 +21,5 @@ ImageRenderer layouts substitute AppKit-backed controls and cannot prove glass r
 Remaining acceptance includes installed interaction, VoiceOver, macOS 15 fallback, system Reduce Transparency/Reduce Motion, busy-background contrast and active/inactive states. The existing supplied raster app icon is preserved; an Icon Composer release asset is separate release work. No installed helper or Gateway was replaced or restarted for this review.
 
 A second Claude Desktop pass reviewed the revised layouts and requested cause-specific recovery copy, a native recovery-action bezel, and cleanup previews of the real view. Those changes are included. Native Settings inspection then caught clipped form labels; the final native JPEG documents the correction. Claude's unread base64-image inference is not visual evidence and is excluded from acceptance.
+
+The final Claude pass identified cleanup alignment and ambiguous login-footer placement. Both were corrected. Native sheet captures now show the real cleanup table and controls, and the empty sheet. Selection and Cancel were exercised only against debug fixtures. Installed acceptance remains open.

@@ -24,8 +24,8 @@ struct AudioCleanupView: View {
     }
     #if DEBUG
     private var fixtureRows: [AudioCleanup.Row]?
-    init(controller: MenuBarController, previewRows: [AudioCleanup.Row]) {
-        self.init(controller: controller, meetings: [])
+    init(controller: MenuBarController, previewRows: [AudioCleanup.Row], onClose: @escaping () -> Void = {}) {
+        self.init(controller: controller, meetings: [], onClose: onClose)
         fixtureRows = previewRows
         _rows = State(initialValue: previewRows)
         _selected = State(initialValue: AudioCleanup.defaultSelection(previewRows))
@@ -52,12 +52,14 @@ struct AudioCleanupView: View {
             }
             if rows.isEmpty && !reviewing {
                 ContentUnavailableView("No old audio to delete", systemImage: "externaldrive.badge.checkmark", description: Text("Your notes and transcripts are kept."))
+                    .frame(maxWidth: .infinity)
             } else {
                 CleanupTable(rows: rows, selected: $selected, completed: completed, failed: failed, deleting: deleting,
                              review: controller.showMeetingDetails)
             }
             if let reviewError { Text(reviewError).font(.callout).foregroundStyle(.primary) }
 
+            Spacer(minLength: 0)
             HStack {
                 if deleting { ProgressView().controlSize(.small); Text("Verifying and deleting…").font(.caption) }
                 if !deleting && !reviewing && !rows.isEmpty {
@@ -75,7 +77,7 @@ struct AudioCleanupView: View {
                 }
 
             }.controlSize(.regular)
-        }.padding(20).frame(minWidth: 650, minHeight: 480).helperPanel()
+        }.padding(20).frame(minWidth: 650, minHeight: rows.isEmpty && !reviewing ? 300 : 480, alignment: .topLeading).helperPanel()
             .alert("Delete \(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)) of recording audio?", isPresented: $confirmationPresented) {
                 Button("Cancel", role: .cancel) {}
                 Button("Delete audio", role: .destructive, action: delete)
