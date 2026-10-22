@@ -8,7 +8,7 @@ import UniformTypeIdentifiers
     @State private var message = ""
     private var index: Int? { drafts.firstIndex { $0.id == selected } }
     var body: some View {
-        HStack(spacing: 0) {
+        NavigationSplitView {
             VStack(alignment: .leading) {
                 Button("New template", systemImage: "plus") {
                     let item = NoteTemplate(id: UUID().uuidString, name: "New template", context: "", sections: [.init(title: "Summary", instructions: "Main points and outcomes.")])
@@ -23,8 +23,8 @@ import UniformTypeIdentifiers
                     Button("Duplicate") { if let i = index { var copy = drafts[i]; copy.id = UUID().uuidString; copy.name += " copy"; drafts.append(copy); selected = copy.id; message = "Unsaved changes" } }
                     Button("Delete") { if let i = index, drafts.count > 1 { drafts.remove(at: i); selected = drafts[0].id; message = "Unsaved changes" } }.disabled(drafts.count <= 1)
                 }.padding()
-            }.frame(width: 210)
-            Divider()
+            }.navigationSplitViewColumnWidth(210)
+        } detail: {
             if let i = index {
                 VStack(alignment: .leading, spacing: 12) {
                     TextField("Template name", text: $drafts[i].name).font(.title2).textFieldStyle(.roundedBorder)
@@ -37,26 +37,26 @@ import UniformTypeIdentifiers
                                 VStack(alignment: .leading, spacing: 7) {
                                     HStack {
                                         TextField("Section heading", text: $drafts[i].sections[section].title).fontWeight(.semibold)
-                                        Button { drafts[i].sections.swapAt(section, section-1) } label: { Image(systemName: "arrow.up") }.disabled(section == 0).help("Move section up")
-                                        Button { drafts[i].sections.swapAt(section, section+1) } label: { Image(systemName: "arrow.down") }.disabled(section == drafts[i].sections.count-1).help("Move section down")
-                                        Button { drafts[i].sections.remove(at: section) } label: { Image(systemName: "minus.circle") }.disabled(drafts[i].sections.count <= 1).help("Remove section")
+                                        Button { drafts[i].sections.swapAt(section, section-1) } label: { Image(systemName: "arrow.up") }.disabled(section == 0).help("Move section up").accessibilityLabel("Move section up")
+                                        Button { drafts[i].sections.swapAt(section, section+1) } label: { Image(systemName: "arrow.down") }.disabled(section == drafts[i].sections.count-1).help("Move section down").accessibilityLabel("Move section down")
+                                        Button { drafts[i].sections.remove(at: section) } label: { Image(systemName: "minus.circle") }.disabled(drafts[i].sections.count <= 1).help("Remove section").accessibilityLabel("Remove section")
                                     }
                                     TextEditor(text: $drafts[i].sections[section].instructions).frame(minHeight: 55)
-                                }.padding(10).background(.quaternary.opacity(0.3), in: RoundedRectangle(cornerRadius: 8))
+                                }.padding(.vertical, 10)
                             }
                             Button("Add section", systemImage: "plus") { drafts[i].sections.append(.init(title: "New section", instructions: "")) }.disabled(drafts[i].sections.count >= 30)
                         }
                     }
-                    Text("Templates guide AI notes. Generated actions and people evidence are review candidates. No tasks or people files are changed.").font(.caption).foregroundStyle(.secondary)
+                    Text("Templates guide AI notes. Generated actions and people evidence are review candidates. No tasks or people files are changed.").font(.caption).foregroundStyle(.primary)
                     HStack {
-                        Text(message).font(.caption).foregroundStyle(.secondary)
+                        Text(message).font(.caption).foregroundStyle(.primary)
                         Spacer()
                         Button("Save and use template") { if controller.saveTemplates(drafts, selected: selected) { message = "Saved. This template will be used for the next recording." } }.buttonStyle(.borderedProminent)
                     }
                 }.padding(20)
             }
         }.frame(minWidth: 740, minHeight: 600)
-            .foregroundStyle(.primary).background(Color(nsColor: .windowBackgroundColor))
+            .foregroundStyle(.primary).background(Color(nsColor: .windowBackgroundColor)).tint(CMTheme.accent)
             .onChange(of: drafts) { _, _ in message = "Unsaved changes" }
     }
     private func importTemplate() {

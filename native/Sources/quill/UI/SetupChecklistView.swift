@@ -9,14 +9,14 @@ import SwiftUI
             VStack(alignment: .leading, spacing: 20) {
                 Text("Before your first meeting").font(.title2.weight(.semibold))
                 Text("ClawMinutes records only after you choose Start. Work through these checks now, or return from Settings later.")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.primary)
                 GroupBox {
                     VStack(alignment: .leading, spacing: 12) {
                         row("Microphone", ready: controller.microphoneGranted, action: "Allow microphone…", run: controller.allowMicrophone)
                         row("Teams audio", ready: controller.systemAudioGranted, action: "Allow Teams audio…", run: controller.allowSystemAudio)
                         row("Detect Teams calls", ready: controller.accessibilityGranted, action: "Allow detection…", run: controller.allowDetection)
                         Text("Detection is optional. Without it, start and stop manually. macOS names Teams audio access Screen & System Audio Recording. No screen video is saved.")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption).foregroundStyle(.primary)
                     }.padding(8)
                 } label: { Label("1. Allow access", systemImage: "lock.shield") }
                 GroupBox {
@@ -33,9 +33,9 @@ import SwiftUI
                 GroupBox {
                     VStack(alignment: .leading, spacing: 12) {
                         row("Save text and create notes", ready: controller.gatewayReady, action: "Connect Gateway…", run: controller.connectGateway)
-                        Text(controller.gatewayStatus).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                        Text(controller.gatewayStatus).font(.caption).foregroundStyle(.primary).textSelection(.enabled)
                         Text("You can record before connecting. Finished text waits on this Mac. AI notes use your Gateway’s model; audio never goes to the Gateway.")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption).foregroundStyle(.primary)
                     }.padding(8)
                 } label: { Label("3. Connect your Gateway", systemImage: "cloud") }
                 GroupBox {
@@ -44,7 +44,7 @@ import SwiftUI
                         if let phase = controller.captureCheckPhase {
                             switch phase {
                             case .starting: Label("Starting the audio check…", systemImage: "clock")
-                            case .recording(let remaining): Label("Recording check · \(remaining)s left", systemImage: "record.circle").foregroundStyle(.red)
+                            case .recording(let remaining): Label { Text("Recording check · \(remaining)s left").foregroundStyle(.primary) } icon: { Image(systemName: "record.circle").foregroundStyle(.red) }
                             case .stopping: Label("Stopping and discarding test audio…", systemImage: "clock")
                             }
                             Button("Cancel check", action: controller.cancelCaptureCheck)
@@ -54,23 +54,23 @@ import SwiftUI
                                 .disabled(!controller.captureCheckAllowed || controller.recording || controller.startingRecording
                                           || !controller.microphoneGranted || !controller.systemAudioGranted)
                             if controller.recording || controller.startingRecording { Text("Finish your meeting recording before checking audio.").font(.caption) }
-                            else if !controller.captureCheckAllowed { Text("Finishing startup recovery. The audio check will be available when it finishes.").font(.caption).foregroundStyle(.secondary) }
+                            else if !controller.captureCheckAllowed { Text("Finishing startup recovery. The audio check will be available when it finishes.").font(.caption).foregroundStyle(.primary) }
                             if let report = controller.captureCheckReport {
                                 if report.cancelled { Text("Check cancelled. No meeting was created.") }
                                 else if report.startFailed { Text("The check could not capture audio. Make sure Teams is open and both permissions are allowed, then try again.") }
                                 ForEach(report.tracks, id: \.source) { track in
                                     Label(track.title + ": " + track.detail, systemImage: track.state == .sound ? "checkmark.circle" : "exclamationmark.circle")
                                 }
-                                if report.audioRemoved { Text("Test audio discarded.").font(.caption).foregroundStyle(.secondary) }
+                                if report.audioRemoved { Text("Test audio discarded.").font(.caption).foregroundStyle(.primary) }
                                 else {
-                                    Text("Test audio could not be removed. Review the check folder; meeting recordings are untouched.").foregroundStyle(.orange)
+                                    Text("Test audio could not be removed. Review the check folder; meeting recordings are untouched.").foregroundStyle(.primary)
                                     Button("Show test files") { controller.openDocument(report.directory) }
                                 }
                             }
-                            if let error = controller.captureCheckError { Text(error).foregroundStyle(.orange) }
+                            if let error = controller.captureCheckError { Text(error).foregroundStyle(.primary) }
                         }
                         Text("Sound received proves a short audio path works. It does not verify a whole meeting, speaker names or transcription accuracy.")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption).foregroundStyle(.primary)
                     }.padding(8)
                 } label: { Label("4. Check your audio", systemImage: "mic") }
                 HStack {
@@ -79,11 +79,11 @@ import SwiftUI
                     Button("Open recording controls", action: controller.openMenu).disabled(controller.captureCheckBusy)
                 }
             }.padding(24)
-        }.frame(width: 610, height: 700).background(Color(nsColor: .windowBackgroundColor))
+        }.frame(width: 610, height: 700).background(Color(nsColor: .windowBackgroundColor)).tint(CMTheme.accent)
     }
     private func row(_ title: String, ready: Bool, action: String, run: @escaping () -> Void) -> some View {
         HStack {
-            Label(title, systemImage: ready ? "checkmark.circle.fill" : "circle").foregroundStyle(ready ? .green : .primary)
+            Label { Text(title).foregroundStyle(.primary) } icon: { Image(systemName: ready ? "checkmark.circle.fill" : "circle").foregroundStyle(ready ? .green : .primary) }
             Spacer()
             if !ready { Button(action, action: run).disabled(controller.captureCheckBusy) }
         }

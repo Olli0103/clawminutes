@@ -10,6 +10,8 @@ import Foundation
 final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
     private var stream: SCStream?
     private let writer = PCMChunkWriter()
+    let levelMeter = AudioLevelMeter()
+    var rms: Float { levelMeter.value }
     private let queue = DispatchQueue(label: "ai.openclaw.teams-transcribe.teams-audio")
     var progress: CaptureProgress { writer.progress }
     var firstBufferAt: Date? { progress.snapshot.firstWrite }
@@ -82,6 +84,7 @@ final class SystemAudioRecorder: NSObject, SCStreamOutput, SCStreamDelegate, @un
         guard status == noErr, let pcm = AVAudioPCMBuffer(pcmFormat: format, bufferListNoCopy: buffers.unsafePointer, deallocator: nil), pcm.frameLength > 0 else { return }
         do {
             try writer.write(pcm)
+            levelMeter.observe(pcm)
             withExtendedLifetime(retained) {}
         } catch {
             progress.failed("write_failed")

@@ -22,8 +22,9 @@ final class HelperPopoverTests: XCTestCase {
         NSApp.appearance = NSAppearance(named: .aqua)
         for page in HelperSettingsPage.allCases {
             for dark in page == .general ? [false, true] : [false] {
-                let settings = NSHostingView(rootView: HelperSettings(controller: controller, initialPage: page).environment(\.colorScheme, dark ? .dark : .light))
-                let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 690, height: 620), styleMask: [.titled], backing: .buffered, defer: false)
+                controller.appState.settingsPage = page
+                let settings = NSHostingView(rootView: HelperSettings(controller: controller).environment(\.colorScheme, dark ? .dark : .light))
+                let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 690, height: page.preferredHeight), styleMask: [.titled], backing: .buffered, defer: false)
                 window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua); window.contentView = settings
                 settings.layoutSubtreeIfNeeded()
                 let bitmap = try XCTUnwrap(settings.bitmapImageRepForCachingDisplay(in: settings.bounds))

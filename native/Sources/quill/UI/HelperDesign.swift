@@ -1,40 +1,17 @@
 import SwiftUI
 
-/// Native Liquid Glass for controls on macOS 26+, with an opaque accessibility
-/// alternative and standard controls on supported older versions of macOS.
-struct HelperButtonStyle: ViewModifier {
-    var prominent = false
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+struct CMStandardButton: ViewModifier {
+    let prominent: Bool
+    var recording = false
+    @Environment(\.cmReviewRendering) private var review
     @ViewBuilder func body(content: Content) -> some View {
-        if #available(macOS 26.0, *), !reduceTransparency {
-            if prominent { content.buttonStyle(.glassProminent).buttonBorderShape(.capsule) }
-            else { content.buttonStyle(.glass).buttonBorderShape(.capsule) }
-        } else {
-            if prominent { content.buttonStyle(.borderedProminent) }
-            else { content.buttonStyle(.bordered) }
-        }
+        if review { content.buttonStyle(CMReviewButtonStyle(prominent: prominent, recording: recording)) }
+        else if prominent { content.buttonStyle(.borderedProminent) }
+        else { content.buttonStyle(.bordered) }
     }
 }
-
-struct HelperPanelStyle: ViewModifier {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @ViewBuilder func body(content: Content) -> some View {
-        if reduceTransparency {
-            content.background(Color(nsColor: .windowBackgroundColor))
-        } else if #available(macOS 26.0, *) {
-            content.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-        } else {
-            content.background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        }
-    }
-}
-
 extension View {
-    func helperButton(prominent: Bool = false) -> some View { modifier(HelperButtonStyle(prominent: prominent)) }
-    func helperPanel() -> some View { modifier(HelperPanelStyle()) }
-    func helperCard(tint: Color = .primary) -> some View {
-        padding(16).frame(maxWidth: .infinity, alignment: .leading)
-            .background(tint.opacity(0.045), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .overlay { RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(tint.opacity(0.09), lineWidth: 1) }
-    }
+    func helperButton(prominent: Bool = false, recording: Bool = false) -> some View { modifier(CMStandardButton(prominent: prominent, recording: recording)) }
+    func helperPanel() -> some View { background(Color(nsColor: .windowBackgroundColor)).tint(CMTheme.accent) }
+    func helperCard(tint: Color = .primary) -> some View { padding(.vertical, 8).frame(maxWidth: .infinity, alignment: .leading) }
 }

@@ -5,13 +5,20 @@ import ApplicationServices
 import FluidAudio
 
 @MainActor
-final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
+final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate, NSPopoverDelegate {
+    let appState = AppState()
     private let keychain: ElevenLabsKeychain
     private let statusItem: NSStatusItem?
     private let previewMode: Bool
     private let loginItem = HelperLoginItem()
-    @Published private(set) var loginStatus: HelperLoginItem.Status = .unavailable
-    @Published private(set) var loginSettingError: String?
+    private(set) var loginStatus: HelperLoginItem.Status {
+        get { appState.loginStatus }
+        set { objectWillChange.send(); appState.loginStatus = newValue }
+    }
+    private(set) var loginSettingError: String? {
+        get { appState.loginSettingError }
+        set { objectWillChange.send(); appState.loginSettingError = newValue }
+    }
     func refreshLoginSetting() {
         guard !previewMode else { return }
         loginStatus = loginItem.status(); loginSettingError = nil
@@ -29,16 +36,35 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
     private var appearanceObserver: NSKeyValueObservation?
     private var applicationAppearanceObserver: NSKeyValueObservation?
     private let popover = NSPopover()
-    @Published private(set) var storageSummary = "Check recording storage usage"
+    private(set) var storageSummary: String {
+        get { appState.storageSummary }
+        set { objectWillChange.send(); appState.storageSummary = newValue }
+    }
     func checkStorage() {
         Task {
             let root = Config.resolveRoot(cliOverride: nil)
-            storageSummary = (try? await Task.detached { try RecordingStorage.summary(root: root) }.value)
-                ?? "Recording storage could not be checked."
+            let storage = try? await Task.detached { try RecordingStorage.measure(root: root) }.value
+            if let storage {
+                appState.recordingBytes = storage.audio; appState.freeBytes = storage.free; appState.capacityBytes = storage.capacity
+                storageSummary = ByteCountFormatter.string(fromByteCount: storage.audio, countStyle: .file) + " of audio"
+            } else { storageSummary = "Recording storage could not be checked." }
         }
     }
     private var meetingWindow: NSWindow?
+    private var attentionWindow: NSWindow?
     private var libraryWindow: NSWindow?
+    func showAttentionGroup(_ group: AttentionGroup) {
+        popover.performClose(nil)
+        let window = attentionWindow ?? NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 280),
+            styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+        window.title = group.title
+        window.isReleasedWhenClosed = false; window.delegate = self
+        window.contentViewController = NSHostingController(rootView: AttentionReviewView(controller: self, groupID: group.id,
+            close: { [weak window] in window?.close() }))
+        if attentionWindow == nil { window.center() }
+        attentionWindow = window
+        NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
+    }
     func showLibrary() {
         popover.performClose(nil)
         let window = libraryWindow ?? NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 560),
@@ -56,8 +82,12 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
         if window === libraryWindow {
             window.contentViewController = nil
             libraryWindow = nil // Releases the search view and its memory-only text cache.
+        } else if window === attentionWindow {
+            window.contentViewController = nil; attentionWindow = nil
         } else if window === migrationWindow {
             window.contentViewController = nil; migrationWindow = nil; copyingNotes = false
+        } else if window === controlsWindow {
+            appState.popoverVisible = false; enableAudioMeters?(false)
         } else if window === cleanupWindow {
             window.contentViewController = nil; cleanupWindow = nil; deletingAudio = false
         }
@@ -96,8 +126,8 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
     func reviewRecordedAudio(_ selection: [RecentMeeting]? = nil) {
         if let cleanupWindow { cleanupWindow.makeKeyAndOrderFront(nil); return }
         let meetings = selection ?? recentMeetings
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 650, height: 560),
-            styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 650, height: 480),
+            styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "Delete old audio"; window.isReleasedWhenClosed = false; window.delegate = self
         window.contentViewController = NSHostingController(rootView: AudioCleanupView(controller: self, meetings: meetings,
             onClose: { [weak window] in window?.close() }, onBusyChange: { [weak self, weak window] active in
@@ -121,7 +151,10 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
         }
         NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string)
     }
-    @Published private(set) var diagnosing = false
+    private(set) var diagnosing: Bool {
+        get { appState.diagnosing }
+        set { objectWillChange.send(); appState.diagnosing = newValue }
+    }
     func saveDiagnostics() {
         guard !diagnosing else { return }
         let panel = NSSavePanel()
@@ -146,12 +179,19 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
             }
         }
     }
-    @Published private(set) var recentMeetings: [RecentMeeting] = []
-    @Published private(set) var meetingSnapshotRevision: UInt64 = 0
+    private(set) var recentMeetings: [RecentMeeting] {
+        get { appState.recentMeetings }
+        set { objectWillChange.send(); appState.recentMeetings = newValue }
+    }
+    private(set) var meetingSnapshotRevision: UInt64 {
+        get { appState.meetingSnapshotRevision }
+        set { objectWillChange.send(); appState.meetingSnapshotRevision = newValue }
+    }
     private var pendingNotesOpen: String?
     func updateRecentMeetings(_ value: [RecentMeeting]) {
         recentMeetings = value
         meetingSnapshotRevision &+= 1
+        refreshTitle()
         if let pendingNotesOpen, let notes = value.first(where: { $0.id == pendingNotesOpen })?.notes {
             self.pendingNotesOpen = nil; NSWorkspace.shared.open(notes)
         }
@@ -165,10 +205,22 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
     private var setupWindow: NSWindow?
     private let captureCheck: CaptureCheckRunner
     private var captureCheckTask: Task<Void, Never>?
-    @Published private(set) var captureCheckPhase: CaptureCheckRunner.Phase? { didSet { refreshTitle() } }
-    @Published private(set) var captureCheckReport: CaptureCheckRunner.Report?
-    @Published private(set) var captureCheckError: String?
-    @Published private(set) var captureCheckAllowed = false
+    private(set) var captureCheckPhase: CaptureCheckRunner.Phase? {
+        get { appState.captureCheckPhase }
+        set { objectWillChange.send(); appState.captureCheckPhase = newValue; refreshTitle() }
+    }
+    private(set) var captureCheckReport: CaptureCheckRunner.Report? {
+        get { appState.captureCheckReport }
+        set { objectWillChange.send(); appState.captureCheckReport = newValue }
+    }
+    private(set) var captureCheckError: String? {
+        get { appState.captureCheckError }
+        set { objectWillChange.send(); appState.captureCheckError = newValue }
+    }
+    private(set) var captureCheckAllowed: Bool {
+        get { appState.captureCheckAllowed }
+        set { objectWillChange.send(); appState.captureCheckAllowed = newValue }
+    }
     var captureCheckBusy: Bool { captureCheckPhase != nil }
     var gatewayReady: Bool { gatewayConnected }
     func enableCaptureCheck() { captureCheckAllowed = true }
@@ -205,45 +257,120 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
     }
     private var settingsWindow: NSWindow?
     private var controlsWindow: NSWindow?
-    @Published private var pipelineStatus: TranscriptionCoordinator.Status = .idle
-    @Published private var preparing = false
-    @Published private var transcriptionBackend: String?
+    private var pipelineStatus: TranscriptionCoordinator.Status {
+        get { appState.pipelineStatus }
+        set { objectWillChange.send(); appState.pipelineStatus = newValue }
+    }
+    private var preparing: Bool {
+        get { appState.preparing }
+        set { objectWillChange.send(); appState.preparing = newValue }
+    }
+    private var transcriptionBackend: String? {
+        get { appState.transcriptionBackend }
+        set { objectWillChange.send(); appState.transcriptionBackend = newValue }
+    }
     private var renderedIconState: String?
     private var credentialOperationInProgress = false
     private var keyStatusTask: Task<Void, Never>?
-    @Published private(set) var recording = false
-    @Published private(set) var startingRecording = false
-    @Published private(set) var elapsed = "0:00"
-    @Published private(set) var detail: String?
-    @Published var captureHealth = "Checking microphone and Teams audio…"
-    @Published private(set) var captureWarning: String?
+    private(set) var recording: Bool {
+        get { appState.recording }
+        set { objectWillChange.send(); appState.recording = newValue }
+    }
+    private(set) var startingRecording: Bool {
+        get { appState.startingRecording }
+        set { objectWillChange.send(); appState.startingRecording = newValue }
+    }
+    private(set) var elapsed: String {
+        get { appState.elapsed }
+        set { objectWillChange.send(); appState.elapsed = newValue }
+    }
+    private(set) var detail: String? {
+        get { appState.detail }
+        set { objectWillChange.send(); appState.detail = newValue }
+    }
+    var captureHealth: String {
+        get { appState.captureHealth }
+        set { objectWillChange.send(); appState.captureHealth = newValue }
+    }
+    private(set) var captureWarning: String? {
+        get { appState.captureWarning }
+        set { objectWillChange.send(); appState.captureWarning = newValue }
+    }
     func updateCaptureWarning(_ value: String?) {
         guard captureWarning != value else { return }
         captureWarning = value; refreshTitle()
     }
-    @Published private(set) var detection = "Checking Teams…"
-    @Published private(set) var promptsEnabled = Config.meetingDetection()
-    @Published private(set) var accessibilityGranted = AXIsProcessTrusted()
-    @Published private(set) var gatewayStatus = "Checking connection…"
-    @Published private(set) var gatewayOperation = false
+    private(set) var detection: String {
+        get { appState.detection }
+        set { objectWillChange.send(); appState.detection = newValue }
+    }
+    private(set) var promptsEnabled: Bool {
+        get { appState.promptsEnabled }
+        set { objectWillChange.send(); appState.promptsEnabled = newValue }
+    }
+    private(set) var accessibilityGranted: Bool {
+        get { appState.accessibilityGranted }
+        set { objectWillChange.send(); appState.accessibilityGranted = newValue }
+    }
+    private(set) var gatewayStatus: String {
+        get { appState.gatewayStatus }
+        set { objectWillChange.send(); appState.gatewayStatus = newValue }
+    }
+    private(set) var gatewayOperation: Bool {
+        get { appState.gatewayOperation }
+        set { objectWillChange.send(); appState.gatewayOperation = newValue }
+    }
     private var gatewayConnected = false
-    @Published private(set) var gatewaySigningIn = false
-    @Published var pendingArchiveCount = 0
+    private(set) var gatewaySigningIn: Bool {
+        get { appState.gatewaySigningIn }
+        set { objectWillChange.send(); appState.gatewaySigningIn = newValue }
+    }
+    var pendingArchiveCount: Int {
+        get { appState.pendingArchiveCount }
+        set { objectWillChange.send(); appState.pendingArchiveCount = newValue }
+    }
     var onSpeechCredentialsInstalled: (() async throws -> Void)?
     var onLocalModelInstalled: (() async throws -> Void)?
     var onRetryArchive: ((GatewayCapabilities?) async throws -> String)?
     var onTextPrepared: (() async throws -> Void)?
     func queuePreparedText() async { try? await onTextPrepared?() }
     private var gatewayCancelled = false
-    @Published private(set) var hasAPIKey = false
-    @Published private(set) var localModelReady = AsrModels.modelsExist(at: AsrModels.defaultCacheDirectory(for: .v3), version: .v3)
-    @Published private(set) var selectedEngine = Config.transcriptionEngine()
-    @Published private(set) var style = Config.menuBarStyle()
-    @Published private(set) var notesMode = Config.notesMode()
-    @Published private(set) var templates = MeetingNotesSettings.templates
-    @Published private(set) var selectedTemplateID = MeetingNotesSettings.selected.id
-    @Published private(set) var notesFolder = MeetingNotesSettings.folder.path
-    @Published private(set) var deletesVerifiedAudio = Config.deleteAudioAfterVerification()
+    private(set) var hasAPIKey: Bool {
+        get { appState.hasAPIKey }
+        set { objectWillChange.send(); appState.hasAPIKey = newValue }
+    }
+    private(set) var localModelReady: Bool {
+        get { appState.localModelReady }
+        set { objectWillChange.send(); appState.localModelReady = newValue }
+    }
+    private(set) var selectedEngine: String {
+        get { appState.selectedEngine }
+        set { objectWillChange.send(); appState.selectedEngine = newValue }
+    }
+    private(set) var style: MenuBarStyle {
+        get { appState.style }
+        set { objectWillChange.send(); appState.style = newValue }
+    }
+    private(set) var notesMode: String {
+        get { appState.notesMode }
+        set { objectWillChange.send(); appState.notesMode = newValue }
+    }
+    private(set) var templates: [NoteTemplate] {
+        get { appState.templates }
+        set { objectWillChange.send(); appState.templates = newValue }
+    }
+    private(set) var selectedTemplateID: String {
+        get { appState.selectedTemplateID }
+        set { objectWillChange.send(); appState.selectedTemplateID = newValue }
+    }
+    private(set) var notesFolder: String {
+        get { appState.notesFolder }
+        set { objectWillChange.send(); appState.notesFolder = newValue }
+    }
+    private(set) var deletesVerifiedAudio: Bool {
+        get { appState.deletesVerifiedAudio }
+        set { objectWillChange.send(); appState.deletesVerifiedAudio = newValue }
+    }
     func setAudioRetention(_ enabled: Bool) {
         do {
             try MeetingNotesSettings.update(["audio_retention": enabled ? "delete_after_verification" : "keep",
@@ -251,8 +378,14 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
             deletesVerifiedAudio = enabled
         } catch { showError("Could not save audio retention: \(error)") }
     }
-    @Published private(set) var localSpeakerName = Config.localSpeakerName() ?? ""
-    @Published private(set) var sharedMicrophone = Config.sharedMicrophone()
+    private(set) var localSpeakerName: String {
+        get { appState.localSpeakerName }
+        set { objectWillChange.send(); appState.localSpeakerName = newValue }
+    }
+    private(set) var sharedMicrophone: Bool {
+        get { appState.sharedMicrophone }
+        set { objectWillChange.send(); appState.sharedMicrophone = newValue }
+    }
     func setSharedMicrophone(_ value: Bool) {
         do { try MeetingNotesSettings.update(["shared_microphone": value]); sharedMicrophone = value }
         catch { showError("Could not save microphone setting: \(error)") }
@@ -268,10 +401,18 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
         do { try MeetingNotesSettings.update(["local_speaker_name": value]); localSpeakerName = value }
         catch { showError("Could not save microphone name: \(error)") }
     }
-    @Published private(set) var meetingSubject: String?
+    private(set) var meetingSubject: String? {
+        get { appState.meetingSubject }
+        set { objectWillChange.send(); appState.meetingSubject = newValue }
+    }
     func setMeetingSubject(_ subject: String?) {
         guard meetingSubject != subject else { return }
         meetingSubject = subject; refreshTitle()
+    }
+    var audioLevels: (() -> (Float, Float))?
+    var enableAudioMeters: ((Bool) -> Void)?
+    func popoverDidClose(_ notification: Notification) {
+        appState.popoverVisible = false; enableAudioMeters?(false)
     }
     var onToggle: (() -> Void)?
     var onOpenFolder: (() -> Void)?
@@ -312,8 +453,9 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
                 Task { @MainActor in NSApp.applicationIconImage = HelperAppIcon.image() }
             }
         }
+        popover.delegate = self
         popover.behavior = .transient
-        popover.animates = true
+        popover.animates = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         popover.contentViewController = NSHostingController(rootView: HelperPopover(controller: self))
         if let button = statusItem?.button {
             button.target = self
@@ -351,6 +493,7 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
         if controlsWindow == nil {
             let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 390, height: 500), styleMask: [.titled, .closable], backing: .buffered, defer: false)
             window.title = "ClawMinutes"
+            window.delegate = self
             window.isReleasedWhenClosed = false
             window.contentViewController = NSHostingController(rootView: HelperPopover(controller: self))
             window.center()
@@ -359,6 +502,7 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
         accessibilityGranted = AXIsProcessTrusted()
         refreshCredentials()
         NSApp.activate(ignoringOtherApps: true)
+        appState.popoverVisible = true
         controlsWindow?.makeKeyAndOrderFront(nil)
         Task { await checkGateway() }
     }
@@ -368,9 +512,10 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
         accessibilityGranted = AXIsProcessTrusted()
         refreshCredentials()
         Task { await checkGateway() }
+        appState.popoverVisible = true
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
     }
-    func toggleRecording() { popover.performClose(nil); if captureCheckBusy { cancelCaptureCheck() } else { onToggle?() } }
+    func toggleRecording() { if captureCheckBusy { cancelCaptureCheck() } else { onToggle?() } }
     func openMeeting(_ meeting: RecentMeeting) {
         popover.performClose(nil)
         if !meeting.needsAttention, let notes = meeting.notes { NSWorkspace.shared.open(notes); return }
@@ -385,6 +530,13 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
         if meetingWindow == nil { window.center() }
         meetingWindow = window
         NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
+    }
+    func renameMeeting(_ meeting: RecentMeeting, title: String) async -> Bool {
+        guard meeting.stage != .capturing && meeting.stage != .delivering else { return false }
+        do {
+            try await Task.detached { try MeetingTitleOverride.save(title, in: meeting.directory) }.value
+            await refreshLocalMeetings(); return true
+        } catch { return false }
     }
     func openDocument(_ url: URL) { NSWorkspace.shared.open(url) }
     func openRecordings() { popover.performClose(nil); onOpenFolder?() }
@@ -437,29 +589,39 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
         let item = NSMenuItem(); item.tag = index
         engineClicked(item)
     }
-    func showSettings() {
+    func showSettings() { showSettings(page: appState.settingsPage) }
+    func showSettings(page: HelperSettingsPage) {
         refreshLoginSetting()
         popover.performClose(nil)
+        appState.settingsPage = page
         if settingsWindow == nil {
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 690, height: 620), styleMask: [.titled, .closable], backing: .buffered, defer: false)
-            window.title = "ClawMinutes settings"
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 690, height: page.preferredHeight), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            window.title = page.rawValue
             window.isReleasedWhenClosed = false
             window.contentViewController = NSHostingController(rootView: HelperSettings(controller: self))
             window.center()
             settingsWindow = window
         }
+        fitSettingsWindow(page)
         refreshCredentials()
         accessibilityGranted = AXIsProcessTrusted()
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
         Task { await checkGateway() }
     }
-    func connectGateway() { popover.performClose(nil); gatewayClicked() }
+    func fitSettingsWindow(_ page: HelperSettingsPage) {
+        guard let window = settingsWindow else { return }
+        window.title = page.rawValue
+        var frame = window.frameRect(forContentRect: NSRect(x: 0, y: 0, width: 690, height: page.preferredHeight))
+        frame.origin = NSPoint(x: window.frame.minX, y: window.frame.maxY - frame.height)
+        window.setFrame(frame, display: true, animate: window.isVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+    }
+    func connectGateway() { guard !previewMode else { return }; popover.performClose(nil); gatewayClicked() }
     func cancelSignIn() { cancelGatewayClicked() }
-    func retrySaving() { retryArchiveClicked() }
-    func setupLocal() { popover.performClose(nil); setupLocalClicked() }
-    func editAPIKey() { apiKeyClicked() }
-    func removeAPIKey() { removeKeyClicked() }
+    func retrySaving() { guard !previewMode else { return }; retryArchiveClicked() }
+    func setupLocal() { guard !previewMode else { return }; popover.performClose(nil); setupLocalClicked() }
+    func editAPIKey() { guard !previewMode else { return }; apiKeyClicked() }
+    func removeAPIKey() { guard !previewMode else { return }; removeKeyClicked() }
     func keepRecording() { onKeepRecording?() }
     func checkPermissions() {
         accessibilityGranted = AXIsProcessTrusted()
@@ -468,6 +630,7 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
     var microphoneGranted: Bool { AVCaptureDevice.authorizationStatus(for: .audio) == .authorized }
     var systemAudioGranted: Bool { CGPreflightScreenCaptureAccess() }
     func allowMicrophone() {
+        guard !previewMode else { return }
         Task {
             if AVCaptureDevice.authorizationStatus(for: .audio) == .notDetermined {
                 _ = await AVCaptureDevice.requestAccess(for: .audio)
@@ -477,6 +640,7 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
         }
     }
     func allowSystemAudio() {
+        guard !previewMode else { return }
         if !CGPreflightScreenCaptureAccess() { _ = CGRequestScreenCaptureAccess() }
         if !CGPreflightScreenCaptureAccess() { openPrivacy("ScreenCapture") }
         checkPermissions()
@@ -486,6 +650,7 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
     }
     func recheckGateway() { Task { await checkGateway() } }
     private func checkGateway() async {
+        guard !previewMode else { return }
         guard !gatewayOperation else { return }
         gatewayOperation = true
         defer { gatewayOperation = false }
@@ -611,7 +776,8 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     func update(recording: Bool, elapsed: String?) {
-        if recording && !self.recording { captureWarning = nil }
+        if recording && !self.recording { captureWarning = nil; appState.micLost = false }
+        if !recording { enableAudioMeters?(false) }
         self.recording = recording
         self.elapsed = elapsed ?? "0:00"
         refreshTitle()
@@ -642,7 +808,10 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     func updateDetection(_ text: String, enabled: Bool) {
+        let wasDetected = appState.callDetected
         if detection != text { detection = text }
+        if appState.callDetected && !wasDetected { appState.callDetectedAt = Date() }
+        if !appState.callDetected { appState.callDetectedAt = nil }
         if promptsEnabled != enabled { promptsEnabled = enabled }
         let granted = AXIsProcessTrusted()
         if accessibilityGranted != granted { accessibilityGranted = granted }
@@ -656,12 +825,22 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
             + (!captureCheckBusy && captureWarning != nil && style == .descriptive ? " · Audio gap" : "")
         if button.title != title { button.title = title }
         let appearance = button.effectiveAppearance
-        let state = "\(activity.isWorking)-\(isFailure)-\(recording || captureCheckBusy)-\(captureWarning != nil)-\(appearance.bestMatch(from: [.aqua, .darkAqua])?.rawValue ?? appearance.name.rawValue)"
+        let attention = appState.attentionMeetings.count
+        let state = "\(recording)-\(attention)-\(captureCheckBusy)"
         if renderedIconState != state {
             renderedIconState = state
             button.contentTintColor = nil
-            button.image = Self.clawMicImage(active: activity.isWorking || isFailure, appearance: appearance,
-                                            activeColor: captureCheckBusy ? .systemRed : captureWarning != nil || isFailure ? .systemOrange : (recording ? .systemRed : .controlAccentColor))
+            button.image = ClawMicrophoneIcon.image(appearance: appearance)
+            button.subviews.filter { $0.identifier?.rawValue == "cm-status-badge" }.forEach { $0.removeFromSuperview() }
+            if recording || captureCheckBusy || attention > 0 {
+                let badge = NSTextField(labelWithString: recording || captureCheckBusy ? "●" : "!")
+                badge.identifier = NSUserInterfaceItemIdentifier("cm-status-badge")
+                badge.font = .systemFont(ofSize: 9, weight: .bold)
+                badge.textColor = recording || captureCheckBusy ? .systemRed : .labelColor
+                badge.frame = NSRect(x: 17, y: 0, width: 9, height: 12)
+                badge.setAccessibilityLabel(recording ? "Recording" : captureCheckBusy ? "Checking audio" : "\(attention) meetings to finish")
+                button.addSubview(badge)
+            }
         }
         let tip = captureCheckBusy ? "ClawMinutes · \(activity.title)\nMicrophone and Teams audio check. No transcription or upload. Test audio is discarded." : "ocmh · \(activity.title)\n\(meetingTitle)\n\(backendTitle) · \(modelTitle)\n\(displayedBackend == "parakeet" ? "Speech recognition on " + ProcessInfo.processInfo.hostName : "Speech recognition at ElevenLabs; audio uploaded from this Mac")" + (captureWarning.map { "\n" + $0 } ?? "")
         if button.toolTip != tip { button.toolTip = tip }
@@ -675,6 +854,7 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate {
     }
 
     func refreshCredentials() {
+        guard !previewMode else { return }
         guard keyStatusTask == nil, !credentialOperationInProgress else { return }
         keyStatusTask = Task { [weak self, keychain] in
             let hasKey = await Task.detached { [keychain] in keychain.containsKey() }.value
