@@ -51,14 +51,10 @@ enum ClawMicrophoneIcon {
                 NSColor.black.setFill()
                 rect.fill(using: .sourceAtop)
             }
-            if active {
-                activeColor.setFill()
-                NSBezierPath(ovalIn: NSRect(x: size.width - 3, y: 0, width: 3, height: 3)).fill()
-            }
             return true
         }
-        // Idle marks adapt to highlighted menu bars. Working marks retain the status dot.
-        image.isTemplate = !active
+        // macOS adapts the template mark in every state. Status badges are separate.
+        image.isTemplate = true
         return image
     }
 }

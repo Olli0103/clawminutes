@@ -11,6 +11,12 @@ final class RecordingSession {
 
     private let mic = MicRecorder()
     private let system = SystemAudioRecorder()
+    var microphoneAvailable: Bool { mic.progress.snapshot.recentlyWriting(at: Date()) }
+    var audioLevels: (Float, Float) { (mic.rms, system.rms) }
+    func enableAudioMeters(_ enabled: Bool) {
+        mic.levelMeter.setEnabled(enabled); system.levelMeter.setEnabled(enabled)
+    }
+
     private lazy var capture = CaptureRecovery(origin: startedAt.timeIntervalSince1970)
     var onClosedChunk: (@Sendable (URL, String) -> Void)?
     private var nextChunkAttempt: [String: Date] = [:]

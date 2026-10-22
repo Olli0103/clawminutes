@@ -27,16 +27,16 @@ import SwiftUI
             Text(mode == .speakers ? "Identify speakers" : "Regenerate notes").font(.title2.weight(.semibold))
             Text(meeting.title).font(.headline).lineLimit(2)
             Text("A new version keeps the original transcript and notes. Sending it uses your Gateway's notes settings. AI notes may incur model charges.")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(.callout).foregroundStyle(.primary)
             if let created {
-                Label("New version prepared", systemImage: "checkmark.circle").foregroundStyle(.green)
+                Label { Text("New version prepared").foregroundStyle(.primary) } icon: { Image(systemName: "checkmark.circle").foregroundStyle(.green) }
                 Text("It will send through the normal queue. If your connection is unavailable, it stays on this Mac.")
                 Button("Show new version") { controller.openDocument(created) }
             } else if loading {
                 ProgressView("Loading transcript…").frame(maxWidth: .infinity, minHeight: 160)
             } else if mode == .speakers, let transcript {
                 Text("Select only the turns you can identify. A voice cluster can contain more than one person. Other turns keep their existing labels.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption).foregroundStyle(CMTheme.secondary)
                 TextField("Confirmed speaker name", text: $name).textFieldStyle(.roundedBorder)
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
@@ -55,12 +55,13 @@ import SwiftUI
                                     player.play(directory: meeting.directory, segment: segment, index: index)
                                 } label: { Image(systemName: player.playingIndex == index ? "stop.fill" : "play.fill") }
                                     .accessibilityLabel(player.playingIndex == index ? "Stop excerpt" : "Play up to eight seconds from this turn")
-                            }.padding(8).background(selected.contains(index) ? Color.accentColor.opacity(0.1) : .clear,
+                                    .help(player.playingIndex == index ? "Stop excerpt" : "Play up to eight seconds")
+                            }.padding(8).background(selected.contains(index) ? CMTheme.accent.opacity(0.1) : .clear,
                                                        in: RoundedRectangle(cornerRadius: 6))
                         }
                     }
                 }.frame(minHeight: 200)
-                if let message = player.message { Text(message).font(.caption).foregroundStyle(.secondary) }
+                if let message = player.message { Text(message).font(.caption).foregroundStyle(CMTheme.secondary) }
                 Text("\(selected.count) selected turns · \(transcript.segments.filter { $0.speaker_name == nil }.count) unidentified turns")
                     .font(.caption)
             } else if mode == .template {
@@ -69,14 +70,14 @@ import SwiftUI
                 }
                 if let template = controller.templates.first(where: { $0.id == templateID }) {
                     ScrollView { VStack(alignment: .leading, spacing: 10) {
-                        Text(template.context).foregroundStyle(.secondary)
+                        Text(template.context).foregroundStyle(.primary)
                         ForEach(Array(template.sections.enumerated()), id: \.offset) { _, section in
-                            Text(section.title).font(.headline); Text(section.instructions).font(.callout).foregroundStyle(.secondary)
+                            Text(section.title).font(.headline); Text(section.instructions).font(.callout).foregroundStyle(.primary)
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading) }.frame(minHeight: 200)
                 }
             }
-            if let error { Text(error).font(.callout).foregroundStyle(.orange).textSelection(.enabled) }
+            if let error { Text(error).font(.callout).foregroundStyle(.primary).textSelection(.enabled) }
             HStack {
                 Spacer()
                 Button(created == nil ? "Cancel" : "Done") { player.stop(); dismiss() }.keyboardShortcut(.cancelAction).disabled(saving)
@@ -86,7 +87,7 @@ import SwiftUI
                 }
             }
         }.padding(24).frame(width: 620, height: 580)
-            .foregroundStyle(.primary).background(Color(nsColor: .windowBackgroundColor))
+            .foregroundStyle(.primary).tint(CMTheme.accent)
             .task {
                 templateID = controller.selectedTemplateID
                 if transcript != nil { loading = false; return }

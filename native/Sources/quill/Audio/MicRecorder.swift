@@ -32,6 +32,8 @@ final class MicRecorder: @unchecked Sendable {
     private var preferRaw = false
     private var generation = 0
     private let writer = PCMChunkWriter()
+    let levelMeter = AudioLevelMeter()
+    var rms: Float { levelMeter.value }
     private var url: URL?
     private(set) var isRecording = false
     /// Wall-clock time of the first captured buffer — the track's true start,
@@ -182,6 +184,7 @@ final class MicRecorder: @unchecked Sendable {
 
             do {
                 try self.writer.write(buffer, epoch: epoch)
+                self.levelMeter.observe(buffer)
             } catch {
                 self.progress.failed("write_failed")
                 FileHandle.standardError.write(Data("mic track write failed: \(error)\n".utf8))
@@ -209,6 +212,7 @@ final class MicRecorder: @unchecked Sendable {
             do {
                 try converter.convert(to: mono, from: buffer)
                 try self.writer.write(mono, epoch: epoch)
+                self.levelMeter.observe(mono)
             } catch {
                 self.progress.failed("write_failed")
                 FileHandle.standardError.write(Data("mic track write failed: \(error)\n".utf8))

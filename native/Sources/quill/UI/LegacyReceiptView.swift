@@ -17,23 +17,22 @@ struct LegacyReceiptView: View {
     @State private var result: LegacyReceiptReconciliation.Result?
     @State private var reviewRevision = 0
     @State private var automaticStarted = false
+    @State private var showInspector = false
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Label("Find your saved notes", systemImage: "doc.text.magnifyingglass").font(.title2.weight(.semibold))
+            HStack {
+                Label("Find your saved notes", systemImage: "doc.text.magnifyingglass").font(.title2.weight(.semibold))
+                Spacer()
+                Button { showInspector.toggle() } label: { Image(systemName: "info.circle") }
+                    .buttonStyle(.borderless).help("Show technical details").accessibilityLabel("Show technical details")
+            }
             Text(meeting.title).font(.headline)
             Text("Look for this meeting on your Gateway and restore the matching notes on this Mac.")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(.callout).foregroundStyle(.primary)
             Text("This checks the transcript and meeting details only. It does not upload audio or generate new AI notes. Your existing edits are kept.")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(.callout).foregroundStyle(.primary)
             if reviewing { ProgressView("Reviewing local files…") }
-            if let plan {
-                DisclosureGroup("Comparison details") {
-                    Text("\(plan.utterances) transcript entries")
-                    Text("Notes folder: " + plan.exportRoot.path).textSelection(.enabled)
-                    Text(plan.sessionID).font(.caption.monospaced()).textSelection(.enabled)
-                }.font(.caption)
-            }
-            if let issue {
+            if issue != nil {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(failureMessage).font(.callout)
                     if failureCode == "sign_in_required" {
@@ -43,14 +42,14 @@ struct LegacyReceiptView: View {
                     } else {
                         Button("Save diagnostic report…", action: controller.saveDiagnostics).helperButton()
                     }
-                    DisclosureGroup("Technical details") { Text(issue).font(.caption).textSelection(.enabled) }
+
                 }.helperCard(tint: .orange)
             }
             if let result {
                 Label(result.exported ? "Your notes are ready" : "Notes found on your Gateway", systemImage: result.exported ? "checkmark.circle.fill" : "doc.text")
-                    .font(.headline).foregroundStyle(result.exported ? Color.green : Color.primary)
+                    .font(.headline).foregroundStyle(.primary)
                 Text(result.exported ? "The matching notes are saved on this Mac. Your existing edits and audio were kept." : "The notes could not be copied to this Mac. Open the meeting to retry saving its local copy.")
-                    .font(.callout).foregroundStyle(.secondary)
+                    .font(.callout).foregroundStyle(.primary)
                 Button(result.exported ? "Open notes" : "Review local save") {
                     dismiss()
                     if let updated = controller.recentMeetings.first(where: { $0.id == meeting.id }) {
@@ -62,7 +61,7 @@ struct LegacyReceiptView: View {
             if result == nil {
                 DisclosureGroup("Changed your notes folder?") {
                     Text("Choose the original notes folder above the year/month folders. Your default for future meetings stays the same.")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(.caption).foregroundStyle(CMTheme.secondary)
                     Button("Choose original notes folder…") { chooseFolder() }.helperButton().disabled(busy)
                 }
             }
@@ -79,6 +78,16 @@ struct LegacyReceiptView: View {
                 }
             }
         }.padding(24).frame(width: 560, height: 470).helperPanel().interactiveDismissDisabled(busy)
+            .inspector(isPresented: $showInspector) {
+                Form {
+                    if let plan {
+                        Text("\(plan.utterances) transcript entries")
+                        Text(plan.exportRoot.path).textSelection(.enabled)
+                        Text(plan.sessionID).textSelection(.enabled)
+                    }
+                    if let issue { Text(issue).textSelection(.enabled) }
+                }.formStyle(.grouped).inspectorColumnWidth(260)
+            }
             .task(id: "\(reviewRevision):\(chosenRoot?.path ?? "")") {
                 plan = nil
                 do {

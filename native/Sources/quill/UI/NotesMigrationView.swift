@@ -24,14 +24,14 @@ struct NotesMigrationView: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Copy existing notes").font(.title2.weight(.semibold))
             Text("Keeps your edits and the original folders. Selected meetings will open their copied notes. The default for future meetings stays unchanged.")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(.callout).foregroundStyle(.primary)
             VStack(alignment: .leading, spacing: 4) {
                 Text("Destination").font(.caption.weight(.semibold))
                 Text(destination.path).font(.caption).textSelection(.enabled).lineLimit(3)
             }
             if reviewing { ProgressView("Checking saved notes…") }
             List(rows) { row in rowView(row) }.listStyle(.inset)
-            if rows.isEmpty && !reviewing { Text("No saved notes are available in this selection.").foregroundStyle(.secondary) }
+            if rows.isEmpty && !reviewing { Text("No saved notes are available in this selection.").foregroundStyle(.primary) }
             Text("\(selectedPlans.count) meetings selected · " + ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)).font(.callout)
             Toggle("I reviewed these folders and want to copy the selected notes.", isOn: $confirmed).disabled(reviewing || copying || selectedPlans.isEmpty)
             HStack {
@@ -47,7 +47,7 @@ struct NotesMigrationView: View {
                 Button("Copy selected notes", action: copy).buttonStyle(.borderedProminent)
                     .disabled(reviewing || copying || !confirmed || selectedPlans.isEmpty)
             }
-        }.padding(22).frame(width: 650, height: 560).background(Color(nsColor: .windowBackgroundColor))
+        }.padding(22).frame(width: 650, height: 560).tint(CMTheme.accent)
             .task(id: reviewRevision) {
                 do {
                     let list = meetings, root = destination
@@ -84,7 +84,7 @@ struct NotesMigrationView: View {
                     }
                 }
                 if let issue = outcomes[row.id] ?? row.issue {
-                    Text(issue).foregroundStyle(completed.contains(row.id) ? Color.secondary : Color.orange)
+                    Text(issue).foregroundStyle(.primary)
                 }
             }.font(.caption).padding(.leading, 22)
         }.padding(.vertical, 4)

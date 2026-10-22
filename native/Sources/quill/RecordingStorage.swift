@@ -21,7 +21,8 @@ enum RecordingStorage {
     static func checkStart(freeBytes: Int64) throws {
         guard freeBytes >= minimumFreeBytes else { throw Issue.lowSpace }
     }
-    static func summary(root: URL) throws -> String {
+    struct Measurement: Sendable { let audio: Int64; let free: Int64; let capacity: Int64 }
+    static func measure(root: URL) throws -> Measurement {
         let free = try available(at: root)
         var bytes: Int64 = 0
         if let files = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey], options: [.skipsHiddenFiles]) {
@@ -30,6 +31,14 @@ enum RecordingStorage {
                 if properties.isRegularFile == true, properties.isSymbolicLink != true { bytes += Int64(properties.fileSize ?? 0) }
             }
         }
-        return "\(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)) of recording audio · \(ByteCountFormatter.string(fromByteCount: free, countStyle: .file)) free"
+        var existing = root
+        while !FileManager.default.fileExists(atPath: existing.path), existing.path != "/" { existing.deleteLastPathComponent() }
+        let attributes = try FileManager.default.attributesOfFileSystem(forPath: existing.path)
+        let capacity = (attributes[.systemSize] as? NSNumber)?.int64Value ?? free
+        return Measurement(audio: bytes, free: free, capacity: capacity)
+    }
+    static func summary(root: URL) throws -> String {
+        let value = try measure(root: root)
+        return "\(ByteCountFormatter.string(fromByteCount: value.audio, countStyle: .file)) of recording audio · \(ByteCountFormatter.string(fromByteCount: value.free, countStyle: .file)) free"
     }
 }

@@ -10,6 +10,15 @@ struct Quill: AsyncParsableCommand {
     /// holds that executor and starves the scanner and menu callbacks.
     static func main() {
         let arguments = Array(CommandLine.arguments.dropFirst())
+        #if DEBUG
+        if arguments.first == "design-preview" || ProcessInfo.processInfo.environment["CLAWMINUTES_UI_MATRIX"] == "1"
+            || Bundle.main.object(forInfoDictionaryKey: "ClawMinutesDesignPreview") as? Bool == true {
+            do { try MainActor.assumeIsolated { try DesignPreview.run(arguments: Array(arguments.dropFirst())) } }
+            catch { Self.exit(withError: error) }
+            return
+        }
+        #endif
+
         if arguments.isEmpty || arguments.first == "run" {
             do {
                 let command = try Run.parse(arguments.isEmpty ? [] : Array(arguments.dropFirst()))
@@ -257,6 +266,8 @@ final class AppController: NSObject, NSApplicationDelegate {
             return await self.startSession()
         }
         meetings.onStop = { [weak self] in self?.stopSession() }
+        menuBar.audioLevels = { [weak self] in self?.session?.audioLevels ?? (0, 0) }
+        menuBar.enableAudioMeters = { [weak self] enabled in self?.session?.enableAudioMeters(enabled) }
         meetings.onStatus = { [weak self] text, enabled in self?.menuBar.updateDetection(text, enabled: enabled) }
         meetings.onMeetingContext = { [weak self] context in self?.session?.updateMeetingContext(context) }
         meetings.onMeetingTitle = { [weak self] title in self?.menuBar.setMeetingSubject(title) }
@@ -393,6 +404,7 @@ final class AppController: NSObject, NSApplicationDelegate {
     private func tick() {
         guard let session else { return }
         session.checkpoint()
+        menuBar.appState.micLost = !session.microphoneAvailable
         menuBar.captureHealth = session.healthText
         menuBar.updateCaptureWarning(session.captureWarning)
         menuBar.update(

@@ -11,6 +11,7 @@ struct RecentMeeting: Identifiable, Sendable {
     let detail: String
     let notes: URL?
     let transcript: URL?
+    var pipelineCompletion: Int = 0
     var revision: Int = 1
     var completionAttempts: Int = 0
     var canVerifyLegacyReceipt = false
@@ -21,6 +22,7 @@ struct RecentMeeting: Identifiable, Sendable {
     var id: String { directory.path }
     var ready: Bool { notes != nil }
     var needsAttention: Bool { stage == .needsAttention || stage == .waitingForModel }
+    var presentationNeedsAttention: Bool { needsAttention || canVerifyLegacyReceipt || canRetryLocalExport || hasCaptureWarnings || stage == .interrupted }
     var guidance: MeetingGuidance { MeetingGuidance(self) }
     var statusTitle: String {
         switch stage {
@@ -42,8 +44,8 @@ struct RecentMeeting: Identifiable, Sendable {
     static func make(_ item: ArchiveBacklog.Item, active: Bool = false) -> Self {
         let meta = try? ArchiveBacklog.object(item.directory.appendingPathComponent("meta.json"))
         let context = meta?["meeting_context"] as? [String: Any]
-        let title = (context?["title"] as? String).flatMap(TeamsMeetingTitle.clean) ?? "Meeting"
         let started = (meta?["started"] as? String).flatMap { ISO8601DateFormatter().date(from: $0) }
+        let title = MeetingDate.title(meta?["meeting_title_override"] as? String ?? context?["title"] as? String, started: started)
         var state = try? MeetingPipelineState.load(item.directory, inspected: item)
         if !active { state?.reconcile(item, now: Date().timeIntervalSince1970) }
         let issue: DeliveryFailure?
@@ -65,6 +67,7 @@ struct RecentMeeting: Identifiable, Sendable {
             stage: state?.stage ?? .needsAttention, issue: issue,
             detail: issue?.detail ?? item.reason, notes: notes,
             transcript: readableDocument(transcript) ? transcript : nil,
+            pipelineCompletion: item.verifiedText == .exported ? 4 : item.verifiedText == .archive ? 3 : item.verifiedText == .transcript ? 2 : meta?["status"] as? String == "stopped" ? 1 : 0,
             revision: state?.revision ?? 1, completionAttempts: item.retry?.completionAttempts ?? 0,
             canVerifyLegacyReceipt: item.reason == LegacyReceiptReconciliation.reason
                 || (state != nil && item.verifiedText == .transcript && LegacyReceiptReconciliation.receiptAbsent(item.directory)),

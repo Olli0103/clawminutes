@@ -1,0 +1,50 @@
+import SwiftUI
+
+/// Group the primary recording control's native glass without a second backing.
+struct CMGlassContainer<Content: View>: View {
+    @Environment(\.accessibilityReduceTransparency) private var systemSolid
+    @Environment(\.cmPreviewReduceTransparency) private var previewSolid
+    private var solid: Bool { systemSolid || previewSolid }
+    @Environment(\.accessibilityReduceMotion) private var systemStill
+    @Environment(\.cmPreviewReduceMotion) private var previewStill
+    private var still: Bool { systemStill || previewStill }
+    @ViewBuilder var content: () -> Content
+    var body: some View {
+        if #available(macOS 26, *), !solid, !still { GlassEffectContainer(spacing: 20, content: content) }
+        else { content() }
+    }
+}
+private struct CMButton: ViewModifier {
+    let prominent: Bool
+    @Environment(\.cmReviewRendering) private var review
+    @Environment(\.accessibilityReduceTransparency) private var systemSolid
+    @Environment(\.cmPreviewReduceTransparency) private var previewSolid
+    private var solid: Bool { systemSolid || previewSolid }
+    @ViewBuilder func body(content: Content) -> some View {
+        if review { content.buttonStyle(CMReviewButtonStyle(prominent: prominent)) }
+        else if #available(macOS 26, *), !solid {
+            if prominent { content.buttonStyle(.glassProminent) } else { content.buttonStyle(.glass) }
+        } else {
+            if prominent { content.buttonStyle(.borderedProminent) }
+            else { content.buttonStyle(.bordered) }
+        }
+    }
+}
+extension View {
+    func cmButton(prominent: Bool = false) -> some View { modifier(CMButton(prominent: prominent)) }
+}
+
+/// Applies an identity to the native glass button without adding another layer.
+struct CMRecordingIdentity: ViewModifier {
+    let namespace: Namespace.ID
+    @Environment(\.accessibilityReduceMotion) private var systemStill
+    @Environment(\.cmPreviewReduceMotion) private var previewStill
+    private var still: Bool { systemStill || previewStill }
+    @Environment(\.accessibilityReduceTransparency) private var systemSolid
+    @Environment(\.cmPreviewReduceTransparency) private var previewSolid
+    private var solid: Bool { systemSolid || previewSolid }
+    @ViewBuilder func body(content: Content) -> some View {
+        if #available(macOS 26, *), !still, !solid { content.glassEffectID("recording-control", in: namespace) }
+        else { content }
+    }
+}

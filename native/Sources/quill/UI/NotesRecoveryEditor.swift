@@ -20,12 +20,12 @@ import SwiftUI
                 Text("Save the transcript and meeting information without another AI generation. If AI notes were already saved and their reply was lost, the Gateway returns those notes instead.")
             }
             Text("The original transcript and prior failure history are preserved. Nothing starts recording or uploads audio.")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(.callout).foregroundStyle(.primary)
             if prepared {
-                Label("Recovery queued", systemImage: "checkmark.circle").foregroundStyle(.green)
+                Label("Recovery queued", systemImage: "checkmark.circle").foregroundStyle(.primary)
                 Text("Check the meeting's status for the result. Connection failures can wait safely on this Mac.").font(.callout)
             }
-            if let error { Text(error).foregroundStyle(.orange).font(.callout).textSelection(.enabled) }
+            if let error { Text(error).foregroundStyle(.primary).font(.callout).textSelection(.enabled) }
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }
             HStack {
@@ -37,7 +37,7 @@ import SwiftUI
                 }
             }
         }.padding(24).frame(width: 480, height: 340)
-            .foregroundStyle(.primary).background(Color(nsColor: .windowBackgroundColor))
+            .foregroundStyle(.primary).tint(CMTheme.accent)
             .interactiveDismissDisabled(saving)
     }
     private func prepare() {

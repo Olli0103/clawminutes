@@ -18,57 +18,77 @@ struct AudioCleanupView: View {
     @State private var reviewError: String?
     var onClose: () -> Void = {}
     var onBusyChange: (Bool) -> Void = { _ in }
+    init(controller: MenuBarController, meetings: [RecentMeeting], onClose: @escaping () -> Void = {}, onBusyChange: @escaping (Bool) -> Void = { _ in }) {
+        self.controller = controller; self.meetings = meetings
+        self.onClose = onClose; self.onBusyChange = onBusyChange
+    }
+    #if DEBUG
+    private var fixtureRows: [AudioCleanup.Row]?
+    init(controller: MenuBarController, previewRows: [AudioCleanup.Row]) {
+        self.init(controller: controller, meetings: [])
+        fixtureRows = previewRows
+        _rows = State(initialValue: previewRows)
+        _selected = State(initialValue: AudioCleanup.defaultSelection(previewRows))
+        _reviewing = State(initialValue: false)
+    }
+    #endif
+    private var keptCount: Int {
+        rows.filter { ($0.plan == nil || failed.contains($0.id)) && !$0.alreadyRemoved && !completed.contains($0.id) }.count
+    }
+    private var hasEligibleAudio: Bool {
+        rows.contains { $0.plan != nil && !completed.contains($0.id) && !failed.contains($0.id) }
+    }
     var selectedPlans: [AudioRetention.Plan] { rows.filter { selected.contains($0.id) && !completed.contains($0.id) }.compactMap(\.plan) }
     var bytes: Int64 { selectedPlans.reduce(0) { $0 + $1.bytes } }
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 14) {
-                Image(systemName: "externaldrive").font(.system(size: 26, weight: .medium))
-                    .foregroundStyle(.tint).frame(width: 52, height: 52)
-                    .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 16))
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Delete old audio").font(.title2.weight(.semibold))
-                    Text("Keep your notes. Free up recording space.").font(.callout).foregroundStyle(.secondary)
-                }
-            }
-            Text("Audio from verified saved meetings is selected automatically. Notes and transcripts stay. Unfinished or unverified recordings are kept for recovery.")
-                .font(.callout).foregroundStyle(.secondary)
+            Text("Delete old audio").font(.title2.weight(.semibold))
+            Text("Keep your notes and transcripts. Remove audio you no longer need.")
+                .font(.callout).foregroundStyle(CMTheme.secondary)
             if reviewing { ProgressView("Checking saved text and audio coverage…") }
-            if !reviewing {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(selectedPlans.isEmpty ? (!failed.isEmpty ? "Some audio needs another check" : completed.isEmpty ? "No verified audio selected" : "Audio cleanup finished") : ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) + " ready to delete")
-                        .font(.title2.weight(.semibold))
-                    Text("\(selectedPlans.count) meetings selected · \(rows.filter { ($0.plan == nil || failed.contains($0.id)) && !$0.alreadyRemoved && !completed.contains($0.id) }.count) kept for recovery")
-                        .font(.caption).foregroundStyle(.secondary)
-                }.helperCard(tint: .accentColor)
+            if !reviewing && !rows.isEmpty {
+                Text(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) + " selected · \(keptCount) kept for recovery")
+                    .font(.headline)
             }
-            List(rows) { row in rowView(row) }.listStyle(.inset).scrollContentBackground(.hidden)
-            if let reviewError { Text(reviewError).font(.callout).foregroundStyle(.orange) }
-            if rows.isEmpty && !reviewing { Text("No recordings are available in this selection.").foregroundStyle(.secondary) }
-            Text("Audio deletion is permanent. Playback and transcription from these tracks will no longer be available.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if rows.isEmpty && !reviewing {
+                ContentUnavailableView("No old audio to delete", systemImage: "externaldrive.badge.checkmark", description: Text("Your notes and transcripts are kept."))
+            } else {
+                CleanupTable(rows: rows, selected: $selected, completed: completed, failed: failed, deleting: deleting,
+                             review: controller.showMeetingDetails)
+            }
+            if let reviewError { Text(reviewError).font(.callout).foregroundStyle(.primary) }
+
             HStack {
                 if deleting { ProgressView().controlSize(.small); Text("Verifying and deleting…").font(.caption) }
-                if !deleting && !reviewing {
+                if !deleting && !reviewing && !rows.isEmpty {
                     Button("Check again") {
                         reviewing = true; selected.removeAll(); failed.removeAll(); reviewError = nil
                         outcomes = outcomes.filter { completed.contains($0.key) }; reviewRevision += 1
-                    }.helperButton()
+                    }.buttonStyle(.bordered)
                 }
                 Spacer()
                 Button(completed.isEmpty ? "Cancel" : "Done") { cancelled = true; onClose() }
-                    .helperButton().keyboardShortcut(.cancelAction).disabled(deleting)
-                Button("Delete audio…", role: .destructive) { confirmationPresented = true }.helperButton(prominent: true).tint(.red)
-                    .disabled(reviewing || deleting || selectedPlans.isEmpty)
-            }.controlSize(.large)
-        }.padding(24).frame(width: 650, height: 560).helperPanel()
+                    .buttonStyle(.bordered).keyboardShortcut(.cancelAction).disabled(deleting)
+                if reviewing || hasEligibleAudio {
+                    Button("Delete audio…", role: .destructive) { confirmationPresented = true }.buttonStyle(.borderedProminent).tint(.red)
+                        .disabled(reviewing || deleting || selectedPlans.isEmpty)
+                }
+
+            }.controlSize(.regular)
+        }.padding(20).frame(minWidth: 650, minHeight: 480).helperPanel()
             .alert("Delete \(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)) of recording audio?", isPresented: $confirmationPresented) {
                 Button("Cancel", role: .cancel) {}
                 Button("Delete audio", role: .destructive, action: delete)
             } message: {
-                Text("Permanently delete audio from \(selectedPlans.count) selected meetings. Your notes and transcripts stay. Recordings kept for recovery are not included.")
+                Text("Permanently delete audio from \(selectedPlans.count) selected meetings. Your notes and transcripts stay. Playback and retranscription from these tracks will no longer be available. Recordings kept for recovery are not included.")
             }
             .task(id: reviewRevision) {
+                #if DEBUG
+                if let fixtureRows {
+                    rows = fixtureRows; selected = AudioCleanup.defaultSelection(fixtureRows); reviewing = false
+                    return
+                }
+                #endif
                 do {
                     let list = meetings
                     let work = Task.detached { try AudioCleanup.review(list) }
@@ -80,49 +100,10 @@ struct AudioCleanupView: View {
             }
             .onDisappear { cancelled = true }
     }
-    private func selectionBinding(_ id: String) -> Binding<Bool> {
-        Binding(get: { selected.contains(id) }, set: { value in
-            if value { _ = selected.insert(id) } else { _ = selected.remove(id) }
-        })
-    }
-    private func rowView(_ row: AudioCleanup.Row) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .top) {
-                Toggle(isOn: selectionBinding(row.id)) { Text(row.meeting.title).font(.headline) }
-                    .toggleStyle(.checkbox).disabled(deleting || row.plan == nil || completed.contains(row.id) || failed.contains(row.id))
-                Spacer()
-                if completed.contains(row.id) { Image(systemName: "checkmark.circle.fill").foregroundStyle(.green).accessibilityLabel("Audio removed") }
-            }
-            VStack(alignment: .leading, spacing: 4) {
-                if let started = row.meeting.started { Text(started, format: .dateTime).foregroundStyle(.secondary) }
-                if completed.contains(row.id) {
-                    Text("Audio removed. Notes and transcript kept.").foregroundStyle(.secondary)
-                } else if let plan = row.plan {
-                    Text("\(plan.remaining.count) audio tracks · " + ByteCountFormatter.string(fromByteCount: plan.bytes, countStyle: .file))
-                    if !plan.missing.isEmpty { Text("Interrupted cleanup can resume after fresh verification.") }
-                    DisclosureGroup("Audio files") {
-                        ForEach(plan.remaining, id: \.name) { track in
-                            Text(track.name + " · " + ByteCountFormatter.string(fromByteCount: track.identity.bytes, countStyle: .file))
-                        }
-                        Text(plan.directory).textSelection(.enabled)
-                    }
-                }
-                if let issue = outcomes[row.id] ?? row.issue {
-                    if failed.contains(row.id) {
-                        Text("Cleanup stopped for this meeting. Some audio may already be removed. Choose Check again before retrying.").foregroundStyle(.orange)
-                    }
-                    if row.plan == nil && !row.alreadyRemoved {
-                        Text(AudioCleanup.explanation(row)).foregroundStyle(.secondary)
-                        Button("Review meeting") { controller.showMeetingDetails(row.meeting) }.helperButton().controlSize(.small).disabled(deleting)
-                    }
-                    DisclosureGroup("Technical details") {
-                        Text(issue).textSelection(.enabled)
-                    }.foregroundStyle(.secondary)
-                }
-            }.font(.caption).padding(.leading, 22)
-        }.padding(.vertical, 4)
-    }
     private func delete() {
+        #if DEBUG
+        guard fixtureRows == nil else { return } // Review controls can never delete fixture or real files.
+        #endif
         guard !reviewing, !deleting, !selectedPlans.isEmpty else { return }
         let selection = rows.filter { selected.contains($0.id) && !completed.contains($0.id) && $0.plan != nil }
         deleting = true; onBusyChange(true)
