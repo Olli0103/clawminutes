@@ -10,7 +10,7 @@ final class RecordingPermissionsTests: XCTestCase {
         defer { if let previous { setenv(key, previous, 1) } else { unsetenv(key) } }
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
-        let session = try RecordingSession(root: root)
+        let session = try RecordingSession(root: root, activityLockPath: root.appendingPathComponent("lifecycle.lock"))
         session.checkpoint()
         session.stop()
         let meta = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: session.dir.appendingPathComponent("meta.json"))) as? [String: Any])

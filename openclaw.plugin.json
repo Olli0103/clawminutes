@@ -32,11 +32,15 @@
       "help": "The Gateway agent whose provider credentials are used. No agent session or tools are run."
     }
   },
-  "version": "0.2.5",
+  "version": "0.2.16",
   "activation": {
     "onStartup": true
   },
   "contracts": {
     "tools": []
+  },
+  "doctorContract": {
+    "configRepair": true,
+    "stateMigrations": []
   }
 }

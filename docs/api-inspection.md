@@ -12,4 +12,14 @@ Meetings uses the shared state database. The `transcripts/` directory contains e
 
 This internal archive adapter is a compatibility limit. Unsupported versions fail closed and retain the local recording. Local recognition executes on the recording Mac. ElevenLabs recognition uploads directly from that Mac to ElevenLabs; no Gateway-side recognition is assumed. Meeting notes carry their own provenance. AI mode uses a zero-tool simple completion with the Gateway credential owner and selected model; simple highlights and transcript-only mode use no model.
 
+The review candidate also verifies the private store's synthetic write/readback and deduplication behavior in a temporary directory before opening the canonical archive. The helper negotiates a versioned text protocol before sending speech. The newer v2 contract replaces the upper version bound with observable admission checks. Earlier inspection results below describe the versions inspected then. See [Gateway compatibility checks](gateway-capabilities.md).
+
 A documentation contradiction was observed: the handshake example uses client mode `operator`, but the installed schema and live Gateway reject that value. The installed valid mode for the inspected development client is `cli`. The helper's production archive connection uses authenticated HTTP rather than that WebSocket client.
+
+## OpenClaw 2026.9.8
+
+The authenticated Control UI separately reported the connected Gateway and UI versions as 2026.9.8 on 5 October. The npm SDK archive passed its published SHA-512 integrity check. The internal transcript store retains writeSession, appendUtteranceForSession, writeSummary, and the corresponding read methods. Its isolated save/readback test preserves timestamps, names, gaps, and idempotency. Both verified SDK versions are accepted; other releases remain rejected. The simple-completion export remains present, but actual model preparation and completion on this Gateway still require runtime verification.
+
+## Review candidate v2 archive admission
+
+Package discovery now requires a minimum plugin API rather than an exact upper bound. Runtime discovery, package provenance, the isolated storage/reader proof and an existing-archive reader interface live in one module. The helper negotiates the same proof before sending text. A metadata-only future-version fixture exercises the original compatibility proposal without claiming an actual new release was tested. The SDK's readOnly option is not a general write guard; the existing-database check and reader-only interface are required. Public completed-record import, installed schema/lease compatibility and live concurrency remain open. See [current contract and limitations](gateway-capabilities.md).

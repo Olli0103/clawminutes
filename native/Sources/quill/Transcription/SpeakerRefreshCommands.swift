@@ -21,10 +21,15 @@ struct RefreshSpeakers: ParsableCommand {
         dispatchMain()
     }
 
-    func refresh() async throws {
+    func refresh(activityLockPath: URL = HelperWorkLease.path) async throws {
         let fm = FileManager.default
         let directory = URL(fileURLWithPath: (recording as NSString).expandingTildeInPath).standardizedFileURL
+        let ownership = try DraftSourceOwnership.acquire(directory, editing: output == nil, activityLockPath: activityLockPath)
+        defer { withExtendedLifetime(ownership) {} }
         let meta = try SessionMeta.read(from: directory)
+        guard meta.tracks.filter({ $0.source == "system" }).count <= 1 else {
+            throw ValidationError("This capture has recovered audio segments. Run a full transcription preview to refresh their speakers without dropping segments.")
+        }
         guard let track = meta.tracks.first(where: { $0.source == "system" }), let started = meta.audioStartedAt else {
             throw ValidationError("This recording needs a system track and its start timestamp.")
         }
@@ -90,6 +95,7 @@ struct RefreshSpeakers: ParsableCommand {
             "after_named_words": wordCount(refreshed.filter { $0.speaker_name != nil }),
             "total_remote_words": wordCount(refreshed),
             "text_preserved": true, "word_timestamps_reused": true, "audio_uploaded": false]
+        try ownership.validateUnchanged()
         let target: URL
         var backup: URL?
         var previousReport: Data?

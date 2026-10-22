@@ -4,74 +4,237 @@ import Foundation
 /// mic.caf → "me", system.caf → "them"; each track's segments are shifted by
 /// its start offset, merged by timestamp, and written as transcript.json
 /// (canonical) plus transcript.md (readable). The filesystem is the queue —
-/// `resumePending()` rescans at launch, so a crash or quit mid-transcription
-/// just retries on next run. Failures append to the session's transcribe.log
-/// and never block later jobs.
+/// Recovery scans use persisted attempt budgets at launch and while running.
+/// Recognition, delivery and retention have separate implementations. A failure
+/// stays attached to its meeting and never blocks later jobs.
 actor TranscriptionCoordinator {
     enum Status: Sendable {
         case idle
         case transcribing(session: String, queued: Int)
+        case recognizingChunk(session: String, queued: Int)
         case postprocessing(session: String, queued: Int)
         case failed(session: String)
+        case archivePending(session: String)
+        case needsReview(session: String, reason: String)
     }
 
+    private struct ClosedChunkJob: Equatable, Sendable {
+        let directory: URL
+        let file: String
+        let identity: String
+    }
+    private var closedChunks: [ClosedChunkJob] = []
+    private var activeChunk: ClosedChunkJob?
     private var queue: [URL] = []
     private var draining = false
-    private var engine: TranscriptionEngine?
-    private var engineOffline = false
-    private let makeEngine: @Sendable (TranscriptionEngineKind, Bool) -> any TranscriptionEngine
-    private var lastFailure: String?
+    private var activeTranscription: URL?
+    private var activeRoot: URL?
+    private let clock: @Sendable () -> Double
+    private let localModelAvailable: @Sendable () -> Bool
+    private let detectSpeakers: @Sendable () -> Bool
+    private let transcriber: RecordingTranscriber
+    private var lastIssue: Status?
     private var statusHandler: (@Sendable (Status) -> Void)?
+    private let activityLockPath: URL
+    private let delivery: MeetingDeliveryStage
+    private var checkingBacklog = false
+    private var backlogIndex = ArchiveBacklogIndex()
+    private var meetingsHandler: (@Sendable ([RecentMeeting]) -> Void)?
+    func setMeetingsHandler(_ handler: @escaping @Sendable ([RecentMeeting]) -> Void) { meetingsHandler = handler }
+    private var backlogHandler: (@Sendable (Int) -> Void)?
 
-    init(makeEngine: @escaping @Sendable (TranscriptionEngineKind, Bool) -> any TranscriptionEngine = { kind, offline in
+    struct BacklogReport: Codable, Sendable {
+        var attempted = 0
+        var pending = 0
+        var transcriptionPending = 0
+        var needsReview = 0
+        var busy = false
+    }
+
+    func setBacklogHandler(_ handler: @escaping @Sendable (Int) -> Void) { backlogHandler = handler }
+
+    /// Reconcile text delivery while the app stays running. Never starts capture or inference.
+    func retryArchiveBacklog(root: URL, force: Bool = false, capabilities: GatewayCapabilities? = nil,
+                             now: TimeInterval = Date().timeIntervalSince1970) async throws -> BacklogReport {
+        guard !checkingBacklog else { return BacklogReport(busy: true) }
+        checkingBacklog = true
+        defer { checkingBacklog = false }
+        var report = BacklogReport()
+        if force {
+            for item in try backlogIndex.scan(root: root) { try ArchiveBacklog.rearmConnection(item, now: now, capabilities: capabilities) }
+        }
+        let items = try backlogIndex.scan(root: root)
+        for item in items where item.pending && report.attempted < 5 {
+            if (item.verifiedText == .archive || !force), item.nextAttemptAt > now { continue }
+            if await runHook(for: item.directory, now: now) { report.attempted += 1 }
+        }
+        let remaining = try backlogIndex.scan(root: root)
+        let lease = try HelperWorkLease.acquire(at: activityLockPath)
+        defer { withExtendedLifetime(lease) {} }
+        for item in remaining where item.state != .recording && item.state != .fixture && activeTranscription != item.directory {
+            do {
+                var state = try MeetingPipelineState.load(item.directory, inspected: item, now: now)
+                state.reconcile(item, now: now); try state.write(item.directory)
+            } catch { FileHandle.standardError.write(Data("Meeting recovery state could not be reconciled. Files preserved.\n".utf8)) }
+        }
+        report.pending = remaining.filter(\.pending).count
+        report.transcriptionPending = remaining.filter { $0.state == .transcriptionPending }.count
+        report.needsReview = remaining.filter { $0.state == .needsReview }.count
+        backlogHandler?(report.pending)
+        meetingsHandler?(remaining.reversed().filter { $0.state != .fixture }.map { RecentMeeting.make($0) })
+        if let review = remaining.first(where: { $0.state == .needsReview }) {
+            lastIssue = .needsReview(session: review.directory.lastPathComponent, reason: review.reason)
+        } else if let speech = remaining.first(where: { $0.state == .transcriptionPending && $0.reason != "Waiting to transcribe" }) {
+            lastIssue = .needsReview(session: speech.directory.lastPathComponent, reason: speech.reason)
+        } else if let pending = remaining.first(where: \.pending) {
+            lastIssue = .archivePending(session: pending.directory.lastPathComponent)
+        } else {
+            switch lastIssue { case .archivePending, .needsReview: lastIssue = nil; default: break }
+        }
+        if !draining { publish(lastIssue ?? .idle) }
+        return report
+    }
+
+    /// Retries finished local recordings without a relaunch. No capture starts,
+    /// and missing-model/credential causes wait for their explicit remedy.
+    @discardableResult func retryPendingTranscriptions(root: URL, modelInstalled: Bool = false, credentialsInstalled: Bool = false) throws -> Int {
+        guard Config.transcriptionEnabled() else { return 0 }
+        let lease = try HelperWorkLease.acquire(at: activityLockPath)
+        defer { withExtendedLifetime(lease) {} }
+        activeRoot = root
+        var added = 0
+        for item in try backlogIndex.scan(root: root) where item.state == .transcriptionPending || item.state == .needsReview {
+            let dir = item.directory
+            guard activeTranscription != dir, !queue.contains(dir), ArchiveBacklog.isFinished(dir),
+                  !FileManager.default.fileExists(atPath: dir.appendingPathComponent("transcript.json").path),
+                  !RecordingSession.isUnstartedAttempt(dir),
+                  !AudioRetention.explicitlyRemoved(dir) else { continue }
+            let initial: MeetingPipelineState
+            do { initial = try MeetingPipelineState.load(dir, inspected: item, now: clock()) }
+            catch {
+                lastIssue = .needsReview(session: dir.lastPathComponent, reason: MeetingPipelineState.invalidState.detail)
+                continue
+            }
+            var state = initial
+            if modelInstalled || localModelAvailable() { state.localModelInstalled(at: clock()) }
+            if credentialsInstalled { state.speechCredentialsInstalled(at: clock()) }
+            try state.write(dir)
+            guard state.mayTranscribe(at: clock()) else { continue }
+            queue.append(dir); added += 1
+            if added >= 5 { break }
+        }
+        drainIfIdle()
+        return added
+    }
+
+    init(activityLockPath: URL = HelperWorkLease.path,
+         clock: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 },
+         localModelAvailable: @escaping @Sendable () -> Bool = { ParakeetEngine.modelsAvailable },
+         detectSpeakers: @escaping @Sendable () -> Bool = { Config.speakerDetection() },
+         audioDuration: @escaping @Sendable (URL) throws -> Double = AudioRetention.duration,
+         saveArchive: @escaping @Sendable (URL) async throws -> Void = { try await GatewayArchive.save($0) },
+         makeEngine: @escaping @Sendable (TranscriptionEngineKind, Bool) -> any TranscriptionEngine = { kind, offline in
         switch kind {
         case .parakeet: return ParakeetEngine()
         case .elevenLabs: return ElevenLabsEngine(offline: offline)
         }
     }) {
-        self.makeEngine = makeEngine
+        self.clock = clock
+        self.localModelAvailable = localModelAvailable
+        self.detectSpeakers = detectSpeakers
+        self.activityLockPath = activityLockPath
+        self.transcriber = RecordingTranscriber(activityLockPath: activityLockPath, audioDuration: audioDuration, makeEngine: makeEngine)
+        self.delivery = MeetingDeliveryStage(activityLockPath: activityLockPath, saveArchive: saveArchive)
     }
 
     func setStatusHandler(_ handler: @escaping @Sendable (Status) -> Void) {
         statusHandler = handler
     }
 
-    /// Queue a finished session. With transcription disabled in config, the
-    /// on_stop hook still fires — it just gets an untranscribed folder.
-    func enqueue(_ sessionDir: URL) async {
-        guard Config.transcriptionEnabled() else {
+    /// Queue a finished session. Existing transcripts can still be delivered
+    /// when transcription is disabled.
+    func enqueue(_ sessionDir: URL, transcriptionEnabled: Bool = Config.transcriptionEnabled()) async {
+        guard transcriptionEnabled else {
             await runHook(for: sessionDir)
             return
         }
+        // Pending speculative requests can be dropped because the final job
+        // visits every declared audio file, with or without a checkpoint.
+        let identity = try? MeetingPipelineState.identity(sessionDir)
+        closedChunks.removeAll { $0.directory == sessionDir || $0.identity == identity }
+        guard !queue.contains(sessionDir), activeTranscription != sessionDir else { return }
+        activeRoot = sessionDir.deletingLastPathComponent()
         queue.append(sessionDir)
+        drainIfIdle()
+    }
+
+    /// Bounded speculative queue, sharing the finished-job engine. No cloud
+    /// recognition and no automatic model download during a meeting.
+    func enqueueClosedChunk(_ directory: URL, file: String) {
+        guard Config.transcriptionEnabled(), localModelAvailable(), SessionMeta.validTrackFile(file),
+              let identity = try? MeetingPipelineState.identity(directory),
+              !queue.contains(directory), activeTranscription != directory,
+              closedChunks.count < 16 else { return }
+        let job = ClosedChunkJob(directory: directory, file: file, identity: identity)
+        guard activeChunk != job, !closedChunks.contains(job) else { return }
+        activeRoot = directory.deletingLastPathComponent()
+        closedChunks.append(job)
         drainIfIdle()
     }
 
     /// Scan the recordings root for sessions that finished (meta.json exists)
     /// but were never transcribed. Folder names sort chronologically, so
     /// oldest-first is a name sort.
-    func resumePending(root: URL) async {
-        guard Config.transcriptionEnabled() else { return }
+    @discardableResult func resumePending(root: URL, startupOwner: AppRunLock? = nil) async -> Bool {
+        var workLease: HelperWorkLease?
+        // The installer can still hold its lease when launchctl starts this
+        // process. Wait briefly so startup recovery is not silently skipped.
+        for _ in 0..<20 {
+            if let acquired = try? HelperWorkLease.acquire(at: activityLockPath) { workLease = acquired; break }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        guard let workLease else {
+            publish(.failed(session: "Pending meeting recovery"))
+            FileHandle.standardError.write(Data("Could not resume pending meetings while helper lifecycle work is active. Files remain pending for the next launch.\n".utf8))
+            return false
+        }
+        defer { withExtendedLifetime(workLease) {} }
+        if let startupOwner {
+            do { _ = try InterruptedRecordingRecovery.recover(root: root, owner: startupOwner, activityLockPath: activityLockPath) }
+            catch {
+                publish(.failed(session: "Interrupted meeting recovery"))
+                FileHandle.standardError.write(Data("Interrupted meeting recovery failed. Files preserved; new capture remains paused.\n".utf8))
+                return false
+            }
+        }
         guard let entries = try? FileManager.default.contentsOfDirectory(
             at: root, includingPropertiesForKeys: nil
-        ) else { return }
+        ) else { return true }
 
+        activeRoot = root
         let fm = FileManager.default
         let pending = entries
             .filter {
                 fm.fileExists(atPath: $0.appendingPathComponent("meta.json").path)
+                    && ArchiveBacklog.isFinished($0)
                     && !fm.fileExists(atPath: $0.appendingPathComponent("transcript.json").path)
                     && !RecordingSession.isUnstartedAttempt($0)
                     && !AudioRetention.explicitlyRemoved($0)
             }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
-        for dir in pending where !queue.contains(dir) {
-            queue.append(dir)
+        for dir in pending where Config.transcriptionEnabled() && !queue.contains(dir) && activeTranscription != dir {
+            do {
+                var state = try MeetingPipelineState.load(dir, now: clock())
+                if localModelAvailable() { state.localModelInstalled(at: clock()) }
+                try state.write(dir)
+                if state.mayTranscribe(at: clock()) { queue.append(dir) }
+            } catch { lastIssue = .needsReview(session: dir.lastPathComponent, reason: MeetingPipelineState.invalidState.detail) }
         }
-        for dir in entries where fm.fileExists(atPath: dir.appendingPathComponent("transcript.json").path) && (!fm.fileExists(atPath: dir.appendingPathComponent("archive-receipt.json").path) || Self.needsNotesExport(dir)) { await runHook(for: dir) }
+        do { _ = try await retryArchiveBacklog(root: root) }
+        catch { FileHandle.standardError.write(Data("Could not check pending meeting saves. Recording files preserved.\n".utf8)) }
         if Config.deleteAudioAfterVerification() {
             for dir in entries where fm.fileExists(atPath: dir.appendingPathComponent("archive-receipt.json").path) && !AudioRetention.explicitlyRemoved(dir) {
-                applyRetention(dir)
+                MeetingRetention.apply(dir)
             }
         }
         if !pending.isEmpty {
@@ -80,41 +243,98 @@ actor TranscriptionCoordinator {
             ))
         }
         drainIfIdle()
+        return true
     }
 
     // MARK: -
 
     private func drainIfIdle() {
-        guard !draining, !queue.isEmpty else { return }
+        guard !draining, !queue.isEmpty || !closedChunks.isEmpty else { return }
         draining = true
-        lastFailure = nil
         Task { await drain() }
     }
 
     private func drain() async {
-        while !queue.isEmpty {
-            let dir = queue.removeFirst()
-            publish(.transcribing(session: dir.lastPathComponent, queued: queue.count))
+        let workLease: HelperWorkLease
+        do { workLease = try HelperWorkLease.acquire(at: activityLockPath) }
+        catch {
+            draining = false
+            closedChunks.removeAll()
+            if let first = queue.first { publish(.failed(session: first.lastPathComponent)) }
+            return // Files remain pending for the next launch; never start inference during replacement.
+        }
+        defer { withExtendedLifetime(workLease) {} }
+        var processedFinished = false
+        while !queue.isEmpty || !closedChunks.isEmpty {
+            // Finished meetings take priority at inference boundaries. A chunk
+            // already in inference finishes; it cannot starve final processing.
+            if queue.isEmpty {
+                let job = closedChunks.removeFirst()
+                activeChunk = job
+                publish(.recognizingChunk(session: job.directory.lastPathComponent, queued: closedChunks.count))
+                do { try await transcriber.transcribeClosedChunk(job.directory, file: job.file) }
+                catch {
+                    // A bounded failed speculative attempt is not a final STT
+                    // failure. The source audio remains available to the final job.
+                    log(job.directory, "Local recognition checkpoint unavailable for \(job.file). Final transcription will inspect the audio.")
+                }
+                activeChunk = nil
+                continue
+            }
+            processedFinished = true
+            var dir = queue.removeFirst()
+            activeTranscription = dir
+            var state: MeetingPipelineState?
             do {
-                try await transcribe(dir)
+                // Stop may have deferred the title rename while speculative
+                // recognition held archive.lock. The engine is idle here.
+                dir = try RecordingFolders.renameFinished(dir)
+                activeTranscription = dir
+                var current = try MeetingPipelineState.load(dir, now: clock())
+                guard current.mayTranscribe(at: clock()) else {
+                    lastIssue = .needsReview(session: dir.lastPathComponent, reason: current.transcription.lastError?.detail ?? "Speech recognition stopped after three attempts. Audio is retained.")
+                    activeTranscription = nil
+                    continue
+                }
+                try current.reserveTranscription(at: clock())
+                try current.write(dir)
+                state = current
+                publish(.transcribing(session: dir.lastPathComponent, queued: queue.count))
+                try await transcribe(dir, detectSpeakers: detectSpeakers())
+                state?.stage = .transcribed; state?.transcription.lastError = nil; state?.transcription.lastErrorAt = nil; state?.updatedAt = clock()
+                try state?.write(dir)
                 let cleanupOptions = PostProcessingOptions(json: ["mode": "off"])
                 if cleanupOptions.mode != .off { publish(.postprocessing(session: dir.lastPathComponent, queued: queue.count)) }
                 let cleanup = await TranscriptPostProcessor.process(dir, options: cleanupOptions)
                 log(dir, "postprocess: \(cleanup.status)")
-                notifyUser(title: "ocmh: transcript ready", body: dir.lastPathComponent)
                 await runHook(for: dir)
+                let item = backlogIndex.item(dir)
+                var latest = try MeetingPipelineState.load(dir)
+                latest.reconcile(item, now: clock()); try latest.write(dir)
+                switch lastIssue {
+                case .failed(let name), .needsReview(let name, _): if name == dir.lastPathComponent && item.state == .saved { lastIssue = nil }
+                default: break
+                }
             } catch {
                 log(dir, "transcription failed: \(error)")
-                lastFailure = dir.lastPathComponent
-                notifyUser(
-                    title: "ocmh: transcription failed",
-                    body: "\(dir.lastPathComponent) — see transcribe.log"
-                )
+                if FileManager.default.fileExists(atPath: dir.appendingPathComponent("transcript.json").path) {
+                    lastIssue = .needsReview(session: dir.lastPathComponent, reason: "The transcript is ready, but meeting progress could not be saved. Local files are preserved.")
+                } else if var state {
+                    state.transcriptionFailed(error, at: clock())
+                    try? state.write(dir)
+                    lastIssue = .needsReview(session: dir.lastPathComponent,
+                        reason: state.transcription.lastError?.detail ?? "Speech recognition did not finish. Audio is retained.")
+                } else {
+                    lastIssue = .needsReview(session: dir.lastPathComponent, reason: MeetingPipelineState.invalidState.detail)
+                }
             }
+            activeTranscription = nil
         }
-        await engine?.release()
-        engine = nil
-        publish(lastFailure.map { .failed(session: $0) } ?? .idle)
+        await transcriber.release()
+        if processedFinished {
+            if let root = activeRoot { try? await retryArchiveBacklog(root: root) }
+        }
+        publish(lastIssue ?? .idle)
         draining = false
         // An enqueue that landed between the loop exiting and the release
         // finishing would otherwise sit until the next enqueue.
@@ -122,304 +342,31 @@ actor TranscriptionCoordinator {
     }
 
     func transcribe(_ dir: URL, detectSpeakers: Bool = Config.speakerDetection(), remoteSpeakerCount: Int? = nil,
-                    engineOverride: TranscriptionEngineKind? = nil, offline: Bool = false, learnVoiceMemory: Bool = true) async throws {
-        let meta = try SessionMeta.read(from: dir)
-        // Snapshot the selection for both tracks. Menu changes affect the next job.
-        let rawMeta = try JSONSerialization.jsonObject(with: Data(contentsOf: dir.appendingPathComponent("meta.json"))) as? [String: Any]
-        let selected = engineOverride ?? (rawMeta?["backend"] as? String).flatMap(TranscriptionEngineKind.init(rawValue:))
-        let engine = try await preparedEngine(kind: selected, offline: offline || selected == .parakeet)
-        let observationURL = dir.appendingPathComponent("speaker-observations.jsonl")
-        let observations = ((try? String(contentsOf: observationURL, encoding: .utf8)) ?? "")
-            .split(separator: "\n").compactMap { try? JSONDecoder().decode(SpeakerObservation.self, from: Data($0.utf8)) }
-        var roster = meta.participantRoster ?? ParticipantRoster(audio_started_at: meta.audioStartedAt ?? 0)
-        if let started = meta.audioStartedAt { roster.audio_started_at = started }
-        if let name = meta.localSpeakerName, !meta.sharedMicrophone {
-            roster.observe(SpeakerObservation(observed_at: roster.audio_started_at, meeting_id: "local", names: [name],
-                                              source: "local_microphone", is_local: true), localName: name)
-        }
-        for observation in observations { roster.observe(observation, localName: meta.localSpeakerName) }
-
-        var merged: [Transcript.Segment] = []
-        var analysis = SpeakerAnalysis(turns: [], names: [:])
-        var speakerStatus: [String: String] = [:]
-        var successfulTracks = 0
-        for track in meta.tracks {
-            let audio = dir.appendingPathComponent(track.file)
-            guard FileManager.default.fileExists(atPath: audio.path) else {
-                throw TranscriptionFailure("Missing expected track \(track.file). Recording preserved; recovery needs review.")
-            }
-            log(dir, "transcribing \(track.file) (\(engine.name))")
-            // One bad track (empty, truncated) shouldn't cost us the other's
-            // transcript — log it and keep going.
-            let segments: [TranscriptSegment]
-            do {
-                segments = try await engine.transcribe(audio)
-                successfulTracks += 1
-            } catch {
-                // Cloud failures must not publish a partial meeting as complete.
-                // Successful tracks have their own cache for the next attempt.
-                throw error
-            }
-            let offset = TimeInterval(track.offsetMs) / 1000
-            if detectSpeakers && (track.speaker == "them" || meta.sharedMicrophone) && !segments.isEmpty {
-                do {
-                    log(dir, "separating speakers in \(track.file)")
-                    var trackAnalysis = try await SpeakerDiarizer.analyze(audio, source: track.source,
-                                                                         speakerCount: track.source == "system" ? remoteSpeakerCount : nil,
-                                                                         captureVoiceSamples: track.source == "system" && Config.voiceMemoryEnabled())
-                    if let started = meta.audioStartedAt, track.source == "system" {
-                        trackAnalysis.named_spans = SpeakerAttribution.nameSpans(turns: trackAnalysis.turns, observations: observations,
-                                                               audioStartedAt: started + offset, segments: segments)
-                        trackAnalysis.voice_identities = SpeakerAttribution.voiceNames(turns: trackAnalysis.turns, spans: trackAnalysis.named_spans)
-                        for span in trackAnalysis.named_spans {
-                            trackAnalysis.names[SpeakerAttribution.namedSpeakerID(span.identity, source: track.source)] = span.identity
-                        }
-                    }
-                    if track.source == "system", Config.voiceMemoryEnabled() {
-                        do {
-                            let recordingKey = try ElevenLabsEngine.fingerprint(audio)
-                            try VoiceMemoryStore.shared.apply(to: &trackAnalysis, recording: recordingKey, roster: roster, learn: learnVoiceMemory)
-                        } catch { log(dir, "speaker fingerprint memory unavailable: \(error); using current meeting evidence") }
-                    }
-                    if let samples = trackAnalysis.voice_samples {
-                        analysis.voice_samples = (analysis.voice_samples ?? []) + samples.map {
-                            VoiceSample(speaker_id: $0.speaker_id, start: $0.start + offset, end: $0.end + offset, embedding: $0.embedding)
-                        }
-                    }
-                    merged += SpeakerAttribution.align(segments, turns: trackAnalysis.turns, source: track.source,
-                                                       offset: offset, namedSpans: trackAnalysis.named_spans,
-                                                       voiceIdentities: trackAnalysis.voice_identities)
-                    analysis.turns += trackAnalysis.turns.map { SpeakerTurn(speaker_id: $0.speaker_id, start: $0.start + offset, end: $0.end + offset) }
-                    analysis.names.merge(trackAnalysis.names) { _, new in new }
-                    if let identities = trackAnalysis.voice_identities {
-                        analysis.voice_identities = (analysis.voice_identities ?? [:]).merging(identities) { _, new in new }
-                    }
-                    analysis.named_spans += trackAnalysis.named_spans.map { NamedSpeakerSpan(start: $0.start + offset, end: $0.end + offset, identity: $0.identity) }
-                    speakerStatus[track.source] = trackAnalysis.turns.isEmpty ? "no_speech_detected" : "complete"
-                    continue
-                } catch {
-                    speakerStatus[track.source] = "failed"
-                    log(dir, "speaker detection failed for \(track.file): \(error); preserving unlabelled transcript")
-                }
-            }
-            let localName = track.source == "mic" && !meta.sharedMicrophone ? meta.localSpeakerName : nil
-            merged += segments.map {
-                Transcript.Segment(
-                    speaker: track.speaker,
-                    start_ms: Int(($0.start + offset) * 1000),
-                    end_ms: Int(($0.end + offset) * 1000),
-                    text: $0.text,
-                    source: track.source,
-                    speaker_name: localName,
-                    attribution: localName == nil ? "audio_source" : "local_microphone"
-                )
-            }
-        }
-        guard successfulTracks > 0 else {
-            throw TranscriptionFailure("No audio track could be transcribed. See transcribe.log; the session remains pending.")
-        }
-        merged.sort { $0.start_ms < $1.start_ms }
-        // Roster membership alone cannot establish who spoke.
-
-        let transcript = Transcript(
-            engine: engine.name,
-            model: engine.model,
-            created_at: ISO8601DateFormatter().string(from: Date()),
-            segments: merged,
-            schema_version: 2,
-            execution_machine: Host.current().localizedName ?? ProcessInfo.processInfo.hostName,
-            execution_location: engine.name == "parakeet" ? "recording_mac" : "elevenlabs_cloud_direct_from_recording_mac",
-            speaker_detection: speakerStatus,
-            participant_roster: roster
-        )
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(analysis).write(to: dir.appendingPathComponent("speaker-analysis.json"), options: .atomic)
-        try transcript.write(to: dir)
-        log(dir, "done — \(merged.count) segments")
+                    engineOverride: TranscriptionEngineKind? = nil, offline: Bool = false, learnVoiceMemory: Bool = true, allowAudioLinks: Bool = false) async throws {
+        try await transcriber.transcribe(dir, detectSpeakers: detectSpeakers, remoteSpeakerCount: remoteSpeakerCount,
+                                         engineOverride: engineOverride, offline: offline, learnVoiceMemory: learnVoiceMemory, allowAudioLinks: allowAudioLinks)
     }
 
-    private func preparedEngine(kind override: TranscriptionEngineKind?, offline: Bool) async throws -> TranscriptionEngine {
-        guard let kind = override ?? TranscriptionEngineKind(rawValue: Config.transcriptionEngine()) else {
-            throw TranscriptionFailure("Unknown transcription engine: \(Config.transcriptionEngine()). Choose an engine from the ocmh menu.")
+    /// Delivery owns its lease, retry reservation, receipt verification and retention.
+    @discardableResult private func runHook(for dir: URL, now: TimeInterval = Date().timeIntervalSince1970) async -> Bool {
+        switch await delivery.deliver(dir, now: now) {
+        case .skipped: return false
+        case .saved:
+            if case .archivePending(let pending) = lastIssue, pending == dir.lastPathComponent { lastIssue = nil }
+        case .failed(let failure):
+            lastIssue = failure.retryable ? .archivePending(session: dir.lastPathComponent)
+                : .needsReview(session: dir.lastPathComponent, reason: failure.detail)
         }
-        if let engine, engine.name == kind.rawValue, engineOffline == offline { return engine }
-        await engine?.release()
-        engine = nil
-        let next = makeEngine(kind, offline)
-        do { try await next.prepare() }
-        catch { await next.release(); throw error }
-        engine = next
-        engineOffline = offline
-        return next
+        if !draining { publish(lastIssue ?? .idle) }
+        return true
     }
 
-    /// Fires the configured on_stop shell command with the session directory
-    /// as its sole argument, after the transcript exists (or immediately after
-    /// recording when transcription is disabled).
-    private static func needsNotesExport(_ dir: URL) -> Bool {
-        guard !FileManager.default.fileExists(atPath: dir.appendingPathComponent("notes-export-path.txt").path),
-              let data = try? Data(contentsOf: dir.appendingPathComponent("archive-receipt.json")),
-              let receipt = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return false }
-        return receipt["documents"] != nil
-    }
-    private func runHook(for dir: URL) async {
-        do {
-            try await GatewayArchive.save(dir)
-            log(dir, "Gateway Meetings archive saved and read back")
-            applyRetention(dir)
-        } catch {
-            lastFailure = dir.lastPathComponent
-            log(dir, "archive failed: \(error); recording and transcript preserved. Reconnect Gateway and retry archive.")
-        }
-    }
-
-    private func applyRetention(_ dir: URL) {
-        guard Config.deleteAudioAfterVerification(), !AudioRetention.explicitlyRemoved(dir) else { return }
-        do {
-            let count = try AudioRetention.deleteAfterVerification(dir)
-            if count > 0 { log(dir, "Audio retention: verified text and notes; removed \(count) audio track(s)") }
-        } catch { log(dir, "Audio retention: \(error)") }
-    }
-
-    private func log(_ dir: URL, _ message: String) {
-        let line = "\(ISO8601DateFormatter().string(from: Date())) \(message)\n"
-        let url = dir.appendingPathComponent("transcribe.log")
-        if let handle = FileHandle(forWritingAtPath: url.path) {
-            handle.seekToEndOfFile()
-            handle.write(Data(line.utf8))
-            try? handle.close()
-        } else {
-            try? Data(line.utf8).write(to: url)
-        }
-    }
+    private func log(_ dir: URL, _ message: String) { MeetingLog.append(dir, message) }
 
     private func publish(_ status: Status) {
+        if let root = activeRoot, let items = try? backlogIndex.scan(root: root) {
+            meetingsHandler?(items.reversed().filter { $0.state != .fixture }.map { RecentMeeting.make($0, active: $0.directory == activeTranscription) })
+        }
         statusHandler?(status)
-    }
-}
-
-/// The slice of meta.json the coordinator needs: which files exist, who they
-/// represent, and how far each track started after the earliest one.
-struct SessionMeta {
-    struct Track {
-        let file: String
-        let speaker: String
-        let offsetMs: Int
-        var source: String { speaker == "me" ? "mic" : "system" }
-    }
-
-    let tracks: [Track]
-    let audioStartedAt: Double?
-    let localSpeakerName: String?
-    let sharedMicrophone: Bool
-    var participantRoster: ParticipantRoster? = nil
-
-    enum MetaError: Error, CustomStringConvertible {
-        case unreadable(URL)
-
-        var description: String {
-            switch self {
-            case .unreadable(let url): return "can't parse \(url.path)"
-            }
-        }
-    }
-
-    static func read(from dir: URL) throws -> SessionMeta {
-        let url = dir.appendingPathComponent("meta.json")
-        guard
-            let data = try? Data(contentsOf: url),
-            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let files = json["files"] as? [String: String]
-        else { throw MetaError.unreadable(url) }
-
-        // Sessions recorded before offsets were captured default to 0 —
-        // tracks start within tens of milliseconds of each other anyway.
-        let offsets = json["start_offset_ms"] as? [String: Int] ?? [:]
-        var tracks: [Track] = []
-        if let mic = files["mic"] {
-            tracks.append(Track(file: mic, speaker: "me", offsetMs: offsets["mic"] ?? 0))
-        }
-        if let system = files["system"] {
-            tracks.append(Track(file: system, speaker: "them", offsetMs: offsets["system"] ?? 0))
-        }
-        let roster = (try? Data(contentsOf: dir.appendingPathComponent("participants.json")))
-            .flatMap { try? JSONDecoder().decode(ParticipantRoster.self, from: $0) }
-        return SessionMeta(tracks: tracks, audioStartedAt: json["audio_started_at"] as? Double,
-                           localSpeakerName: SpeakerAttribution.cleanName(json["local_speaker_name"] as? String),
-                           sharedMicrophone: json["shared_microphone"] as? Bool ?? false, participantRoster: roster)
-    }
-}
-
-/// Canonical transcript. Property names are the JSON schema — this struct
-/// exists to be serialized.
-struct Transcript: Codable, Sendable {
-    struct Segment: Codable, Sendable {
-        var speaker: String
-        let start_ms: Int
-        let end_ms: Int
-        var text: String
-        var source: String? = nil
-        var speaker_name: String? = nil
-        var attribution: String? = nil
-
-        var displayName: String {
-            if let speaker_name { return speaker_name }
-            if speaker.hasSuffix("_unknown") { return "Unknown speaker" }
-            if let number = speaker.split(separator: "_").last, Int(number) != nil {
-                return "Unknown speaker"
-            }
-            return "Unknown speaker"
-        }
-    }
-
-    let engine: String
-    let model: String
-    let created_at: String
-    var segments: [Segment]
-    var schema_version: Int? = nil
-    var execution_machine: String? = nil
-    var execution_location: String? = nil
-    var speaker_detection: [String: String]? = nil
-    var participant_roster: ParticipantRoster? = nil
-
-    /// Write transcript.json and render transcript.md. Both writes are atomic
-    /// (temp file + rename), so a partially written transcript never exists on
-    /// disk — resumePending treats presence of transcript.json as "done".
-    func write(to dir: URL) throws {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try Data(rendered(title: dir.lastPathComponent).utf8)
-            .write(to: dir.appendingPathComponent("transcript.md"), options: .atomic)
-        try encoder.encode(self)
-            .write(to: dir.appendingPathComponent("transcript.json"), options: .atomic)
-    }
-
-    private func rendered(title: String) -> String {
-        var lines = ["# \(title)", "", "engine: \(engine) (\(model))", ""]
-        if let roster = participant_roster, !roster.participants.isEmpty {
-            lines += ["## Participants", ""]
-            for participant in roster.participants.sorted(by: { $0.name < $1.name }) {
-                let name = participant.name.replacingOccurrences(of: "*", with: "\\*")
-                    .replacingOccurrences(of: "[", with: "\\[").replacingOccurrences(of: "]", with: "\\]")
-                lines.append("- \(name)\(participant.is_local ? " (you)" : "")")
-            }
-            lines += ["", "## Transcript", ""]
-        }
-        for seg in segments {
-            let name = seg.displayName.replacingOccurrences(of: "*", with: "\\*")
-                .replacingOccurrences(of: "[", with: "\\[").replacingOccurrences(of: "]", with: "\\]")
-            lines.append("**[\(Self.clock(seg.start_ms))] \(name):** \(seg.text)")
-            lines.append("")
-        }
-        return lines.joined(separator: "\n")
-    }
-
-    private static func clock(_ ms: Int) -> String {
-        let total = ms / 1000
-        let h = total / 3600, m = (total % 3600) / 60, s = total % 60
-        return h > 0
-            ? String(format: "%d:%02d:%02d", h, m, s)
-            : String(format: "%d:%02d", m, s)
     }
 }

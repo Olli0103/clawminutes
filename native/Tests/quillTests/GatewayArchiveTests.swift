@@ -2,6 +2,12 @@ import XCTest
 @testable import quill
 
 final class GatewayArchiveTests: XCTestCase {
+    func testMissingRouteDoesNotAssertPluginInstallationState() {
+        let message = GatewayArchive.ConnectionIssue.routeUnavailable.description
+        XCTAssertTrue(message.contains("HTTP 404"))
+        XCTAssertTrue(message.contains("proxy"))
+        XCTAssertFalse(message.contains("plugin is not installed"))
+    }
     func testRejectsCredentialAndNonTLSURLs() throws {
         for value in ["http://remote.example", "https://user:secret@example.com", "https://example.com/?token=secret", "https://example.com/path", "file:///tmp/audio", "wss://example.com"] {
             XCTAssertThrowsError(try GatewayArchive.origin(value))
@@ -19,5 +25,23 @@ final class GatewayArchiveTests: XCTestCase {
         XCTAssertFalse(value.contains("raw_audio"))
         XCTAssertFalse(value.contains("files"))
         XCTAssertTrue(value.contains("hello"))
+    }
+}
+
+extension GatewayArchiveTests {
+    func testStructuredFailurePreservesRecoveryPolicy() throws {
+        let data = Data(#"{"code":"ai_invalid_output","detail":"Review the model output","retryable":false,"completionAttempted":true}"#.utf8)
+        let failure = DeliveryFailure.response(status: 422, data: data)
+        XCTAssertEqual(failure.code, "ai_invalid_output")
+        XCTAssertFalse(failure.retryable)
+        XCTAssertTrue(failure.completionAttempted)
+        XCTAssertEqual(DeliveryFailure.response(status: 524, data: Data()).code, "gateway_unavailable")
+        XCTAssertTrue(DeliveryFailure.response(status: 524, data: Data()).retryable)
+        XCTAssertEqual(DeliveryFailure.response(status: 401, data: Data()).code, "sign_in_required")
+    }
+    func testUntrustedResponseCannotBecomeDiagnosticText() {
+        let data = Data(#"{"code":"ai_invalid_output","detail":"secret\nheader","retryable":true,"completionAttempted":true}"#.utf8)
+        XCTAssertFalse(DeliveryFailure.response(status: 422, data: data).detail.contains("secret"))
+        XCTAssertFalse(GatewayArchive.userAgent.contains("0.2.8"))
     }
 }

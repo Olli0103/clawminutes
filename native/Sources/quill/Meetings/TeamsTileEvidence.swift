@@ -5,15 +5,30 @@ import Foundation
 /// vdi-frame-occlusion while the speaking border is shown. Self video is an
 /// AXImage and is deliberately excluded. Unknown layouts produce no tiles.
 enum TeamsTileEvidence {
+    static func members(_ nodes: [SpeakerUINode], localName: String?) -> [RosterMember] {
+        var result: [RosterMember] = []
+        for index in nodes.indices where nodes[index].classes.contains("vdi-occlusion") {
+            let names = nodes.indices.filter { nodes[$0].role == "AXStaticText" && descendant($0, of: index, in: nodes) && !nodes[$0].text.isEmpty }
+            guard names.count == 1, let nameIndex = names.first, let name = SpeakerAttribution.cleanName(nodes[nameIndex].text) else { continue }
+            let local = SpeakerAttribution.isLocalName(name, localName: localName)
+            if !result.contains(where: { $0.name.caseInsensitiveCompare(name) == .orderedSame && $0.is_local == local }) {
+                result.append(RosterMember(name: name, is_local: local))
+            }
+        }
+        return result.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+    private static func descendant(_ index: Int, of ancestor: Int, in nodes: [SpeakerUINode]) -> Bool {
+        var current = nodes[index].parent
+        var visited: Set<Int> = []
+        while let parent = current, nodes.indices.contains(parent), visited.insert(parent).inserted {
+            if parent == ancestor { return true }
+            current = nodes[parent].parent
+        }
+        return false
+    }
     static func tiles(_ nodes: [SpeakerUINode]) -> [SpeakerUITile] {
         func descendant(_ index: Int, of ancestor: Int) -> Bool {
-            var current = nodes[index].parent
-            var visited: Set<Int> = []
-            while let parent = current, nodes.indices.contains(parent), visited.insert(parent).inserted {
-                if parent == ancestor { return true }
-                current = nodes[parent].parent
-            }
-            return false
+            Self.descendant(index, of: ancestor, in: nodes)
         }
         var result: [SpeakerUITile] = []
         for index in nodes.indices {

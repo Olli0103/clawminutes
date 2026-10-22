@@ -30,7 +30,10 @@ struct NoteTemplate: Codable, Equatable, Identifiable, Sendable {
     ]
     func validate() throws {
         guard !id.isEmpty, id.count <= 80, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, name.count <= 120,
-              context.count <= 12000, (1...30).contains(sections.count), sections.allSatisfy({ !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.title.count <= 120 && $0.instructions.count <= 4000 }) else {
+              context.count <= 12000,
+              [id, name] .allSatisfy({ !$0.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) }),
+              sections.allSatisfy({ !$0.title.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) }),
+              (1...30).contains(sections.count), sections.allSatisfy({ !$0.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.title.count <= 120 && $0.instructions.count <= 4000 }) else {
             throw TranscriptionFailure("Give the template a name and at least one section. Keep section titles under 120 characters.")
         }
     }
@@ -94,7 +97,11 @@ enum TeamsMeetingTitle {
            account.range(of: #"^[^\s@]+@[^\s@]+\.[^\s@]+$"#, options: .regularExpression) != nil {
             value = parts.dropLast(2).joined(separator: " | ")
         }
-        let generic = ["microsoft teams", "teams", "meeting", "call", "besprechung", "anruf", "microsoft teams meeting", "meeting | microsoft teams"]
+        let compactPrefix = "Meeting compact view | "
+        if value.lowercased().hasPrefix(compactPrefix.lowercased()) {
+            value = String(value.dropFirst(compactPrefix.count)).trimmingCharacters(in: .whitespaces)
+        }
+        let generic = ["microsoft teams", "teams", "meeting", "call", "besprechung", "anruf", "microsoft teams meeting", "meeting | microsoft teams", "meeting compact view"]
         guard !value.isEmpty, value.count <= 256, !value.contains("\n"), !generic.contains(value.lowercased()) else { return nil }
         return value
     }
@@ -102,6 +109,98 @@ enum TeamsMeetingTitle {
 
 /// Organized generated exports. Audio and the canonical Gateway archive stay in their original locations.
 enum MeetingDocuments {
+    /// Bind each export to its original destination. Changing the default
+    /// affects future exports; history requires an explicit migration.
+    static func exportRoot(recording: URL, fallbackRoot: URL, missingReceiptSessionID: String? = nil) throws -> URL {
+        let binding = recording.appendingPathComponent("notes-export-location.json")
+        if FileManager.default.fileExists(atPath: binding.path) {
+            let info = try ArchiveBacklog.object(binding)
+            let receiptFile = recording.appendingPathComponent("archive-receipt.json")
+            var receiptInfo = stat()
+            let missingReceipt = lstat(receiptFile.path, &receiptInfo) != 0 && errno == ENOENT
+            // Canonical-readback preparation may review an existing destination
+            // using its exact meeting identity. Publication still requires proof.
+            let expected = missingReceipt ? missingReceiptSessionID
+                : (try? ArchiveBacklog.object(receiptFile))?["sessionId"] as? String
+            guard info["schemaVersion"] as? Int == 1, let root = info["root"] as? String, root.hasPrefix("/"),
+                  let destination = info["destination"] as? String, destination.hasPrefix("/"),
+                  let sessionID = info["sessionId"] as? String, expected == sessionID else {
+                throw TranscriptionFailure("Saved export location needs review. Existing notes preserved.")
+            }
+            let rootURL = URL(fileURLWithPath: root, isDirectory: true)
+            try checkPath(URL(fileURLWithPath: destination), root: rootURL)
+            if let marker = try? String(data: ArchiveBacklog.read(recording.appendingPathComponent("notes-export-path.txt")), encoding: .utf8),
+               marker.trimmingCharacters(in: .whitespacesAndNewlines) != destination {
+                throw TranscriptionFailure("Saved export paths disagree. Existing notes preserved.")
+            }
+            return rootURL
+        }
+        let marker = recording.appendingPathComponent("notes-export-path.txt")
+        if FileManager.default.fileExists(atPath: marker.path) {
+            guard let value = String(data: try ArchiveBacklog.read(marker), encoding: .utf8), value.hasPrefix("/") else {
+                throw TranscriptionFailure("Saved export path is unreadable. Existing notes preserved.")
+            }
+            try checkPath(URL(fileURLWithPath: value.trimmingCharacters(in: .whitespacesAndNewlines)), root: fallbackRoot)
+        }
+        return fallbackRoot
+    }
+    static func rememberExport(_ destination: URL, root: URL, recording: URL, sessionID: String) throws {
+        try checkPath(destination, root: root)
+        let info: [String: Any] = ["schemaVersion": 1, "root": root.path, "destination": destination.path, "sessionId": sessionID]
+        let location = recording.appendingPathComponent("notes-export-location.json")
+        try JSONSerialization.data(withJSONObject: info, options: [.sortedKeys]).write(to: location, options: .atomic)
+        let marker = recording.appendingPathComponent("notes-export-path.txt")
+        try Data(destination.path.utf8).write(to: marker, options: .atomic)
+        for file in [location, marker] { try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path) }
+    }
+    struct MigrationPaths: Sendable { let source: URL; let destination: URL; let sessionID: String }
+    static func migrationPaths(recording: URL, to root: URL) throws -> MigrationPaths {
+        guard ArchiveBacklog.isFinished(recording) else { throw TranscriptionFailure("Finish the recording before moving notes.") }
+        let receipt = try ArchiveBacklog.object(recording.appendingPathComponent("archive-receipt.json"))
+        guard let id = receipt["sessionId"] as? String, receipt["saved"] as? Bool == true,
+              let text = String(data: try ArchiveBacklog.read(recording.appendingPathComponent("notes-export-path.txt")), encoding: .utf8),
+              text.hasPrefix("/") else { throw TranscriptionFailure("No verified notes export is available to migrate.") }
+        let old = URL(fileURLWithPath: text.trimmingCharacters(in: .whitespacesAndNewlines))
+        let legacyRoot = old.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let sourceRoot = try exportRoot(recording: recording, fallbackRoot: legacyRoot)
+        guard try existingID(old, root: sourceRoot) == id else { throw TranscriptionFailure("Existing notes do not match this meeting.") }
+        let relative = old.standardizedFileURL.path.dropFirst(sourceRoot.standardizedFileURL.path.count + 1)
+        let target = root.appendingPathComponent(String(relative), isDirectory: true)
+        try checkPath(target, root: root)
+        guard !target.standardizedFileURL.path.hasPrefix(old.standardizedFileURL.path + "/") else {
+            throw TranscriptionFailure("Choose a destination outside these existing notes. Originals are preserved.")
+        }
+        if target.standardizedFileURL != old.standardizedFileURL, FileManager.default.fileExists(atPath: target.path) {
+            throw TranscriptionFailure("The destination already exists. Existing notes were left untouched.")
+        }
+        return MigrationPaths(source: old, destination: target, sessionID: id)
+    }
+    /// Explicit copy preserves edited files and the original. Reviewed content
+    /// must still match before staging and before publishing the new location.
+    static func migrateExport(recording: URL, to root: URL, expectedSource: NotesFolderSnapshot? = nil, expectedRootIdentity: String? = nil) throws -> URL {
+        let paths = try migrationPaths(recording: recording, to: root)
+        if let expectedRootIdentity {
+            guard try NotesMigration.destinationIdentity(root) == expectedRootIdentity else { throw NotesMigration.changed }
+        }
+        let old = paths.source, target = paths.destination
+        if target.standardizedFileURL == old.standardizedFileURL { return old }
+        let snapshot = try NotesFolderSnapshot.capture(old)
+        guard expectedSource == nil || snapshot == expectedSource else { throw NotesMigration.changed }
+        let fm = FileManager.default
+        try fm.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let staging = target.deletingLastPathComponent().appendingPathComponent(".ocmh-migrate-" + UUID().uuidString)
+        defer { try? fm.removeItem(at: staging) }
+        try fm.copyItem(at: old, to: staging)
+        guard try NotesFolderSnapshot.capture(staging) == snapshot,
+              try NotesFolderSnapshot.capture(old) == snapshot else { throw NotesMigration.changed }
+        try checkPath(target, root: root)
+        if let expectedRootIdentity {
+            guard try NotesMigration.destinationIdentity(root) == expectedRootIdentity else { throw NotesMigration.changed }
+        }
+        try fm.moveItem(at: staging, to: target)
+        try rememberExport(target, root: root, recording: recording, sessionID: paths.sessionID)
+        return target
+    }
     static func component(_ text: String) -> String {
         let title = TeamsMeetingTitle.clean(text) ?? text
         var result = "", separator = false
@@ -159,13 +258,25 @@ enum MeetingDocuments {
         try Data(destination.path.utf8).write(to: recording.appendingPathComponent("notes-export-path.txt"), options: .atomic)
         return destination
     }
-    static func export(receipt: [String: Any], root: URL, recording: URL) throws -> URL {
+    struct ValidatedDocuments {
+        let id: String, title: String, notes: String, transcript: String
+        let date: Date
+        let metadata: [String: Any]
+    }
+    /// Validate without publishing a receipt or touching the notes folder.
+    static func validateDocuments(_ receipt: [String: Any]) throws -> ValidatedDocuments {
         guard let id = receipt["sessionId"] as? String, id.range(of: "^teams-[a-f0-9]{24}$", options: .regularExpression) != nil,
               let docs = receipt["documents"] as? [String: Any], let title = docs["title"] as? String,
               let start = docs["startedAt"] as? String, let date = ISO8601DateFormatter().date(from: start),
               let notes = docs["notesMarkdown"] as? String, let transcript = docs["transcriptMarkdown"] as? String,
               let metadata = docs["metadata"] as? [String: Any], metadata["sessionId"] as? String == id,
               notes.utf8.count < 2_000_000, transcript.utf8.count < 16_000_000 else { throw TranscriptionFailure("Gateway returned incomplete meeting documents. Recording preserved.") }
+        return ValidatedDocuments(id: id, title: title, notes: notes, transcript: transcript, date: date, metadata: metadata)
+    }
+    static func export(receipt: [String: Any], root: URL, recording: URL) throws -> URL {
+        let documents = try validateDocuments(receipt)
+        let id = documents.id, title = documents.title, date = documents.date
+        let notes = documents.notes, transcript = documents.transcript, metadata = documents.metadata
         let format = DateFormatter(); format.locale = Locale(identifier: "en_US_POSIX"); format.dateFormat = "yyyy/MM/yyyy.MM.dd-HHmm"
         let base = root.appendingPathComponent(format.string(from: date) + "_" + (component(title).isEmpty ? "Meeting" : component(title)), isDirectory: true)
         let manager = FileManager.default

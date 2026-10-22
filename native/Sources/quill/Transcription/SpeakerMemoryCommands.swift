@@ -51,6 +51,9 @@ struct SpeakerMemoryLearn: ParsableCommand {
     private func learn() async throws {
         let directory = URL(fileURLWithPath: (recording as NSString).expandingTildeInPath)
         let meta = try SessionMeta.read(from: directory)
+        guard meta.tracks.filter({ $0.source == "system" }).count <= 1 else {
+            throw ValidationError("Learning voice memory from recovered capture segments is not supported. Existing profiles were left unchanged.")
+        }
         guard let track = meta.tracks.first(where: { $0.source == "system" }), let started = meta.audioStartedAt else {
             throw ValidationError("This recording needs a remote audio track and its start timestamp.")
         }

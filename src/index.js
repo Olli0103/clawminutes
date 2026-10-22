@@ -13,7 +13,7 @@ const entry=defineFeaturePlugin({
   description:'Local consent-based Teams recording and transcription. No participant joins the call.',
   setup(api){
     const selection=notesSelection(api.config,api.pluginConfig);
-    const settings={notesModel:selection.model,complete:gatewayCompletion(api.config,api.pluginConfig),openclawDir:installedRuntimeDirectory(),stateDir:process.env.OPENCLAW_STATE_DIR||path.join(os.homedir(),'.openclaw')};
+    const settings={notesModel:selection.model,complete:gatewayCompletion(api.config,api.pluginConfig),openclawDir:installedRuntimeDirectory(),stateDir:process.env.OPENCLAW_STATE_DIR||path.join(os.homedir(),'.openclaw'),onFailure:event=>api.logger?.warn?.(`teams-transcribe delivery ${JSON.stringify(event)}`)};
     api.registerHttpRoute({path:'/plugins/teams-transcribe/ingest',auth:'gateway',match:'exact',handler:gatewayHandler(settings)});
     api.registerHttpRoute({path:'/plugins/teams-transcribe/helper',auth:'gateway',match:'exact',handler:distributionHandler});
     api.registerHttpRoute({path:'/plugins/teams-transcribe/helper.zip',auth:'gateway',match:'exact',handler:downloadHandler});

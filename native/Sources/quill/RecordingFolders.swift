@@ -6,6 +6,16 @@ enum RecordingFolders {
         guard try dir.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink != true else {
             throw TranscriptionFailure("Linked recording folders cannot be renamed")
         }
+        var original = stat(), current = stat()
+        guard lstat(dir.path, &original) == 0, original.st_mode & S_IFMT == S_IFDIR,
+              let ownership = try AppRunLock.acquire(at: dir.appendingPathComponent("archive.lock")) else {
+            throw MeetingPipelineState.conflictingState
+        }
+        defer { withExtendedLifetime(ownership) {} }
+        guard lstat(dir.path, &current) == 0, current.st_mode & S_IFMT == S_IFDIR,
+              original.st_ino == current.st_ino, original.st_dev == current.st_dev else {
+            throw MeetingPipelineState.conflictingState
+        }
         let metadata = dir.appendingPathComponent("meta.json")
         guard var meta = try JSONSerialization.jsonObject(with: Data(contentsOf: metadata)) as? [String: Any],
               meta["status"] as? String != "recording" else { throw TranscriptionFailure("Active recording left untouched") }

@@ -4,6 +4,7 @@ struct DetectedMeeting: Equatable, Sendable {
     let id: String
     let app: String
     let service: String
+    var consentIdentity: MeetingConsentIdentity? = nil
 }
 
 enum MeetingObservation: Equatable, Sendable {

@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """Create a stable, private local code-signing identity. Never shipped in the plugin."""
-import json, os, pathlib, secrets, subprocess, tempfile, shutil
+import json, os, pathlib, secrets, subprocess, tempfile
+if os.geteuid() == 0:
+    raise SystemExit('Run local-signing.py as your login user, without sudo. A keychain password cannot be overridden by root.')
 state=pathlib.Path.home()/'.openclaw/teams-transcribe/signing'
 state.mkdir(parents=True,exist_ok=True,mode=0o700)
 identity='ocmh local signing'
 keychain=state/'ocmh-signing.keychain-db'
 recovered=state/'ocmh-signing-recovered.keychain-db'
-if recovered.exists(): keychain=recovered
+# An existing recovery copy must not shadow the original working keychain.
+# macOS can reject the copy even when the original accepts the saved password.
+if not keychain.exists() and recovered.exists(): keychain=recovered
 password_file=state/'keychain-password'
 def run(*args):
     result=subprocess.run(args,capture_output=True,text=True)
@@ -28,17 +32,7 @@ password=password_file.read_text()
 try:
     run('/usr/bin/security','unlock-keychain','-p',password,str(keychain))
 except RuntimeError:
-    # A stale macOS keychain access state can reject a valid password. A private
-    # byte-for-byte copy is a fresh handle; preserve the original and identity.
-    if keychain == recovered or recovered.exists(): raise
-    shutil.copy2(keychain,recovered); recovered.chmod(0o600)
-    try:
-        run('/usr/bin/security','unlock-keychain','-p',password,str(recovered))
-        original_cert=run('/usr/bin/security','find-certificate','-c',identity,'-p',str(keychain))
-        copied_cert=run('/usr/bin/security','find-certificate','-c',identity,'-p',str(recovered))
-        if original_cert != copied_cert: raise RuntimeError('Signing recovery changed certificate; original preserved.')
-    except Exception:
-        recovered.unlink(missing_ok=True)
-        raise
-    keychain=recovered
+    raise SystemExit('The saved signing password could not unlock the selected keychain. '
+                     'The certificate and keychain were preserved. Do not retry with sudo or reset your login keychain. '
+                     'Recover the existing signing credential before updating the helper.') from None
 print(json.dumps({'identity':identity,'keychain':str(keychain),'scope':'Local build signing only. Not Apple notarization; not a permission grant.'}))

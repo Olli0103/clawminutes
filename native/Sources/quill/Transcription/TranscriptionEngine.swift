@@ -19,14 +19,14 @@ struct TranscriptionFailure: Error, CustomStringConvertible {
 
 /// One timed span of recognized speech from a single track, relative to that
 /// track's own start.
-struct TranscriptSegment: Sendable {
+struct TranscriptSegment: Codable, Sendable {
     let start: TimeInterval
     let end: TimeInterval
     let text: String
     var words: [TranscriptWord] = []
 }
 
-struct TranscriptWord: Sendable {
+struct TranscriptWord: Codable, Sendable {
     let start: TimeInterval
     let end: TimeInterval
     let text: String
@@ -43,4 +43,10 @@ protocol TranscriptionEngine: Sendable {
     func prepare() async throws
     func transcribe(_ audio: URL) async throws -> [TranscriptSegment]
     func release() async
+}
+
+/// An explicitly local engine accepting owned 16 kHz mono PCM. Cloud engines
+/// have no default adapter and cannot receive additional boundary context.
+protocol LocalPCMTranscriptionEngine: TranscriptionEngine {
+    func transcribe(samples: [Float]) async throws -> [TranscriptSegment]
 }
