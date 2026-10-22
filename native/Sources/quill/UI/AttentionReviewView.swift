@@ -4,13 +4,16 @@ import SwiftUI
 @MainActor
 struct AttentionReviewView: View {
     @ObservedObject var controller: MenuBarController
-    let groupID: String
+    let groupID: String?
     var close: () -> Void
-    private var group: AttentionGroup? { controller.appState.attentionGroups.first { $0.id == groupID } }
+    private var meetings: [RecentMeeting] {
+        guard let groupID else { return controller.appState.attentionMeetings }
+        return controller.appState.attentionGroups.first { $0.id == groupID }?.meetings ?? []
+    }
     var body: some View {
         VStack(spacing: 0) {
-            if let group {
-                List(group.meetings) { meeting in
+            if !meetings.isEmpty {
+                List(meetings) { meeting in
                     HStack {
                         MeetingRow(meeting: meeting)
                         Button("Review…") { controller.showMeetingDetails(meeting) }.buttonStyle(.bordered)

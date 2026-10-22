@@ -31,7 +31,7 @@ struct AudioCleanupView: View {
                     Text(selectedPlans.isEmpty ? (!failed.isEmpty ? "Some audio needs another check" : completed.isEmpty ? "No verified audio selected" : "Audio cleanup finished") : ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) + " ready to delete")
                         .font(.title2.weight(.semibold))
                     Text("\(selectedPlans.count) meetings selected · \(rows.filter { ($0.plan == nil || failed.contains($0.id)) && !$0.alreadyRemoved && !completed.contains($0.id) }.count) kept for recovery")
-                        .font(.caption).foregroundStyle(.primary)
+                        .font(.caption).foregroundStyle(CMTheme.secondary)
                 }.helperCard(tint: .accentColor)
             }
             if rows.isEmpty && !reviewing {
@@ -43,7 +43,7 @@ struct AudioCleanupView: View {
             if let reviewError { Text(reviewError).font(.callout).foregroundStyle(.primary) }
 
             Text("Audio deletion is permanent. Playback and transcription from these tracks will no longer be available.")
-                .font(.caption).foregroundStyle(.primary).fixedSize(horizontal: false, vertical: true)
+                .font(.caption).foregroundStyle(CMTheme.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
                 if deleting { ProgressView().controlSize(.small); Text("Verifying and deleting…").font(.caption) }
                 if !deleting && !reviewing {
@@ -57,7 +57,7 @@ struct AudioCleanupView: View {
                     .buttonStyle(.bordered).keyboardShortcut(.cancelAction).disabled(deleting)
                 Button("Delete audio…", role: .destructive) { confirmationPresented = true }.buttonStyle(.borderedProminent).tint(.red)
                     .disabled(reviewing || deleting || selectedPlans.isEmpty)
-            }.controlSize(.regular).padding(8).cmGlass()
+            }.controlSize(.regular)
         }.padding(20).frame(minWidth: 650, minHeight: 480).helperPanel()
             .alert("Delete \(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)) of recording audio?", isPresented: $confirmationPresented) {
                 Button("Cancel", role: .cancel) {}

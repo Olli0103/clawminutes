@@ -1,0 +1,257 @@
+{
+  "images": 48,
+  "checks": [
+    {
+      "file": "call-detected-light.png",
+      "foreground": [
+        0,
+        0,
+        0
+      ],
+      "background": [
+        236,
+        236,
+        236
+      ],
+      "text_pixels": 12043,
+      "contrast": 17.78
+    },
+    {
+      "file": "call-detected-dark.png",
+      "foreground": [
+        255,
+        255,
+        255
+      ],
+      "background": [
+        50,
+        50,
+        50
+      ],
+      "text_pixels": 4275,
+      "contrast": 12.82
+    },
+    {
+      "file": "call-detected-reduced-light.png",
+      "foreground": [
+        0,
+        0,
+        0
+      ],
+      "background": [
+        236,
+        236,
+        236
+      ],
+      "text_pixels": 12043,
+      "contrast": 17.78
+    },
+    {
+      "file": "call-detected-reduced-dark.png",
+      "foreground": [
+        255,
+        255,
+        255
+      ],
+      "background": [
+        50,
+        50,
+        50
+      ],
+      "text_pixels": 4275,
+      "contrast": 12.82
+    },
+    {
+      "file": "call-same-cause-light.png",
+      "foreground": [
+        36,
+        36,
+        36
+      ],
+      "background": [
+        236,
+        236,
+        236
+      ],
+      "text_pixels": 2749,
+      "contrast": 13.14
+    },
+    {
+      "file": "call-same-cause-dark.png",
+      "foreground": [
+        224,
+        224,
+        224
+      ],
+      "background": [
+        50,
+        50,
+        50
+      ],
+      "text_pixels": 3209,
+      "contrast": 9.71
+    },
+    {
+      "file": "call-same-cause-reduced-light.png",
+      "foreground": [
+        36,
+        36,
+        36
+      ],
+      "background": [
+        236,
+        236,
+        236
+      ],
+      "text_pixels": 2749,
+      "contrast": 13.14
+    },
+    {
+      "file": "call-same-cause-reduced-dark.png",
+      "foreground": [
+        224,
+        224,
+        224
+      ],
+      "background": [
+        50,
+        50,
+        50
+      ],
+      "text_pixels": 3209,
+      "contrast": 9.71
+    },
+    {
+      "file": "call-mixed-causes-light.png",
+      "foreground": [
+        36,
+        36,
+        36
+      ],
+      "background": [
+        236,
+        236,
+        236
+      ],
+      "text_pixels": 3496,
+      "contrast": 13.14
+    },
+    {
+      "file": "call-mixed-causes-dark.png",
+      "foreground": [
+        224,
+        224,
+        224
+      ],
+      "background": [
+        50,
+        50,
+        50
+      ],
+      "text_pixels": 4096,
+      "contrast": 9.71
+    },
+    {
+      "file": "call-mixed-causes-reduced-light.png",
+      "foreground": [
+        36,
+        36,
+        36
+      ],
+      "background": [
+        236,
+        236,
+        236
+      ],
+      "text_pixels": 3496,
+      "contrast": 13.14
+    },
+    {
+      "file": "call-mixed-causes-reduced-dark.png",
+      "foreground": [
+        224,
+        224,
+        224
+      ],
+      "background": [
+        50,
+        50,
+        50
+      ],
+      "text_pixels": 4096,
+      "contrast": 9.71
+    }
+  ],
+  "limits": [
+    "Measures primary text and secondary-text palette tokens on exported layouts, not every native control pixel.",
+    "Native list, table and button chrome requires compositor inspection.",
+    "macOS 15 runtime and live audio acceptance remain needs_evidence.",
+    "System accent swatches are not native button bezels. Their flat white contrast does not prove native control contrast; the selected system accent is preserved."
+  ],
+  "palette_checks": [
+    {
+      "appearance": "light",
+      "background": [
+        236,
+        236,
+        236
+      ],
+      "secondary": [
+        92,
+        92,
+        92
+      ],
+      "secondary_contrast": 5.66,
+      "primary_contrast": 13.14,
+      "system_accent_flat_white_contrast": 3.52
+    },
+    {
+      "appearance": "dark",
+      "background": [
+        50,
+        50,
+        50
+      ],
+      "secondary": [
+        175,
+        175,
+        175
+      ],
+      "secondary_contrast": 5.85,
+      "primary_contrast": 9.71,
+      "system_accent_flat_white_contrast": 3.23
+    },
+    {
+      "appearance": "reduced-light",
+      "background": [
+        236,
+        236,
+        236
+      ],
+      "secondary": [
+        92,
+        92,
+        92
+      ],
+      "secondary_contrast": 5.66,
+      "primary_contrast": 13.14,
+      "system_accent_flat_white_contrast": 3.52
+    },
+    {
+      "appearance": "reduced-dark",
+      "background": [
+        50,
+        50,
+        50
+      ],
+      "secondary": [
+        175,
+        175,
+        175
+      ],
+      "secondary_contrast": 5.85,
+      "primary_contrast": 9.71,
+      "system_accent_flat_white_contrast": 3.23
+    }
+  ]
+}

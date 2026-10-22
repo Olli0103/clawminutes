@@ -14,8 +14,10 @@ enum MeetingDate {
             let label = relative.localizedString(from: DateComponents(day: offset))
             return label.prefix(1).uppercased(with: locale) + label.dropFirst() + " · " + time(date, locale: locale)
         }
-        day.doesRelativeDateFormatting = false
-        return day.string(from: date) + " · " + time(date, locale: locale)
+        var format = Date.FormatStyle().day().month(.abbreviated)
+        if calendar.component(.year, from: date) != calendar.component(.year, from: now) { format = format.year() }
+        format.locale = locale; format.calendar = calendar; format.timeZone = calendar.timeZone
+        return date.formatted(format) + " · " + time(date, locale: locale)
     }
     static func time(_ date: Date, locale: Locale = .current) -> String {
         let f = DateFormatter(); f.locale = locale; f.setLocalizedDateFormatFromTemplate("HHmm")

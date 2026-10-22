@@ -36,7 +36,7 @@ import SwiftUI
                 ProgressView("Loading transcript…").frame(maxWidth: .infinity, minHeight: 160)
             } else if mode == .speakers, let transcript {
                 Text("Select only the turns you can identify. A voice cluster can contain more than one person. Other turns keep their existing labels.")
-                    .font(.caption).foregroundStyle(.primary)
+                    .font(.caption).foregroundStyle(CMTheme.secondary)
                 TextField("Confirmed speaker name", text: $name).textFieldStyle(.roundedBorder)
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
@@ -61,7 +61,7 @@ import SwiftUI
                         }
                     }
                 }.frame(minHeight: 200)
-                if let message = player.message { Text(message).font(.caption).foregroundStyle(.primary) }
+                if let message = player.message { Text(message).font(.caption).foregroundStyle(CMTheme.secondary) }
                 Text("\(selected.count) selected turns · \(transcript.segments.filter { $0.speaker_name == nil }.count) unidentified turns")
                     .font(.caption)
             } else if mode == .template {
@@ -87,7 +87,7 @@ import SwiftUI
                 }
             }
         }.padding(24).frame(width: 620, height: 580)
-            .foregroundStyle(.primary).background(Color(nsColor: .windowBackgroundColor)).tint(CMTheme.accent)
+            .foregroundStyle(.primary).tint(CMTheme.accent)
             .task {
                 templateID = controller.selectedTemplateID
                 if transcript != nil { loading = false; return }

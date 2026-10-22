@@ -15,6 +15,10 @@ enum DesignPreview {
         let state = controller.appState
         state.detection = "Waiting for a Teams call"; state.accessibilityGranted = true
         state.selectedEngine = "parakeet"; state.popoverVisible = false
+        state.notesFolder = "/Users/demo/Documents/Meetings"
+        state.localSpeakerName = "Sample person"
+        state.gatewayStatus = "Gateway connected: preview.invalid"
+        state.localModelReady = true
         state.recordingBytes = 180_000_000; state.freeBytes = 281_000_000_000; state.capacityBytes = 512_000_000_000
         controller.onToggle = { state.recording.toggle(); state.elapsed = "0:00" }
         controller.audioLevels = { (0.32, 0.67) }
@@ -60,6 +64,7 @@ enum DesignPreview {
         setenv("OPENCLAW_TEAMS_HOME", root.path, 1)
         let app = NSApplication.shared
         app.setActivationPolicy(.regular)
+        app.mainMenu = ApplicationMenu.make()
         if arguments.first == "export", arguments.count == 2 {
             try export(to: URL(fileURLWithPath: arguments[1])); return
         }
@@ -76,11 +81,26 @@ enum DesignPreview {
             for appearance in appearances {
                 let dark = appearance.contains("dark"), reduced = appearance.hasPrefix("reduced")
                 NSApp.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+                if name == "idle" {
+                    let palette = HStack(spacing: 0) {
+                        Rectangle().fill(Color(nsColor: .windowBackgroundColor))
+                        Rectangle().fill(CMTheme.secondary)
+                        Rectangle().fill(Color.primary)
+                        Rectangle().fill(CMTheme.accent)
+                    }.frame(width: 80, height: 20).background(Color(nsColor: .windowBackgroundColor))
+                        .environment(\.colorScheme, dark ? .dark : .light)
+                    let colors = ImageRenderer(content: palette); colors.scale = 2
+                    if let image = colors.cgImage,
+                       let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) {
+                        try png.write(to: output.appendingPathComponent("palette-" + appearance + ".png"))
+                    }
+                }
                 let content = MatrixScene(name: name, controller: controller(for: name), busy: name.hasPrefix("call-"))
                     .environment(\.colorScheme, dark ? .dark : .light)
                     .environment(\.cmPreviewReduceTransparency, reduced)
                     .environment(\.cmPreviewReduceMotion, true)
                     .environment(\.cmReviewRendering, true)
+                    .environment(\.cmReferenceDate, now)
                 let renderer = ImageRenderer(content: content)
                 renderer.proposedSize = ProposedViewSize(width: name.hasPrefix("cleanup-") ? 712 : CMLayout.popoverWidth + 32, height: nil)
                 renderer.scale = 2
@@ -100,22 +120,45 @@ enum DesignPreview {
 }
 
 private struct MatrixBrowser: View {
+    @State private var surface = "Popover"
+    @State private var systemPopover = false
     @State private var name = "call-same-cause"
     @State private var appearance = "dark"
     @State private var reduceMotion = false
     var body: some View {
         VStack(spacing: 0) {
             HStack {
+                Picker("Screen", selection: $surface) {
+                    Text("Popover").tag("Popover")
+                    Text("Settings").tag("Settings")
+                }
                 Picker("State", selection: $name) { ForEach(DesignPreview.states, id: \.self) { Text($0) } }
                 Picker("Appearance", selection: $appearance) { ForEach(DesignPreview.appearances, id: \.self) { Text($0) } }
                 Toggle("Reduce motion", isOn: $reduceMotion)
             }.padding().background(Color(nsColor: .windowBackgroundColor))
-            MatrixScene(name: name, controller: DesignPreview.controller(for: name), busy: name.hasPrefix("call-"))
+            Group {
+                if surface == "Settings" { HelperSettings(controller: DesignPreview.controller(for: name)) }
+                else { MatrixScene(name: name, controller: DesignPreview.controller(for: name), busy: name.hasPrefix("call-")) }
+            }
                 .id(name + appearance)
                 .environment(\.colorScheme, appearance.contains("dark") ? .dark : .light)
                 .environment(\.cmPreviewReduceTransparency, appearance.hasPrefix("reduced"))
                 .environment(\.cmPreviewReduceMotion, reduceMotion)
+                .environment(\.cmReferenceDate, DesignPreview.now)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        }
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button("Native popover") { systemPopover = true }
+                    .popover(isPresented: $systemPopover, arrowEdge: .top) {
+                        HelperPopover(controller: DesignPreview.controller(for: name))
+                            .environment(\.colorScheme, appearance.contains("dark") ? .dark : .light)
+                            .environment(\.cmReferenceDate, DesignPreview.now)
+                            .environment(\.cmPreviewReduceTransparency, appearance.hasPrefix("reduced"))
+                            .environment(\.cmPreviewReduceMotion, reduceMotion)
+                    }
+                Button("Settings window") { DesignPreview.controller(for: name).showSettings() }
+            }
         }
         .onChange(of: appearance, initial: true) { _, value in
             NSApp.appearance = NSAppearance(named: value.contains("dark") ? .darkAqua : .aqua)
@@ -128,6 +171,7 @@ private struct MatrixScene: View {
     let controller: MenuBarController
     let busy: Bool
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.cmReviewRendering) private var reviewRendering
     var body: some View {
         ZStack {
             if busy { VideoBackdrop(dark: scheme == .dark) }
@@ -136,7 +180,12 @@ private struct MatrixScene: View {
                 Text("ClawMinutes · \(name.replacingOccurrences(of: "-", with: " "))").font(.caption).padding(6).background(Color(nsColor: .windowBackgroundColor))
                     .foregroundStyle(scheme == .dark ? Color.white : Color.black)
                 if name.hasPrefix("cleanup-") { CleanupPreview(hasItems: name == "cleanup-items") }
-                else { HelperPopover(controller: controller) }
+                else {
+                    // A matrix isn't an NSPopover. Its layout-only export needs a
+                    // surrogate backing. Use Native popover to inspect system glass.
+                    if reviewRendering { HelperPopover(controller: controller).background(Color(nsColor: .windowBackgroundColor)) }
+                    else { HelperPopover(controller: controller).background(.regularMaterial, in: .rect(cornerRadius: 16)) }
+                }
                 Text("Synthetic layout · inspect native controls in the preview app").font(.caption).fixedSize(horizontal: false, vertical: true).padding(6).background(Color(nsColor: .windowBackgroundColor))
                     .foregroundStyle(scheme == .dark ? Color.white : Color.black)
             }.padding(16)
@@ -179,7 +228,7 @@ private struct CleanupPreview: View {
                 }
             }
             HStack { Button("Done") {}.helperButton(); Spacer(); Button("Delete audio…", role: .destructive) {}.helperButton(prominent: true).tint(.red).disabled(!hasItems) }
-                .padding(10).cmGlass()
+
         }.padding(20).frame(width: 680).background(Color(nsColor: .windowBackgroundColor))
     }
 }

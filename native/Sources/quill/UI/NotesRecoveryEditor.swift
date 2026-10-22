@@ -37,7 +37,7 @@ import SwiftUI
                 }
             }
         }.padding(24).frame(width: 480, height: 340)
-            .foregroundStyle(.primary).background(Color(nsColor: .windowBackgroundColor)).tint(CMTheme.accent)
+            .foregroundStyle(.primary).tint(CMTheme.accent)
             .interactiveDismissDisabled(saving)
     }
     private func prepare() {

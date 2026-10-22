@@ -11,7 +11,8 @@ struct Quill: AsyncParsableCommand {
     static func main() {
         let arguments = Array(CommandLine.arguments.dropFirst())
         #if DEBUG
-        if arguments.first == "design-preview" || ProcessInfo.processInfo.environment["CLAWMINUTES_UI_MATRIX"] == "1" {
+        if arguments.first == "design-preview" || ProcessInfo.processInfo.environment["CLAWMINUTES_UI_MATRIX"] == "1"
+            || Bundle.main.object(forInfoDictionaryKey: "ClawMinutesDesignPreview") as? Bool == true {
             do { try MainActor.assumeIsolated { try DesignPreview.run(arguments: Array(arguments.dropFirst())) } }
             catch { Self.exit(withError: error) }
             return

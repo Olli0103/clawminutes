@@ -47,16 +47,16 @@ import UniformTypeIdentifiers
                             Button("Add section", systemImage: "plus") { drafts[i].sections.append(.init(title: "New section", instructions: "")) }.disabled(drafts[i].sections.count >= 30)
                         }
                     }
-                    Text("Templates guide AI notes. Generated actions and people evidence are review candidates. No tasks or people files are changed.").font(.caption).foregroundStyle(.primary)
+                    Text("Templates guide AI notes. Generated actions and people evidence are review candidates. No tasks or people files are changed.").font(.caption).foregroundStyle(CMTheme.secondary)
                     HStack {
-                        Text(message).font(.caption).foregroundStyle(.primary)
+                        Text(message).font(.caption).foregroundStyle(CMTheme.secondary)
                         Spacer()
                         Button("Save and use template") { if controller.saveTemplates(drafts, selected: selected) { message = "Saved. This template will be used for the next recording." } }.buttonStyle(.borderedProminent)
                     }
                 }.padding(20)
             }
         }.frame(minWidth: 740, minHeight: 600)
-            .foregroundStyle(.primary).background(Color(nsColor: .windowBackgroundColor)).tint(CMTheme.accent)
+            .foregroundStyle(.primary).tint(CMTheme.accent)
             .onChange(of: drafts) { _, _ in message = "Unsaved changes" }
     }
     private func importTemplate() {

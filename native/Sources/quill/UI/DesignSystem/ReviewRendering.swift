@@ -11,7 +11,13 @@ extension EnvironmentValues {
 }
 private struct CMPreviewTransparencyKey: EnvironmentKey { static let defaultValue = false }
 private struct CMPreviewMotionKey: EnvironmentKey { static let defaultValue = false }
+private struct CMReferenceDateKey: EnvironmentKey { static let defaultValue: Date? = nil }
 extension EnvironmentValues {
+    /// Only synthetic previews freeze relative dates. The installed UI uses the current date.
+    var cmReferenceDate: Date? {
+        get { self[CMReferenceDateKey.self] }
+        set { self[CMReferenceDateKey.self] = newValue }
+    }
     // System accessibility values are read-only. Debug previews may add stronger
     // restrictions, but can never turn a user's accessibility setting off.
     var cmPreviewReduceTransparency: Bool {

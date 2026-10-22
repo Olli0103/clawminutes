@@ -25,14 +25,14 @@ def main():
     manifest = json.loads((args.directory / 'matrix.json').read_text())
     assert len(manifest) == 48
     report = {'images': len(manifest), 'checks': [], 'limits': [
-        'Measures primary text and accent on exported layouts, not every native control pixel.',
+        'Measures primary text and secondary-text palette tokens on exported layouts, not every native control pixel.',
         'Native list, table and button chrome requires compositor inspection.',
         'macOS 15 runtime and live audio acceptance remain needs_evidence.']}
     for entry in manifest:
         with Image.open(args.directory / entry['file']) as image:
             image.load()
             assert image.format == 'PNG' and image.size == (int(entry['width']), int(entry['height'])), entry
-            assert image.width == (1424 if entry['state'].startswith('cleanup-') else 832), entry
+            assert image.width == (1424 if entry['state'].startswith('cleanup-') else int(entry['popoverWidth']) + 64), entry
             assert 300 <= image.height <= 1500, entry
             if not entry['state'].startswith('call-'):
                 continue
@@ -48,9 +48,18 @@ def main():
             ratio = contrast(foreground, background)
             assert ratio >= 4.5, (entry, foreground, background, ratio)
             report['checks'].append({'file': entry['file'], 'foreground': foreground, 'background': background, 'text_pixels': pixels, 'contrast': round(ratio, 2)})
-    accent_ratio = contrast((255, 255, 255), (0, round(0.30 * 255), round(0.67 * 255)))
-    assert accent_ratio >= 4.5
-    report['accent_white_contrast'] = round(accent_ratio, 2)
+    report['palette_checks'] = []
+    for appearance in ['light', 'dark', 'reduced-light', 'reduced-dark']:
+        with Image.open(args.directory / ('palette-' + appearance + '.png')) as palette:
+            palette = palette.convert('RGB')
+            background, secondary, primary, accent = [palette.getpixel((x, 20)) for x in [20, 60, 100, 140]]
+            ratio = contrast(secondary, background)
+            assert ratio >= 4.5, (appearance, secondary, background, ratio)
+            report['palette_checks'].append({'appearance': appearance, 'background': background,
+                'secondary': secondary, 'secondary_contrast': round(ratio, 2),
+                'primary_contrast': round(contrast(primary, background), 2),
+                'system_accent_flat_white_contrast': round(contrast((255, 255, 255), accent), 2)})
+    report['limits'].append('System accent swatches are not native button bezels. Their flat white contrast does not prove native control contrast; the selected system accent is preserved.')
     output = args.directory / 'contrast-report.json'
     output.write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(report, indent=2))

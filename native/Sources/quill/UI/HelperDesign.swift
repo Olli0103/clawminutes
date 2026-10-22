@@ -12,6 +12,6 @@ struct CMStandardButton: ViewModifier {
 }
 extension View {
     func helperButton(prominent: Bool = false, recording: Bool = false) -> some View { modifier(CMStandardButton(prominent: prominent, recording: recording)) }
-    func helperPanel() -> some View { background(Color(nsColor: .windowBackgroundColor)).tint(CMTheme.accent) }
+    func helperPanel() -> some View { self }
     func helperCard(tint: Color = .primary) -> some View { padding(.vertical, 8).frame(maxWidth: .infinity, alignment: .leading) }
 }

@@ -47,7 +47,7 @@ struct NotesMigrationView: View {
                 Button("Copy selected notes", action: copy).buttonStyle(.borderedProminent)
                     .disabled(reviewing || copying || !confirmed || selectedPlans.isEmpty)
             }
-        }.padding(22).frame(width: 650, height: 560).background(Color(nsColor: .windowBackgroundColor)).tint(CMTheme.accent)
+        }.padding(22).frame(width: 650, height: 560).tint(CMTheme.accent)
             .task(id: reviewRevision) {
                 do {
                     let list = meetings, root = destination

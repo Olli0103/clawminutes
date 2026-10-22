@@ -61,7 +61,7 @@ struct LegacyReceiptView: View {
             if result == nil {
                 DisclosureGroup("Changed your notes folder?") {
                     Text("Choose the original notes folder above the year/month folders. Your default for future meetings stays the same.")
-                        .font(.caption).foregroundStyle(.primary)
+                        .font(.caption).foregroundStyle(CMTheme.secondary)
                     Button("Choose original notes folder…") { chooseFolder() }.helperButton().disabled(busy)
                 }
             }

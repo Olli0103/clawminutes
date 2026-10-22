@@ -54,12 +54,18 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate, NSP
     private var attentionWindow: NSWindow?
     private var libraryWindow: NSWindow?
     func showAttentionGroup(_ group: AttentionGroup) {
+        showAttentionReview(groupID: group.id, title: group.title)
+    }
+    func showAllAttention() {
+        showAttentionReview(groupID: nil, title: "Meetings to review")
+    }
+    private func showAttentionReview(groupID: String?, title: String) {
         popover.performClose(nil)
         let window = attentionWindow ?? NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 280),
             styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = group.title
+        window.title = title
         window.isReleasedWhenClosed = false; window.delegate = self
-        window.contentViewController = NSHostingController(rootView: AttentionReviewView(controller: self, groupID: group.id,
+        window.contentViewController = NSHostingController(rootView: AttentionReviewView(controller: self, groupID: groupID,
             close: { [weak window] in window?.close() }))
         if attentionWindow == nil { window.center() }
         attentionWindow = window
@@ -67,9 +73,11 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate, NSP
     }
     func showLibrary() {
         popover.performClose(nil)
-        let window = libraryWindow ?? NSWindow(contentRect: NSRect(x: 0, y: 0, width: 620, height: 560),
+        let window = libraryWindow ?? NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 580),
             styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "ClawMinutes meetings"; window.isReleasedWhenClosed = false; window.delegate = self
+        window.title = "ClawMinutes meetings"; window.isReleasedWhenClosed = false
+        window.toolbarStyle = .unified
+        window.contentMinSize = NSSize(width: 780, height: 460); window.delegate = self
         if libraryWindow == nil {
             window.contentViewController = NSHostingController(rootView: MeetingLibraryView(controller: self))
             window.center()
@@ -130,12 +138,24 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate, NSP
             styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         window.title = "Delete old audio"; window.isReleasedWhenClosed = false; window.delegate = self
         window.contentViewController = NSHostingController(rootView: AudioCleanupView(controller: self, meetings: meetings,
-            onClose: { [weak window] in window?.close() }, onBusyChange: { [weak self, weak window] active in
+            onClose: { [weak window] in
+                guard let window else { return }
+                if let parent = window.sheetParent { parent.endSheet(window) }
+                else { window.close() }
+            }, onBusyChange: { [weak self, weak window] active in
                 self?.deletingAudio = active
                 window?.standardWindowButton(.closeButton)?.isEnabled = !active
             }))
         cleanupWindow = window
-        window.center(); NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil)
+        popover.performClose(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        let parent = [settingsWindow, meetingWindow, libraryWindow, controlsWindow].compactMap { $0 }.first(where: \.isKeyWindow)
+            ?? [settingsWindow, meetingWindow, libraryWindow, controlsWindow].compactMap { $0 }.first(where: \.isVisible)
+        if let parent {
+            parent.beginSheet(window) { [weak self, weak window] _ in
+                window?.orderOut(nil); window?.close(); self?.cleanupWindow = nil
+            }
+        } else { window.center(); window.makeKeyAndOrderFront(nil) }
     }
     func refreshLocalMeetings() async {
         let root = Config.resolveRoot(cliOverride: nil), notesRoot = MeetingNotesSettings.folder
@@ -491,11 +511,15 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate, NSP
     func openMenu() {
         popover.performClose(nil)
         if controlsWindow == nil {
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 390, height: 500), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: CMLayout.popoverWidth, height: 340), styleMask: [.titled, .closable], backing: .buffered, defer: false)
             window.title = "ClawMinutes"
             window.delegate = self
             window.isReleasedWhenClosed = false
-            window.contentViewController = NSHostingController(rootView: HelperPopover(controller: self))
+            let hosting = NSHostingController(rootView: HelperPopover(controller: self))
+            hosting.sizingOptions = [.preferredContentSize]
+            window.contentViewController = hosting
+            let size = hosting.view.fittingSize
+            if size.width > 0 && size.height > 0 { window.setContentSize(size) }
             window.center()
             controlsWindow = window
         }
@@ -513,7 +537,11 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate, NSP
         refreshCredentials()
         Task { await checkGateway() }
         appState.popoverVisible = true
+        // This path is user initiated. A key popover gets native control prominence
+        // and keyboard focus; passive call-detection prompts remain non-activating.
+        NSApp.activate(ignoringOtherApps: true)
         popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        popover.contentViewController?.view.window?.makeKey()
     }
     func toggleRecording() { if captureCheckBusy { cancelCaptureCheck() } else { onToggle?() } }
     func openMeeting(_ meeting: RecentMeeting) {
@@ -595,26 +623,24 @@ final class MenuBarController: NSObject, ObservableObject, NSWindowDelegate, NSP
         popover.performClose(nil)
         appState.settingsPage = page
         if settingsWindow == nil {
-            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 690, height: page.preferredHeight), styleMask: [.titled, .closable], backing: .buffered, defer: false)
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: CMLayout.settingsWidth, height: CMLayout.settingsHeight), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
             window.title = page.rawValue
+            window.contentMinSize = NSSize(width: CMLayout.settingsWidth, height: 440)
+            window.toolbarStyle = .unified
             window.isReleasedWhenClosed = false
             window.contentViewController = NSHostingController(rootView: HelperSettings(controller: self))
             window.center()
             settingsWindow = window
         }
-        fitSettingsWindow(page)
+        updateSettingsTitle(page)
         refreshCredentials()
         accessibilityGranted = AXIsProcessTrusted()
         NSApp.activate(ignoringOtherApps: true)
         settingsWindow?.makeKeyAndOrderFront(nil)
         Task { await checkGateway() }
     }
-    func fitSettingsWindow(_ page: HelperSettingsPage) {
-        guard let window = settingsWindow else { return }
-        window.title = page.rawValue
-        var frame = window.frameRect(forContentRect: NSRect(x: 0, y: 0, width: 690, height: page.preferredHeight))
-        frame.origin = NSPoint(x: window.frame.minX, y: window.frame.maxY - frame.height)
-        window.setFrame(frame, display: true, animate: window.isVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+    func updateSettingsTitle(_ page: HelperSettingsPage) {
+        settingsWindow?.title = page.rawValue
     }
     func connectGateway() { guard !previewMode else { return }; popover.performClose(nil); gatewayClicked() }
     func cancelSignIn() { cancelGatewayClicked() }

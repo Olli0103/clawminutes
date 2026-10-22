@@ -6,57 +6,55 @@ struct HelperPopover: View {
     @Environment(\.cmReviewRendering) private var reviewRendering
     @Bindable var state: AppState
     init(controller: MenuBarController) { self.controller = controller; state = controller.appState }
+    private var active: Bool { state.recording || state.callDetected || state.headline == .processing || state.headline == .sending }
+    private var recentLimit: Int { state.recording ? 2 : CMLayout.recentLimit }
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 8) {
-                StatusHeadline(state: state)
-                Button { controller.showSettings(page: .privacy) } label: {
-                    Label(state.selectedEngine == "parakeet" ? "On this Mac" : "Cloud speech", systemImage: "lock.shield")
-                        .font(.caption).fixedSize().padding(.horizontal, 7).padding(.vertical, 4)
-                }.buttonStyle(.plain).cmGlass().help("Open Privacy & storage settings")
+        VStack(alignment: .leading, spacing: 10) {
+            StatusHeadline(state: state)
+            if state.headline == .processing || state.headline == .sending,
+               let meeting = state.recentMeetings.first(where: { [.recorded, .transcribing, .transcribed, .delivering, .delivered].contains($0.stage) }) {
+                VStack(alignment: .leading, spacing: 5) {
+                    ProgressView(value: Double(meeting.pipelineCompletion), total: 4).cmProgress()
+                    Text(state.headline == .processing ? "Transcribing on this Mac" : "Saving notes and transcript")
+                        .font(.caption).foregroundStyle(CMTheme.secondary)
+                }
             }
             RecordingBar(state: state, toggle: controller.toggleRecording,
                          levels: { controller.audioLevels?() ?? (0, 0) }, enableMeters: { controller.enableAudioMeters?($0) })
-            if state.headline == .processing || state.headline == .sending,
-               let meeting = state.recentMeetings.first(where: { [.recorded, .transcribing, .transcribed, .delivering, .delivered].contains($0.stage) }) {
-                Text(meeting.title).font(.callout.weight(.medium)).lineLimit(2)
-                PipelineSteps(stage: meeting.stage, verifiedCompletion: meeting.pipelineCompletion)
-            }
             if state.micLost && state.recording {
-                Label("The microphone is not delivering audio. Check its connection.", systemImage: "mic.slash")
-                    .font(.callout).foregroundStyle(.primary)
-                Button("Check microphone", action: controller.showSetup).helperButton()
+                HStack {
+                    Text("Microphone not receiving audio").font(.caption)
+                    Spacer(minLength: 4)
+                    Button("Check", action: controller.showSetup).cmLinkButton().font(.caption)
+                }
             }
-            if state.attentionGroups.count > 3 {
-                ScrollView { attentionBanners }.frame(maxHeight: 144)
-            } else {
-                attentionBanners
-            }
+            if !state.attentionGroups.isEmpty { attentionSummary }
             Divider()
             HStack {
-                Text("Recent meetings").font(.headline)
+                Text("Recent").font(.caption.weight(.semibold)).foregroundStyle(CMTheme.secondary)
                 Spacer()
-                Button("See all", action: controller.showLibrary).cmLinkButton()
+                Button("See all", action: controller.showLibrary).cmLinkButton().font(.caption)
             }
             if state.recentMeetings.isEmpty {
-                Text("Your next recording will appear here.").font(.callout)
-                    .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 4)
+                Text("Recordings appear here.").font(.callout).foregroundStyle(CMTheme.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 3)
             } else if reviewRendering {
                 VStack(spacing: 0) {
-                    ForEach(Array(state.recentMeetings.prefix(CMLayout.recentLimit))) { meeting in
+                    ForEach(Array(state.recentMeetings.prefix(recentLimit))) { meeting in
                         MeetingRow(meeting: meeting)
-                        Divider()
                     }
                 }
             } else {
                 List(selection: $state.selectedMeetingID) {
-                    ForEach(Array(state.recentMeetings.prefix(CMLayout.recentLimit))) { meeting in
+                    ForEach(Array(state.recentMeetings.prefix(recentLimit))) { meeting in
                         MeetingRow(meeting: meeting, rename: { await controller.renameMeeting(meeting, title: $0) }).tag(meeting.id)
-                            .listRowInsets(EdgeInsets(top: 3, leading: 0, bottom: 3, trailing: 0))
+                            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+                            .listRowSeparator(.hidden)
                     }
                 }.listStyle(.plain).scrollContentBackground(.hidden)
+                    .environment(\.defaultMinListRowHeight, CMLayout.recentRowHeight)
                     .contentMargins(.vertical, 0, for: .scrollContent)
-                    .frame(height: CGFloat(min(CMLayout.recentLimit, state.recentMeetings.count)) * CMLayout.recentRowHeight)
+                    .frame(height: CGFloat(min(recentLimit, state.recentMeetings.count)) * CMLayout.recentRowHeight)
                     .onKeyPress(.return) {
                         guard let meeting = state.recentMeetings.first(where: { $0.id == state.selectedMeetingID }) else { return .ignored }
                         controller.openMeeting(meeting); return .handled
@@ -65,43 +63,60 @@ struct HelperPopover: View {
                         if let meeting = state.recentMeetings.first(where: { $0.id == state.selectedMeetingID }) { controller.openMeeting(meeting) }
                     }
             }
-            HStack {
-                Button { controller.showSettings() } label: { Image(systemName: "gearshape") }
-                    .help("Settings").accessibilityLabel("Settings")
+            HStack(spacing: 12) {
+                Button { controller.showSettings(page: .privacy) } label: {
+                    Label(state.selectedEngine == "parakeet" ? "On this Mac" : "Cloud speech", systemImage: "lock.shield")
+                        .font(.caption).foregroundStyle(CMTheme.secondary)
+                }.help("Open Privacy & storage settings").accessibilityLabel("Audio privacy settings")
+                Spacer(minLength: 0)
                 Button(action: controller.openNotesFolder) { Image(systemName: "folder") }
                     .help("Open notes folder").accessibilityLabel("Open notes folder")
-                Spacer()
+                Button { controller.showSettings() } label: { Image(systemName: "gearshape") }
+                    .help("Settings").accessibilityLabel("Settings")
                 Menu {
-                    Button(state.promptsEnabled ? "Pause meeting prompts" : "Resume meeting prompts", action: controller.togglePrompts)
-                    Button("Quit ClawMinutes", action: controller.quit).keyboardShortcut("q")
-                } label: { Image(systemName: "ellipsis").foregroundStyle(.primary) }
+                    Button(action: controller.togglePrompts) { Label(state.promptsEnabled ? "Pause meeting prompts" : "Resume meeting prompts", systemImage: state.promptsEnabled ? "pause" : "play") }
+                    Button(action: controller.quit) { Label("Quit ClawMinutes", systemImage: "power") }.keyboardShortcut("q")
+                } label: { Image(systemName: "ellipsis") }
                     .menuIndicator(.hidden).help("More actions").accessibilityLabel("More actions")
-            }.cmBorderlessButton().controlSize(.regular).padding(.horizontal, 10).padding(.vertical, 7).cmGlass()
-        }.padding(CMLayout.popoverInset).frame(width: CMLayout.popoverWidth).tint(CMTheme.accent).foregroundStyle(.primary)
-            .modifier(CMPopoverSurface())
+            }.cmBorderlessButton().controlSize(.small).foregroundStyle(CMTheme.secondary).padding(.top, 3)
+        }.padding(.horizontal, CMLayout.popoverInset).padding(.vertical, 12)
+            .frame(width: CMLayout.popoverWidth).tint(CMTheme.accent)
             .onAppear { state.popoverVisible = true }
             .onDisappear { state.popoverVisible = false }
-
     }
-    private var attentionBanners: some View {
-        VStack(spacing: 8) {
-            ForEach(state.attentionGroups) { group in
-                HStack(alignment: .center, spacing: 8) {
-                    Image(systemName: "exclamationmark.circle").foregroundStyle(.orange).accessibilityHidden(true)
-                    Text("\(group.meetings.count) \(group.meetings.count == 1 ? "meeting" : "meetings") · \(group.title)")
-                        .font(.callout).fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 0)
-                    Button(group.action) {
-                        switch group.cause {
-                        case .signIn: controller.connectGateway()
-                        case .gateway: controller.recheckGateway()
-                        default:
-                            if group.meetings.count == 1, let meeting = group.meetings.first { controller.showMeetingDetails(meeting) }
-                            else { controller.showAttentionGroup(group) }
-                        }
-                    }.helperButton().fixedSize()
+    @ViewBuilder private var attentionSummary: some View {
+        if active {
+            HStack(spacing: 6) {
+                Image(systemName: "exclamationmark.circle").foregroundStyle(.orange).accessibilityHidden(true)
+                Text("\(state.attentionMeetings.count) \(state.attentionMeetings.count == 1 ? "meeting needs" : "meetings need") a check")
+                    .foregroundStyle(CMTheme.secondary).lineLimit(1)
+                Spacer(minLength: 0)
+                if state.attentionGroups.count == 1, let group = state.attentionGroups.first {
+                    Button(group.action) { review(group) }.cmLinkButton().fixedSize()
+                } else { Button("Review", action: controller.showAllAttention).cmLinkButton().fixedSize() }
+            }.font(.caption)
+        } else {
+            VStack(alignment: .leading, spacing: 7) {
+                ForEach(Array(state.attentionGroups.prefix(2))) { group in
+                    HStack(spacing: 6) {
+                        Text("\(group.title) · \(group.meetings.count)").foregroundStyle(CMTheme.secondary).lineLimit(1).help(group.title)
+                        Spacer(minLength: 2)
+                        Button(group.action) { review(group) }.cmLinkButton().fixedSize()
+                    }.font(.caption)
+                }
+                if state.attentionGroups.count > 2 {
+                    Button("+\(state.attentionGroups.count - 2) more", action: controller.showAllAttention).cmLinkButton().font(.caption)
                 }
             }
+        }
+    }
+    private func review(_ group: AttentionGroup) {
+        switch group.cause {
+        case .signIn: controller.connectGateway()
+        case .gateway: controller.recheckGateway()
+        default:
+            if group.meetings.count == 1, let meeting = group.meetings.first { controller.showMeetingDetails(meeting) }
+            else { controller.showAttentionGroup(group) }
         }
     }
 }
@@ -135,13 +150,12 @@ struct MeetingDetailView: View {
                                     else { renameError = "The title could not be saved. Finish any active recording or save, then try again." }
                                 }
                             }
-                            Button { showInspector.toggle() } label: { Image(systemName: "info.circle") }
-                                .buttonStyle(.borderless).help("Show technical details").accessibilityLabel("Show technical details")
+
                         }
                         if let renameError { Text(renameError).font(.callout) }
                         HStack {
                             if let date = meeting.started { Text(MeetingDate.string(date)).font(.callout).foregroundStyle(.primary) }
-                            if meeting.revision > 1 { Text("Version \(meeting.revision)").font(.caption).foregroundStyle(.primary) }
+                            if meeting.revision > 1 { Text("Version \(meeting.revision)").font(.caption).foregroundStyle(CMTheme.secondary) }
                         }
                     }.padding(.bottom, 4)
                     PipelineSteps(stage: meeting.stage, verifiedCompletion: meeting.pipelineCompletion)
@@ -155,7 +169,7 @@ struct MeetingDetailView: View {
                                 .disabled(savingLocalNotes
                                     || ((guidance.action == .signIn || guidance.action == .checkConnection) && controller.gatewayOperation)
                                     || (guidance.action == .supportReport && controller.diagnosing))
-                            Text(guidance.footnote).font(.caption).foregroundStyle(.primary).fixedSize(horizontal: false, vertical: true)
+                            Text(guidance.footnote).font(.caption).foregroundStyle(CMTheme.secondary).fixedSize(horizontal: false, vertical: true)
                             if let localSaveError { Text(localSaveError).font(.callout).foregroundStyle(.primary) }
                         }.helperCard(tint: .accentColor)
                     } else {
@@ -164,41 +178,47 @@ struct MeetingDetailView: View {
                     }
                     if let unidentifiedTurns, unidentifiedTurns > 0 {
                         Label("\(unidentifiedTurns) passages have an unknown speaker. Names are shown only when speaker evidence supports them.", systemImage: "person.crop.circle.badge.questionmark")
-                            .font(.caption).foregroundStyle(.primary).fixedSize(horizontal: false, vertical: true)
-                    }
-                    HStack(spacing: 10) {
-                        if let notes = meeting.notes {
-                            Button { controller.openDocument(notes) } label: { Label("Open notes", systemImage: "doc.text") }.helperButton(prominent: !meeting.needsAttention)
-                        }
-                        if let transcript = meeting.transcript {
-                            Button { controller.openDocument(transcript) } label: { Label("Open transcript", systemImage: "text.alignleft") }.helperButton()
-                        }
-                    }
-                    Divider().padding(.vertical, 4)
-                    HStack {
-                        Menu {
-                            if meeting.notes != nil {
-                                Button("Copy notes") { controller.copyNotes(meeting) }
-                                Button("Copy notes to another folder…") { controller.copyExistingNotes([meeting]) }
-                            }
-                            if meeting.ready && meeting.transcript != nil {
-                                Button("Identify speakers…") { revisionMode = .speakers }
-                                Button("Regenerate notes…") { revisionMode = .template }
-                            }
-                            if meeting.canVerifyLegacyReceipt { Button("Find saved notes") { verifyingLegacyReceipt = true } }
-                            if meeting.canSaveTranscriptOnly { Button("Save transcript without AI…") { recoveryKind = .transcriptOnly } }
-                            if meeting.canRetryAINotes { Button("Try AI notes again…") { recoveryKind = .retryAI } }
-                            Button("Delete this meeting's audio…") { controller.reviewRecordedAudio([meeting]) }
-                            Button("Show files in Finder") { controller.openDocument(meeting.directory) }
-                        } label: { Label("More options", systemImage: "ellipsis") }.menuStyle(.borderlessButton).fixedSize()
-                        Spacer()
+                            .font(.caption).foregroundStyle(CMTheme.secondary).fixedSize(horizontal: false, vertical: true)
                     }
                 }.padding(24).frame(maxWidth: .infinity, alignment: .leading)
                     .sheet(item: $revisionMode) { mode in MeetingRevisionEditor(controller: controller, meeting: meeting, mode: mode) }
                     .sheet(isPresented: $verifyingLegacyReceipt) { LegacyReceiptView(controller: controller, meeting: meeting, automaticallyCheck: true) }
                     .sheet(item: $recoveryKind) { kind in NotesRecoveryEditor(controller: controller, meeting: meeting, kind: kind) }
             } else { Text("This meeting is no longer in the current list.").padding(24) }
-        }.frame(minWidth: 480, minHeight: 440).helperPanel()
+        }.frame(minWidth: 440, minHeight: 400)
+            .toolbar {
+                if let meeting = controller.recentMeetings.first(where: { $0.id == meetingID }) {
+                    ToolbarItemGroup(placement: .primaryAction) {
+                        if let notes = meeting.notes {
+                            Button { controller.openDocument(notes) } label: { Label("Open notes", systemImage: "doc.text") }.help("Open notes")
+                        }
+                        if let transcript = meeting.transcript {
+                            Button { controller.openDocument(transcript) } label: { Label("Open transcript", systemImage: "text.alignleft") }.help("Open transcript")
+                        }
+                    }
+                    ToolbarItem(placement: .primaryAction) {
+                        Menu {
+                            if meeting.notes != nil {
+                                Button { controller.copyNotes(meeting) } label: { Label("Copy notes", systemImage: "doc.on.doc") }
+                                Button { controller.copyExistingNotes([meeting]) } label: { Label("Copy notes to another folder…", systemImage: "folder.badge.plus") }
+                            }
+                            if meeting.ready && meeting.transcript != nil {
+                                Button { revisionMode = .speakers } label: { Label("Identify speakers…", systemImage: "person.crop.circle.badge.questionmark") }
+                                Button { revisionMode = .template } label: { Label("Regenerate notes…", systemImage: "arrow.clockwise") }
+                            }
+                            if meeting.canVerifyLegacyReceipt { Button("Find saved notes") { verifyingLegacyReceipt = true } }
+                            if meeting.canSaveTranscriptOnly { Button("Save transcript without AI…") { recoveryKind = .transcriptOnly } }
+                            if meeting.canRetryAINotes { Button("Try AI notes again…") { recoveryKind = .retryAI } }
+                            Button { controller.reviewRecordedAudio([meeting]) } label: { Label("Delete this meeting's audio…", systemImage: "trash") }
+                            Button { controller.openDocument(meeting.directory) } label: { Label("Show files in Finder", systemImage: "folder") }
+                        } label: { Label("More actions", systemImage: "ellipsis") }.help("Meeting actions")
+                    }
+                    ToolbarItem(placement: .primaryAction) {
+                        Button { showInspector.toggle() } label: { Label("Technical details", systemImage: "sidebar.trailing") }
+                            .help("Show technical details").accessibilityLabel("Show technical details")
+                    }
+                }
+            }
             .inspector(isPresented: $showInspector) {
                 if let meeting = controller.recentMeetings.first(where: { $0.id == meetingID }) {
                     Form {
@@ -246,17 +266,6 @@ enum HelperSettingsPage: String, CaseIterable, Identifiable {
     case general = "General", recording = "Recording", notes = "Notes", connection = "Connection"
     case privacy = "Privacy & storage", permissions = "Permissions", advanced = "Advanced"
     var id: String { rawValue }
-    var preferredHeight: CGFloat {
-        switch self {
-        case .general: 280
-        case .recording: 350
-        case .notes: 470
-        case .connection: 470
-        case .privacy: 470
-        case .permissions: 300
-        case .advanced: 280
-        }
-    }
     var symbol: String {
         switch self {
         case .general: return "slider.horizontal.3"
@@ -282,7 +291,7 @@ struct HelperSettings: View {
         NavigationSplitView {
             List(HelperSettingsPage.allCases, selection: $state.settingsPage) { item in
                 Label(item.rawValue, systemImage: item.symbol).tag(item)
-            }.navigationTitle("Settings").navigationSplitViewColumnWidth(180)
+            }.navigationTitle("Settings").navigationSplitViewColumnWidth(min: 180, ideal: 190, max: 210)
         } detail: {
             Form {
                 switch page {
@@ -291,12 +300,15 @@ struct HelperSettings: View {
                         Picker("Menu bar", selection: Binding(get: { controller.style }, set: controller.chooseStyle)) {
                             Text("Icon only").tag(MenuBarStyle.iconOnly)
                             Text("Icon and description").tag(MenuBarStyle.descriptive)
-                        }.pickerStyle(.segmented)
-                        Toggle("Ask when a Teams call starts", isOn: Binding(get: { controller.promptsEnabled }, set: { _ in controller.togglePrompts() }))
+                        }.pickerStyle(.menu)
+                        Toggle(isOn: Binding(get: { controller.promptsEnabled }, set: { _ in controller.togglePrompts() })) {
+                            Text("Detect Teams calls")
+                            Text("Ask once. Dismissing keeps recording off.").font(.caption).foregroundStyle(CMTheme.secondary)
+                        }.accessibilityLabel("Detect Teams calls").accessibilityHint("Ask once. Dismissing keeps recording off.")
                         Toggle("Launch at login", isOn: Binding(get: { controller.loginStatus.enabled == true }, set: controller.setLaunchAtLogin))
                             .disabled(controller.loginStatus.enabled == nil)
                         if let issue = controller.loginSettingError {
-                            Text(issue).font(.caption).foregroundStyle(.primary)
+                            Text(issue).font(.caption).foregroundStyle(CMTheme.secondary)
                         }
                         if controller.loginStatus.enabled == nil || controller.loginSettingError != nil {
                             Button("Check login setting again", action: controller.refreshLoginSetting)
@@ -306,8 +318,7 @@ struct HelperSettings: View {
                             Button("Recording controls", action: controller.openMenu)
                         }
                     } footer: {
-                        Text("One prompt per call. Dismiss keeps audio off. You can always start from the menu bar.\n" + controller.loginStatus.detail)
-                            .cmFormFootnote()
+                        Text(controller.loginStatus.detail).cmFormFootnote()
                     }
                 case .recording:
                     Section {
@@ -348,33 +359,42 @@ struct HelperSettings: View {
                             .cmFormFootnote()
                     }
                     Section {
-                        Text(controller.notesFolder).font(.caption).textSelection(.enabled)
-                        Button("Choose folder for future meetings…", action: controller.chooseNotesFolder)
-                        Button("Copy existing notes…") { controller.copyExistingNotes() }
-                            .disabled(controller.recentMeetings.allSatisfy { !$0.ready })
-                        Button("Open notes folder", action: controller.openNotesFolder)
+                        LabeledContent("Folder") {
+                            Text((controller.notesFolder as NSString).abbreviatingWithTildeInPath)
+                                .font(.caption).foregroundStyle(CMTheme.secondary).lineLimit(1).truncationMode(.middle)
+                                .textSelection(.enabled).help(controller.notesFolder)
+                            Button("Change…", action: controller.chooseNotesFolder)
+                        }
+                        HStack {
+                            Button("Open folder", action: controller.openNotesFolder)
+                            Button("Copy existing notes…") { controller.copyExistingNotes() }
+                                .disabled(controller.recentMeetings.allSatisfy { !$0.ready })
+                        }.controlSize(.small)
                     } header: { Text("Notes folder") } footer: {
-                        Text("Year / month / timestamp and meeting title. Existing notes stay in their original folder, including your edits.")
+                        Text("New meetings use year / month / date and title. Existing notes stay where they are.")
                             .cmFormFootnote()
                     }
                 case .connection:
                     Section {
-                        Text(controller.gatewayStatus).textSelection(.enabled)
-                        HStack {
-                            Button("Sign in / Connect…", action: controller.connectGateway).disabled(controller.gatewayOperation)
+                        LabeledContent("Gateway") {
+                            Label(connectionTitle, systemImage: controller.gatewayStatus.hasPrefix("Gateway connected") ? "checkmark.circle.fill" : "icloud")
+                                .font(.callout).foregroundStyle(CMTheme.secondary)
                             if controller.gatewaySigningIn { Button("Cancel", action: controller.cancelSignIn) }
-                            else { Button("Check", action: controller.recheckGateway).disabled(controller.gatewayOperation) }
+                            else {
+                                Button(controller.gatewayStatus.hasPrefix("Gateway connected") ? "Check" : "Connect…") {
+                                    if controller.gatewayStatus.hasPrefix("Gateway connected") { controller.recheckGateway() }
+                                    else { controller.connectGateway() }
+                                }.disabled(controller.gatewayOperation)
+                            }
                         }
                     } footer: {
-                        Text("GitHub sign-in opens in your browser. Finished text and meeting details go to your Gateway.")
+                        Text("Sign in with GitHub in your browser. Only finished text goes to the Gateway.")
                             .cmFormFootnote()
                     }
                     Section("Waiting meetings") {
                         ForEach(controller.recentMeetings.filter { !$0.ready || $0.needsAttention }) { meeting in
                             Button { controller.showMeetingDetails(meeting) } label: {
-                                VStack(alignment: .leading) {
-                                    Text(meeting.title); Text(meeting.statusTitle).font(.caption).foregroundStyle(.primary).lineLimit(2)
-                                }
+                                MeetingRow(meeting: meeting)
                             }.buttonStyle(.plain)
                         }
                         Button("Retry sending", action: controller.retrySaving).disabled(controller.gatewayOperation)
@@ -396,15 +416,15 @@ struct HelperSettings: View {
                                 .help("Open recording files").accessibilityLabel("Open recording files")
                         }
                     } header: { Text("Recording storage") } footer: {
-                        Text("Selects audio from verified saved meetings. Review the space to free, then confirm once. Notes and transcripts stay.")
+                        Text("Review verified audio before deleting. Notes and transcripts stay.")
                             .cmFormFootnote()
                     }
                     Section {
-                        Toggle("Automatically delete audio after saving notes", isOn: Binding(get: { controller.deletesVerifiedAudio }, set: controller.setAudioRetention))
-                    } header: { Text("Future recordings") } footer: {
-                        Text("Applies to new recordings only. Audio with gaps or missing Teams speech is kept for recovery.")
-                            .cmFormFootnote()
-                    }
+                        Toggle(isOn: Binding(get: { controller.deletesVerifiedAudio }, set: controller.setAudioRetention)) {
+                            Text("Delete audio after notes are saved")
+                            Text("New recordings only. Audio with gaps is kept.").font(.caption).foregroundStyle(CMTheme.secondary)
+                        }.accessibilityLabel("Delete audio after notes are saved").accessibilityHint("New recordings only. Audio with gaps is kept.")
+                    } header: { Text("Future recordings") }
                 case .permissions:
                     Section {
                         permission("Teams call detection", granted: controller.accessibilityGranted, action: controller.allowDetection)
@@ -428,14 +448,20 @@ struct HelperSettings: View {
                     }
                 }
             }.formStyle(.grouped).controlSize(.regular)
-        }.frame(width: 690, height: page.preferredHeight).foregroundStyle(.primary).tint(CMTheme.accent)
-            .background(Color(nsColor: .windowBackgroundColor))
-            .onChange(of: page, initial: true) { _, value in controller.fitSettingsWindow(value) }
+        }.frame(minWidth: CMLayout.settingsWidth, minHeight: 440).tint(CMTheme.accent)
+
+            .onChange(of: page, initial: true) { _, value in controller.updateSettingsTitle(value) }
+    }
+    private var connectionTitle: String {
+        if controller.gatewaySigningIn { return "Signing in…" }
+        if controller.gatewayOperation { return "Checking…" }
+        if controller.gatewayStatus.hasPrefix("Gateway connected") { return "Connected" }
+        return "Not connected"
     }
     private func permission(_ title: String, granted: Bool, action: @escaping () -> Void) -> some View {
         HStack {
             Text(title); Spacer()
-            if granted { Label { Text("Allowed").foregroundStyle(.primary) } icon: { Image(systemName: "checkmark.circle.fill").foregroundStyle(.green) } }
+            if granted { Label { Text("Allowed").foregroundStyle(CMTheme.secondary) } icon: { Image(systemName: "checkmark.circle.fill").foregroundStyle(.green) } }
             else { Button("Allow…", action: action) }
         }
     }

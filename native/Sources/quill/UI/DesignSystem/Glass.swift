@@ -49,17 +49,6 @@ private struct CMButton: ViewModifier {
         }
     }
 }
-struct CMPopoverSurface: ViewModifier {
-    @Environment(\.accessibilityReduceTransparency) private var systemSolid
-    @Environment(\.cmPreviewReduceTransparency) private var previewSolid
-    private var solid: Bool { systemSolid || previewSolid }
-    func body(content: Content) -> some View {
-        // The popover's system material surrounds flat, opaque content. Busy video
-        // cannot show through text. Never stack a glass panel underneath controls.
-        content.background(Color(nsColor: .windowBackgroundColor))
-            .transaction { if solid { $0.animation = nil } }
-    }
-}
 extension View {
     func cmGlass(_ id: String? = nil, in namespace: Namespace.ID? = nil) -> some View { modifier(CMGlass(id: id, namespace: namespace)) }
     func cmButton(prominent: Bool = false) -> some View { modifier(CMButton(prominent: prominent)) }

@@ -2,16 +2,35 @@ import SwiftUI
 
 struct StatusHeadline: View {
     let state: AppState
+    private var title: String {
+        if state.headline == .attention {
+            let count = state.attentionMeetings.count
+            return count > 0 ? "\(count) \(count == 1 ? "meeting needs" : "meetings need") attention" : "Meeting needs a check"
+        }
+        return state.headline == .callDetected ? "Teams call" : state.headline.rawValue
+    }
+    private var subtitle: String? {
+        if state.recording { return state.callTitle }
+        if state.headline == .callDetected { return state.callDetectedAt.map { "Detected at " + MeetingDate.time($0) } }
+        if state.headline == .processing || state.headline == .sending {
+            return state.recentMeetings.first(where: { [.recorded, .transcribing, .transcribed, .delivering, .delivered].contains($0.stage) })?.title
+        }
+        return nil
+    }
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: state.headline.symbol).font(.title3)
+        HStack(alignment: .top, spacing: 9) {
+            Image(systemName: state.headline.symbol).font(.system(size: 16, weight: .medium))
                 .foregroundStyle(state.recording ? Color.red : state.headline == .attention ? .orange : CMTheme.accent)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(state.headline.rawValue).font(.headline)
-                if state.recording { Text(state.callTitle).font(.callout).lineLimit(2) }
+                .frame(width: 20, height: 20).accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title).font(.title3.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+                if let subtitle { Text(subtitle).font(.callout).foregroundStyle(CMTheme.secondary).lineLimit(1) }
             }
             Spacer(minLength: 0)
+            if state.recording {
+                Text(state.elapsed).monospacedDigit().font(.title3.weight(.semibold))
+                    .contentTransition(.numericText()).accessibilityLabel("Recording time " + state.elapsed)
+            }
         }.accessibilityElement(children: .combine)
     }
 }
@@ -25,30 +44,30 @@ struct RecordingBar: View {
     @Environment(\.accessibilityReduceMotion) private var systemStill
     @Environment(\.cmPreviewReduceMotion) private var previewStill
     private var still: Bool { systemStill || previewStill }
+    private var prominent: Bool { state.recording || (state.headline != .processing && state.headline != .sending) || state.captureCheckPhase != nil }
     var body: some View {
         CMGlassContainer {
-            Group {
-                if state.recording {
-                    HStack(spacing: 12) {
-                        Button(action: toggle) { Label("Stop", systemImage: "stop.fill") }
-                            .helperButton(prominent: true, recording: true).tint(.red).keyboardShortcut("r")
-                            .help("Stop recording (⌘R)").accessibilityLabel("Stop recording")
-                        Text(state.elapsed).monospacedDigit().font(.headline)
-                        Spacer(minLength: 4)
-                        meter("Mic", value: state.micLevel, lost: state.micLost)
-                        meter("Teams", value: state.teamsLevel, lost: false)
-                    }.padding(10).cmGlass("recording-control", in: recordingControl)
-                } else {
-                    Button(action: toggle) {
-                        Label(state.primaryTitle, systemImage: state.captureCheckPhase == nil ? "mic.fill" : "stop.fill")
-                            .fontWeight(.semibold).lineLimit(2).frame(maxWidth: .infinity, minHeight: 24)
-                    }.cmButton(prominent: true).tint(CMTheme.accent).controlSize(.large)
-                        .keyboardShortcut("r").help("Record this meeting (⌘R)")
-                        .disabled(state.startingRecording)
-                        .modifier(CMRecordingIdentity(namespace: recordingControl))
+          VStack(spacing: 10) {
+            if state.recording {
+                HStack(spacing: 18) {
+                    meter("Mic", value: state.micLevel, lost: state.micLost)
+                    meter("Teams", value: state.teamsLevel, lost: false)
                 }
-            }.animation(still ? nil : .easeInOut(duration: 0.2), value: state.recording)
+            }
+            Button(role: state.recording ? .destructive : nil, action: toggle) {
+                HStack(spacing: 6) {
+                    Image(systemName: state.recording || state.captureCheckPhase != nil ? "stop.fill" : "mic.fill")
+                    Text(state.primaryTitle).fontWeight(.semibold).lineLimit(1).truncationMode(.middle)
+                    Spacer(minLength: 4)
+                    Text("⌘R").font(.caption).opacity(0.75)
+                }.frame(maxWidth: .infinity)
+            }.cmButton(prominent: prominent).tint(state.recording ? .red : CMTheme.accent).controlSize(.large)
+                .modifier(CMRecordingIdentity(namespace: recordingControl))
+                .keyboardShortcut("r").help(state.primaryTitle + " (⌘R)")
+                .disabled(state.startingRecording)
+          }
         }
+        .animation(still ? nil : .easeInOut(duration: 0.2), value: state.recording)
         .task(id: state.popoverVisible && state.recording) {
             guard state.popoverVisible && state.recording else { enableMeters(false); return }
             enableMeters(true)
@@ -62,13 +81,13 @@ struct RecordingBar: View {
         .onDisappear { enableMeters(false) }
     }
     private func meter(_ title: String, value: Float, lost: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(lost ? "Mic lost" : title).font(.caption2)
+        VStack(alignment: .leading, spacing: 4) {
+            Text(lost ? "Mic unavailable" : title).font(.caption).foregroundStyle(CMTheme.secondary)
             ProgressView(value: Double(lost ? 0 : value), total: 1).cmProgress()
-                .tint(lost ? .orange : CMTheme.accent).frame(width: 48)
+                .tint(lost ? .orange : CMTheme.accent)
                 .accessibilityLabel("\(title) audio level")
                 .accessibilityValue(lost ? "Unavailable" : "\(Int(value * 100)) percent")
-        }
+        }.frame(maxWidth: .infinity)
     }
 }
 
@@ -100,6 +119,7 @@ struct PipelineSteps: View {
 }
 
 struct MeetingRow: View {
+    @Environment(\.cmReferenceDate) private var referenceDate
     let meeting: RecentMeeting
     var rename: ((String) async -> Bool)? = nil
     @State private var renaming = false
@@ -112,9 +132,6 @@ struct MeetingRow: View {
     }
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: meeting.presentationNeedsAttention ? "exclamationmark.circle" : meeting.symbol)
-                .foregroundStyle(meeting.presentationNeedsAttention ? Color.orange : meeting.ready ? .green : CMTheme.accent)
-                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 3) {
                 if renaming {
                     TextField("Meeting title", text: $draft).textFieldStyle(.roundedBorder)
@@ -127,11 +144,17 @@ struct MeetingRow: View {
                         }
                     if renameFailed { Text("Could not save title. Try again after this meeting finishes.").font(.caption) }
                 } else { Text(meeting.title).font(.body.weight(.medium)).lineLimit(1) }
-                Text(MeetingDate.string(meeting.started) + " · " + cause)
-                    .font(.caption).lineLimit(1).help(cause)
+                Text(MeetingDate.string(meeting.started, now: referenceDate ?? Date()) + " · " + cause)
+                    .font(.caption).foregroundStyle(CMTheme.secondary).lineLimit(1).help(cause)
             }.foregroundStyle(.primary)
             Spacer(minLength: 4)
-        }.padding(.vertical, 5).accessibilityElement(children: renaming ? .contain : .combine)
+            if meeting.presentationNeedsAttention {
+                Circle().fill(.orange).frame(width: 6, height: 6).accessibilityHidden(true)
+            } else {
+                Image(systemName: meeting.symbol).font(.caption)
+                    .foregroundStyle(meeting.ready ? .green : CMTheme.accent).accessibilityHidden(true)
+            }
+        }.padding(.vertical, 3).accessibilityElement(children: renaming ? .contain : .combine)
             .contextMenu {
                 if rename != nil {
                     Button("Rename") { draft = meeting.title; renaming = true }
